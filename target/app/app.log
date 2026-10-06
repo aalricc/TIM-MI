@@ -1,0 +1,7 @@
+{"ts": "2026-10-06T19:52:17.761606+00:00", "level": "info", "message": "target app started"}
+{"ts": "2026-10-06T19:53:08.745186+00:00", "level": "error", "message": "database file is missing", "error": "sqlite3.OperationalError: unable to open database file"}
+{"ts": "2026-10-06T19:53:49.189588+00:00", "level": "error", "message": "schema table missing"}
+{"ts": "2026-10-06T20:01:14.954370+00:00", "level": "info", "message": "health deep ok"}
+{"ts": "2026-10-06T20:09:28.348223+00:00", "level": "info", "message": "target app started"}
+{"ts": "2026-10-06T20:20:05.564653+00:00", "level": "info", "message": "target app started"}
+{"ts": "2026-10-06T20:21:16.567161+00:00", "level": "info", "message": "health deep ok"}

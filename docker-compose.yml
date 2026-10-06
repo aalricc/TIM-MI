@@ -1,0 +1,74 @@
+services:
+  target-app:
+    build:
+      context: .
+      dockerfile: target/app/Dockerfile
+    container_name: mi-target-app
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./target/app:/target/app
+
+  backup-job:
+    image: alpine:3.20
+    container_name: mi-backup-job
+    depends_on:
+      - target-app
+    command: ["/bin/sh", "/backup/backup.sh"]
+    volumes:
+      - ./target/app:/target/app:ro
+      - backups_data:/target/backups
+      - ./target/backup:/backup:ro
+
+  last-resort:
+    build:
+      context: .
+      dockerfile: target/last_resort/Dockerfile
+    container_name: mi-last-resort
+    depends_on:
+      - backup-job
+    ports:
+      - "8070:8070"
+    volumes:
+      - ./target/app:/target/app
+      - backups_data:/target/backups
+
+  mi-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mi-agent
+    depends_on:
+      - target-app
+      - last-resort
+    ports:
+      - "8090:8090"
+    environment:
+      MI_TARGET_SERVICE_URL: http://target-app:8080
+      MI_APP_ROOT: /target/app
+      MI_SANDBOX_ROOT: /target
+      MI_DB_FILE: /target/app/data/app.db
+      MI_APP_LOG: /target/app/app.log
+      MI_SCHEMA_FILE: /target/app/schema.sql
+      MI_LAST_RESORT_URL: http://last-resort:8070
+      MI_POLICY_STORE_PATH: /state/policy_store.json
+      MI_SKILL_STORE_PATH: /state/skills.json
+      MI_STATE_DIR: /state
+      MI_MONITOR_INTERVAL_SECONDS: "2"
+      MI_EPSILON_START: ${MI_EPSILON_START:-0.10}
+      MI_EPSILON_MIN: ${MI_EPSILON_MIN:-0.02}
+      MI_EPSILON_DECAY: ${MI_EPSILON_DECAY:-0.99}
+      MI_LLM_RETRIES: ${MI_LLM_RETRIES:-6}
+      MI_MAX_ATTEMPTS_PER_INCIDENT: ${MI_MAX_ATTEMPTS_PER_INCIDENT:-40}
+      MI_LLM_MODEL: ${MI_LLM_MODEL:-gpt-5.3-codex}
+      MI_LLM_ENDPOINT: ${MI_LLM_ENDPOINT:-https://api.openai.com/v1/responses}
+      MI_LLM_AUTH_MODE: ${MI_LLM_AUTH_MODE:-bearer}
+      MI_LLM_API_KEY_HEADER: ${MI_LLM_API_KEY_HEADER:-api-key}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MI_OPENAI_API_KEY: ${MI_OPENAI_API_KEY:-}
+    volumes:
+      - ./target/app:/target/app
+      - ./state:/state
+
+volumes:
+  backups_data:

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MI Dashboard</title>
+  <style>
+    body { font-family: sans-serif; margin: 1rem; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    pre { background: #111; color: #0f0; padding: 0.5rem; height: 280px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h1>Maintenance Intelligence</h1>
+  <div class="grid">
+    <div>
+      <h3>Current State</h3>
+      <pre id="state"></pre>
+      <h3>Policy Values</h3>
+      <pre id="policy"></pre>
+    </div>
+    <div>
+      <h3>Skills</h3>
+      <pre id="skills"></pre>
+      <h3>Live Events</h3>
+      <pre id="events"></pre>
+    </div>
+  </div>
+  <script>
+    async function refresh() {
+      const [state, policy, skills] = await Promise.all([
+        fetch('/state').then(r => r.json()),
+        fetch('/policy').then(r => r.json()),
+        fetch('/skills').then(r => r.json()),
+      ]);
+      document.getElementById('state').textContent = JSON.stringify(state, null, 2);
+      document.getElementById('policy').textContent = JSON.stringify(policy, null, 2);
+      document.getElementById('skills').textContent = JSON.stringify(skills, null, 2);
+    }
+    refresh();
+    setInterval(refresh, 2000);
+
+    const events = document.getElementById('events');
+    const source = new EventSource('/events/stream');
+    source.onmessage = (evt) => {
+      events.textContent = evt.data + "\n" + events.textContent;
+    };
+  </script>
+</body>
+</html>
