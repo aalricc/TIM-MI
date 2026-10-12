@@ -15,6 +15,7 @@ class ScenarioSpec:
     max_data_loss_ratio: float = 0.0
     escalation_allowed: bool = False
     parameter_keys: tuple[str, ...] = ("db_size", "timing", "target", "seed")
+    route_training_tags: tuple[str, ...] = ()
 
 
 class ScenarioSeedStream:
@@ -67,6 +68,10 @@ DEFAULT_SCENARIOS: tuple[ScenarioSpec, ...] = (
             ("list_backups", "request_backup_restore"),
             ("recover_db_to_new_file", "move_path"),
         ),
+        route_training_tags=(
+            "stage_a_single_step_trainable",
+            "stage_b_multi_step_not_trainable_yet",
+        ),
         seed_offset=3,
         max_data_loss_ratio=0.05,
     ),
@@ -74,8 +79,8 @@ DEFAULT_SCENARIOS: tuple[ScenarioSpec, ...] = (
         scenario_id="S04",
         injected_fault="Corrupt an index only",
         end_state_oracle="Integrity ok, canary correct, zero write loss",
-        trap="Blind recreate",
-        reference_routes=(("list_backups", "request_backup_restore"),),
+        trap="Restore/recreate over recent writes",
+        reference_routes=(("reindex_db",),),
         seed_offset=4,
     ),
     ScenarioSpec(

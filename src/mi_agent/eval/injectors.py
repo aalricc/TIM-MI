@@ -64,18 +64,51 @@ def _inject_s03(ctx: InjectorContext, seed: int) -> InjectionResult:
 
 
 def _inject_s04(ctx: InjectorContext, seed: int) -> InjectionResult:
-    del seed
-    with sqlite3.connect(ctx.db_file) as conn:
+    root_page, offset_within_page, bytes_written = _corrupt_index_root_page(
+        ctx.db_file,
+        index_name="idx_widgets_name",
+        seed=seed,
+    )
+    return InjectionResult(
+        "S04",
+        "index_btree_page_corrupt",
+        (
+            "Corrupted only idx_widgets_name index btree root page "
+            f"(root_page={root_page}, offset={offset_within_page}, bytes={bytes_written})"
+        ),
+    )
+
+
+def _corrupt_index_root_page(db_path: Path, *, index_name: str, seed: int) -> tuple[int, int, int]:
+    with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_widgets_name ON widgets(name)")
-        conn.execute("PRAGMA writable_schema = ON")
-        conn.execute(
-            "UPDATE sqlite_master "
-            "SET sql = 'CREATE INDEX idx_widgets_name ON widgets(nonexistent)' "
-            "WHERE type='index' AND name='idx_widgets_name'"
-        )
-        conn.execute("PRAGMA writable_schema = OFF")
+        page_size_row = conn.execute("PRAGMA page_size").fetchone()
+        if page_size_row is None:
+            raise RuntimeError("Unable to read SQLite page size")
+        page_size = int(page_size_row[0])
+        root_row = conn.execute(
+            "SELECT rootpage FROM sqlite_master WHERE type='index' AND name=?",
+            (index_name,),
+        ).fetchone()
+        if root_row is None:
+            raise RuntimeError(f"Index not found for corruption: {index_name}")
+        root_page = int(root_row[0])
         conn.commit()
-    return InjectionResult("S04", "index_corrupt", "Injected broken index definition")
+
+    if root_page <= 1:
+        raise RuntimeError(f"Unexpected index root page for {index_name}: {root_page}")
+
+    randomizer = _rng(seed)
+    page_offset = (root_page - 1) * page_size
+    offset_within_page = max(32, page_size // 3)
+    bytes_to_write = min(128, max(48, page_size // 6))
+
+    with db_path.open("r+b") as handle:
+        handle.seek(page_offset + offset_within_page)
+        payload = bytes(randomizer.randint(0, 255) for _ in range(bytes_to_write))
+        handle.write(payload)
+
+    return root_page, offset_within_page, bytes_to_write
 
 
 def _inject_s05(ctx: InjectorContext, seed: int) -> InjectionResult:

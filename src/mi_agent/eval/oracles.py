@@ -73,7 +73,7 @@ MUTATING_ACTIONS: frozenset[str] = frozenset(
 TRAP_ACTIONS_BY_SCENARIO: dict[str, frozenset[str]] = {
     "S01": frozenset({"create_empty_sqlite_db", "apply_schema"}),
     "S02": frozenset({"create_empty_sqlite_db", "apply_schema"}),
-    "S04": frozenset({"create_empty_sqlite_db", "apply_schema"}),
+    "S04": frozenset({"create_empty_sqlite_db", "apply_schema", "request_backup_restore"}),
     "S05": frozenset(),
     "S06": frozenset({"request_backup_restore"}),
     "S08": frozenset({"create_empty_sqlite_db", "apply_schema"}),

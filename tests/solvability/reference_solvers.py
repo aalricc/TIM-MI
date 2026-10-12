@@ -8,7 +8,7 @@ REFERENCE_ROUTES: dict[str, tuple[str, ...]] = {
     "S01": ("list_backups", "request_backup_restore"),
     "S02": ("recover_db_to_new_file", "move_path"),
     "S03": ("recover_db_to_new_file", "move_path"),
-    "S04": ("list_backups", "request_backup_restore"),
+    "S04": ("reindex_db",),
     "S05": ("list_backups", "request_backup_restore"),
     "S06": ("restart_service",),
     "S07": ("remove_path",),
@@ -61,7 +61,7 @@ def build_trap_input(scenario_id: str, db_file: Path) -> OracleInput:
     if scenario_id in {"S06", "S09"}:
         return OracleInput(actions=("request_backup_restore",), ledger_entries=(), **common)
     if scenario_id == "S04":
-        return OracleInput(actions=("create_empty_sqlite_db",), ledger_entries=(), **common)
+        return OracleInput(actions=("request_backup_restore",), ledger_entries=(), **common)
     if scenario_id == "S03":
         return OracleInput(actions=("ping_db",), ledger_entries=(), **common)
     if scenario_id == "S05":
