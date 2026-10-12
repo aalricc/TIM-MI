@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import pytest
 
+from mi_agent.agent.diagnose import Diagnoser
 from mi_agent.agent.diagnose import sanitize_lines
 from mi_agent.agent.executor import AgentActionExecutor
 from mi_agent.errors import PrimitiveNotAllowedError
 from mi_agent.events.bus import EventBus
+from mi_agent.llm.client import FakeLLMClient
+from mi_agent.policy.store import PolicyStore
 from mi_agent.tools.executor import ToolExecutor
 
 
@@ -50,3 +53,19 @@ def test_prompt_injection_sanitization_bounded() -> None:
     assert len(out) == 2
     assert all(len(line) <= 300 for line in out)
     assert "\n" not in out[0]
+
+
+@pytest.mark.asyncio()
+async def test_collect_probes_uses_app_root_relative_paths(test_settings) -> None:
+    tools = ToolExecutor(test_settings, EventBus())
+    diagnoser = Diagnoser(
+        llm_client=FakeLLMClient(),
+        tool_executor=tools,
+        policy_store=PolicyStore(test_settings.policy_store_path),
+        settings=test_settings,
+    )
+
+    probes = await diagnoser.collect_probes()
+
+    assert probes["db_file"].get("exists") is True
+    assert probes["schema_file"].get("exists") is True

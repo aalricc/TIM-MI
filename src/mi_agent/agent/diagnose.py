@@ -52,8 +52,8 @@ class Diagnoser:
         return []
 
     async def collect_probes(self) -> dict[str, Any]:
-        db_path = self._relative_path(self._settings.db_file, self._settings.sandbox_root)
-        schema_path = self._relative_path(self._settings.schema_file, self._settings.sandbox_root)
+        db_path = self._relative_path(self._settings.db_file, self._settings.app_root)
+        schema_path = self._relative_path(self._settings.schema_file, self._settings.app_root)
 
         ping_result = await self._tools.execute("ping_db", {})
         db_stat = await self._tools.execute("stat_path", {"path": db_path})

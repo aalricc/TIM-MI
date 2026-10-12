@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -9,37 +11,52 @@ import httpx
 from mi_agent.config import MISettings
 from mi_agent.events.bus import EventBus
 from mi_agent.events.models import Event
-from mi_agent.failure_types import normalize_failure_type
 from mi_agent.workflow.models import VerificationResult
 
 
 class Verifier:
+    VERSION = "v2"
+
     def __init__(self, settings: MISettings, event_bus: EventBus) -> None:
         self._settings = settings
         self._event_bus = event_bus
+        self._ledger_path = settings.state_dir / "ack_ledger.json"
 
     async def verify(self, *, failure_type: str | None = None) -> VerificationResult:
+        del failure_type
         db_ping = await self.ping_db()
         integrity_ok = await self.integrity_check()
         schema_ok = await self.check_schema()
         rw_ok = await self.test_read_write()
         health_ok = await self.health_endpoint_ok()
-        module_ok = self._inferred_failure_check(
-            failure_type=failure_type,
-            db_ping=db_ping,
-            schema_ok=schema_ok,
+        continuity = await self.data_continuity_check()
+
+        base_healthy = all(
+            [db_ping, integrity_ok, schema_ok, rw_ok, health_ok, continuity["ok"]]
         )
-        healthy = all([db_ping, module_ok, integrity_ok, schema_ok, rw_ok, health_ok])
+        delayed_ok = True
+        if base_healthy:
+            delay = self._settings.verifier_delayed_reverify_seconds
+            if delay > 0:
+                await asyncio.sleep(delay)
+            delayed_ping = await self.ping_db()
+            delayed_integrity = await self.integrity_check()
+            delayed_health = await self.health_endpoint_ok()
+            delayed_ok = delayed_ping and delayed_integrity and delayed_health
+
+        healthy = base_healthy and delayed_ok
         result = VerificationResult(
             healthy=healthy,
-            failure_type=None if healthy else failure_type,
+            failure_type=None,
             details={
+                "verifier_version": self.VERSION,
                 "db_ping": db_ping,
-                "module_ok": module_ok,
                 "integrity_ok": integrity_ok,
                 "schema_ok": schema_ok,
                 "rw_ok": rw_ok,
                 "health_ok": health_ok,
+                "data_continuity": continuity,
+                "delayed_reverify_ok": delayed_ok,
             },
         )
         await self._event_bus.publish(
@@ -47,19 +64,66 @@ class Verifier:
         )
         return result
 
-    @staticmethod
-    def _inferred_failure_check(
-        *,
-        failure_type: str | None,
-        db_ping: bool,
-        schema_ok: bool,
-    ) -> bool:
-        canonical_failure_type = (
-            normalize_failure_type(failure_type) if failure_type is not None else None
-        )
-        if canonical_failure_type == "db_file_missing":
-            return db_ping and schema_ok
-        return db_ping
+    async def data_continuity_check(self) -> dict[str, int | bool]:
+        entries = self._load_ledger_entries()
+        if not entries:
+            return {"ok": True, "checked": 0, "missing": 0}
+
+        db_path = self._settings.db_file
+        if not db_path.exists():
+            return {"ok": False, "checked": len(entries), "missing": len(entries)}
+
+        def _sync_check() -> tuple[int, int]:
+            checked = 0
+            missing = 0
+            with sqlite3.connect(db_path) as conn:
+                for entry in entries:
+                    checked += 1
+                    table = entry["table"]
+                    pk_column = entry["pk_column"]
+                    pk_value = entry["pk_value"]
+                    query = (
+                        f'SELECT 1 FROM "{table}" WHERE "{pk_column}" = ? LIMIT 1'
+                    )
+                    row = conn.execute(query, (pk_value,)).fetchone()
+                    if row is None:
+                        missing += 1
+            return checked, missing
+
+        try:
+            checked, missing = await asyncio.to_thread(_sync_check)
+        except sqlite3.Error:
+            return {"ok": False, "checked": len(entries), "missing": len(entries)}
+        return {"ok": missing == 0, "checked": checked, "missing": missing}
+
+    def _load_ledger_entries(self) -> list[dict[str, int | str]]:
+        if not self._ledger_path.exists():
+            return []
+        try:
+            raw = json.loads(self._ledger_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+        if not isinstance(raw, list):
+            return []
+
+        valid: list[dict[str, int | str]] = []
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            table = item.get("table")
+            pk_column = item.get("pk_column")
+            pk_value = item.get("pk_value")
+            if not isinstance(table, str) or not identifier.fullmatch(table):
+                continue
+            if not isinstance(pk_column, str) or not identifier.fullmatch(pk_column):
+                continue
+            if not isinstance(pk_value, (int, str)):
+                continue
+            valid.append(
+                {"table": table, "pk_column": pk_column, "pk_value": pk_value}
+            )
+        return valid
 
     async def ping_db(self) -> bool:
         db_path = self._settings.db_file

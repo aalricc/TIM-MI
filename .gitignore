@@ -1,0 +1,25 @@
+# Evaluation artifacts / runtime outputs
+artifacts/
+state/
+target/
+
+# Secrets and environment files
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.p12
+*.pfx
+*secret*
+
+# Python caches and virtualenvs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# macOS
+.DS_Store

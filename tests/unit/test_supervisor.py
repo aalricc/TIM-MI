@@ -56,6 +56,25 @@ async def test_supervisor_cap_enforced_by_attempt_and_time(test_settings) -> Non
 
 
 @pytest.mark.asyncio()
+async def test_supervisor_zero_caps_disable_attempt_time_and_hourly_limits(test_settings) -> None:
+    settings = test_settings.model_copy(
+        update={
+            "max_attempts_per_incident": 0,
+            "max_attempts_per_hour": 0,
+            "max_incident_seconds": 0,
+        }
+    )
+    restorer = LocalLastResortClient(settings.backups_root, settings.db_file)
+    supervisor = Supervisor(settings, EventBus(), restorer)
+    incident = await supervisor.open_incident("db_file_missing")
+    incident.started_at = datetime.now(tz=UTC) - timedelta(hours=2)
+
+    gates = [await supervisor.gate_attempt(incident) for _ in range(5)]
+
+    assert all(gate.cap_reached is False for gate in gates)
+
+
+@pytest.mark.asyncio()
 async def test_lock_contention(test_settings) -> None:
     supervisor = Supervisor(
         test_settings,

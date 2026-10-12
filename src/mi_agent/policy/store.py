@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from mi_agent.errors import CorruptStoreError
 from mi_agent.failure_types import normalize_failure_type
+from mi_agent.state.store import JSONFileStateStore
 from mi_agent.workflow.models import EpisodeAction
 
 
@@ -28,18 +28,22 @@ class PolicyState(BaseModel):
 
 
 class PolicyStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, recency_alpha: float | None = None) -> None:
         self._path = path
+        self._recency_alpha = recency_alpha
         self._adapter = TypeAdapter(PolicyState)
+        self._state_store = JSONFileStateStore[PolicyState](
+            path,
+            default_factory=PolicyState,
+            decode=self._decode_state,
+            encode=lambda state: state.model_dump(mode="json"),
+        )
         self._state = self._load()
 
     def _load(self) -> PolicyState:
-        if not self._path.exists():
-            return PolicyState()
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-            loaded = self._adapter.validate_python(raw)
-        except (json.JSONDecodeError, ValidationError) as exc:
+            loaded = self._state_store.load()
+        except (json.JSONDecodeError, ValidationError, ValueError) as exc:
             raise CorruptStoreError(f"Corrupt policy store: {self._path}") from exc
         migrated = self._canonicalize_failure_keys(loaded)
         if migrated:
@@ -48,12 +52,10 @@ class PolicyStore:
         return loaded
 
     def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        serialized = self._state.model_dump(mode="json")
-        with NamedTemporaryFile("w", delete=False, dir=self._path.parent, encoding="utf-8") as tmp:
-            json.dump(serialized, tmp, ensure_ascii=False, sort_keys=True)
-            temp_path = Path(tmp.name)
-        temp_path.replace(self._path)
+        self._state_store.save(self._state)
+
+    def _decode_state(self, raw: object) -> PolicyState:
+        return self._adapter.validate_python(raw)
 
     def recall_lessons(self, failure_type: str) -> list[str]:
         failure_type = self._canonical_failure_type(failure_type)
@@ -82,7 +84,14 @@ class PolicyStore:
         failure_type = self._canonical_failure_type(failure_type)
         value = self.value_for(failure_type, action_key)
         new_visits = value.visits + 1
-        value.avg_reward = ((value.avg_reward * value.visits) + reward) / new_visits
+        if self._recency_alpha is None:
+            value.avg_reward = ((value.avg_reward * value.visits) + reward) / new_visits
+        else:
+            alpha = max(0.0, min(1.0, self._recency_alpha))
+            if value.visits == 0:
+                value.avg_reward = reward
+            else:
+                value.avg_reward = ((1.0 - alpha) * value.avg_reward) + (alpha * reward)
         value.visits = new_visits
         if success:
             value.success_count += 1

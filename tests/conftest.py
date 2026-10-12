@@ -43,6 +43,8 @@ def test_settings(tmp_path: Path) -> MISettings:
         schema_file=schema_file,
         policy_store_path=state_dir / "policy_store.json",
         skill_store_path=state_dir / "skills.json",
+        decision_log_path=state_dir / "decision_log.jsonl",
+        event_log_path=state_dir / "events.jsonl",
         state_dir=state_dir,
         target_service_url="http://invalid.local",
     )

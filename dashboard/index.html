@@ -21,20 +21,36 @@
     <div>
       <h3>Skills</h3>
       <pre id="skills"></pre>
+      <h3>Skill Lifecycle</h3>
+      <pre id="skill-lifecycle"></pre>
+      <h3>Exploration Rate</h3>
+      <pre id="exploration-rate"></pre>
+      <h3>Last-Resort Rate</h3>
+      <pre id="last-resort-rate"></pre>
       <h3>Live Events</h3>
       <pre id="events"></pre>
     </div>
   </div>
+  <h3>Learning Curve</h3>
+  <pre id="learning-curve"></pre>
+  <h3>Per-Scenario Results</h3>
+  <pre id="per-scenario-results"></pre>
   <script>
     async function refresh() {
-      const [state, policy, skills] = await Promise.all([
+      const [state, policy, skills, views] = await Promise.all([
         fetch('/state').then(r => r.json()),
         fetch('/policy').then(r => r.json()),
         fetch('/skills').then(r => r.json()),
+        fetch('/dashboard/views').then(r => r.json()),
       ]);
       document.getElementById('state').textContent = JSON.stringify(state, null, 2);
       document.getElementById('policy').textContent = JSON.stringify(policy, null, 2);
       document.getElementById('skills').textContent = JSON.stringify(skills, null, 2);
+      document.getElementById('learning-curve').textContent = JSON.stringify(views.learning_curve, null, 2);
+      document.getElementById('per-scenario-results').textContent = JSON.stringify(views.per_scenario_results, null, 2);
+      document.getElementById('skill-lifecycle').textContent = JSON.stringify(views.skill_lifecycle, null, 2);
+      document.getElementById('exploration-rate').textContent = JSON.stringify(views.exploration_rate, null, 2);
+      document.getElementById('last-resort-rate').textContent = JSON.stringify(views.last_resort_rate, null, 2);
     }
     refresh();
     setInterval(refresh, 2000);

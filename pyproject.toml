@@ -24,6 +24,9 @@ dev = [
   "types-PyYAML>=6.0.12.20240917",
 ]
 
+[project.scripts]
+mi-eval = "mi_agent.eval.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/mi_agent"]
 
@@ -31,6 +34,18 @@ packages = ["src/mi_agent"]
 addopts = "-q"
 pythonpath = ["src"]
 asyncio_mode = "auto"
+markers = [
+  "integrity: learning-integrity and anti-gaming enforcement tests",
+  "phase0: Phase 0 baseline, gate, and enforcement",
+  "phase1: Phase 1 primitives, restore broker, verifier",
+  "phase2: Phase 2 scenarios and eval harness",
+  "phase3: Phase 3 decision log and state store",
+  "phase4: Phase 4 safety layer",
+  "phase5: Phase 5 learning v2",
+  "phase6: Phase 6 skills v2",
+  "phase7: Phase 7 typed plans and observability",
+  "phase8: Phase 8 experiments and showcase",
+]
 
 [tool.ruff]
 line-length = 100

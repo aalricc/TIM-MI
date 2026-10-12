@@ -17,6 +17,10 @@ class ToolParameterValidationError(ToolError):
     """Raised on invalid tool parameters."""
 
 
+class ToolExecutionError(ToolError):
+    """Raised when primitive execution fails after parameters were valid."""
+
+
 class PathScopeError(ToolError):
     """Raised when path escapes the allowed sandbox scope."""
 

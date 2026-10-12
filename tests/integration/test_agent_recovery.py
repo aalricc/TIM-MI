@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -303,6 +304,27 @@ async def test_invalid_readonly_plan_does_not_use_fallback_candidates(test_setti
     events = [event.event_type for event in context.events.events]
     assert "agent.no_viable_candidates" in events
     assert "agent.fallback_candidates_used" not in events
+
+    summary_events = [
+        event
+        for event in context.events.events
+        if event.event_type == "agent.candidates_rejected_summary"
+    ]
+    assert summary_events
+    latest_summary = summary_events[-1].payload
+    assert latest_summary["reason_counts"]["first_step_not_executable"] == 1
+    assert latest_summary["cache_status"] in {"hit", "miss"}
+    assert latest_summary["plans_received"] >= 1
+
+    decision_entries = context.decision_log.read_all()
+    no_viable_entries = [
+        entry for entry in decision_entries if entry.chosen_action == "agent.no_viable_candidates"
+    ]
+    assert no_viable_entries
+    counts_payload = no_viable_entries[-1].state_features.get("candidate_rejection_counts")
+    assert counts_payload is not None
+    parsed_counts = json.loads(counts_payload)
+    assert parsed_counts["first_step_not_executable"] == 1
 
 
 @pytest.mark.asyncio()
