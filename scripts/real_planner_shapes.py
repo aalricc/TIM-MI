@@ -1402,6 +1402,36 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                         if first_executable_action is not None
                         else False
                     )
+                    planner_candidate_first_executable_actions_by_round: list[dict[str, Any]] = []
+                    planner_candidate_first_executable_actions: list[str] = []
+                    for planner_call_index, plans in enumerate(recording_llm.plan_calls, start=1):
+                        round_actions: list[str] = []
+                        for plan in plans:
+                            shape = _classify_plan_shape(
+                                tools=tools,
+                                plan=plan,
+                                acceptable_actions=acceptable_actions,
+                            )
+                            if shape.first_executable_action is not None:
+                                round_actions.append(shape.first_executable_action)
+                                planner_candidate_first_executable_actions.append(
+                                    shape.first_executable_action
+                                )
+
+                        planner_candidate_first_executable_actions_by_round.append(
+                            {
+                                "planner_call": planner_call_index,
+                                "first_executable_actions": round_actions,
+                                "has_acceptable_candidate": any(
+                                    action in acceptable_actions for action in round_actions
+                                ),
+                            }
+                        )
+
+                    correct_action_in_candidates = any(
+                        action in acceptable_actions
+                        for action in planner_candidate_first_executable_actions
+                    )
                     action_name_match_non_escalation = (
                         remediation_in_acceptable_set
                         and first_executable_action != "escalate_to_operator"
@@ -1436,6 +1466,13 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                             "executed_action_ids": executed_action_ids,
                             "first_executable_action": first_executable_action,
                             "acceptable_first_mutating_actions": sorted(acceptable_actions),
+                            "planner_candidate_first_executable_actions_by_round": (
+                                planner_candidate_first_executable_actions_by_round
+                            ),
+                            "planner_candidate_first_executable_actions": (
+                                planner_candidate_first_executable_actions
+                            ),
+                            "correct_action_in_candidates": correct_action_in_candidates,
                             "action_name_match": remediation_in_acceptable_set,
                             "action_name_match_non_escalation": action_name_match_non_escalation,
                             "escalation_action": escalation_action,
@@ -1468,6 +1505,11 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             "escalation_rate": 0.0,
             "action_name_match_rate": 0.0,
             "action_name_match_non_escalation_rate": 0.0,
+            "correct_action_in_candidates_rate": 0.0,
+            "strict_success_given_correct_candidates_rate": 0.0,
+            "correct_action_in_candidates_runs": 0,
+            "strict_success_given_correct_candidates_runs": 0,
+            "strict_success_given_correct_candidates_denominator": 0,
             "avg_rounds_used": 0.0,
             "avg_planner_calls": 0.0,
             "avg_wall_time_ms": 0.0,
@@ -1482,6 +1524,8 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
         escalation_count = 0
         action_match_count = 0
         action_match_non_escalation_count = 0
+        correct_action_in_candidates_count = 0
+        strict_given_correct_candidates_count = 0
         rounds_sum = 0
         planner_calls_sum = 0
         wall_sum = 0.0
@@ -1494,6 +1538,8 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             scenario_escalation = 0
             scenario_action_match = 0
             scenario_action_non_escalation = 0
+            scenario_correct_candidates = 0
+            scenario_strict_given_correct_candidates = 0
             scenario_rounds_sum = 0
             scenario_planner_sum = 0
             scenario_wall_sum = 0.0
@@ -1528,6 +1574,12 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                 if run["action_name_match_non_escalation"]:
                     action_match_non_escalation_count += 1
                     scenario_action_non_escalation += 1
+                if run["correct_action_in_candidates"]:
+                    correct_action_in_candidates_count += 1
+                    scenario_correct_candidates += 1
+                    if run["strict_success"]:
+                        strict_given_correct_candidates_count += 1
+                        scenario_strict_given_correct_candidates += 1
 
             scenario_total = len(scenario_report["runs"])
             aggregate["scenario_breakdown"][scenario_report["scenario_id"]] = {
@@ -1538,7 +1590,20 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                 "escalation_runs": scenario_escalation,
                 "action_name_match_runs": scenario_action_match,
                 "action_name_match_non_escalation_runs": scenario_action_non_escalation,
+                "correct_action_in_candidates_runs": scenario_correct_candidates,
+                "strict_success_given_correct_candidates_runs": (
+                    scenario_strict_given_correct_candidates
+                ),
+                "strict_success_given_correct_candidates_denominator": scenario_correct_candidates,
                 "total_runs": scenario_total,
+                "correct_action_in_candidates_rate": (
+                    scenario_correct_candidates / scenario_total if scenario_total else 0.0
+                ),
+                "strict_success_given_correct_candidates_rate": (
+                    scenario_strict_given_correct_candidates / scenario_correct_candidates
+                    if scenario_correct_candidates
+                    else 0.0
+                ),
                 "avg_rounds_used": (
                     scenario_rounds_sum / scenario_total if scenario_total else 0.0
                 ),
@@ -1557,6 +1622,21 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             aggregate["action_name_match_rate"] = action_match_count / total_runs
             aggregate["action_name_match_non_escalation_rate"] = (
                 action_match_non_escalation_count / total_runs
+            )
+            aggregate["correct_action_in_candidates_rate"] = (
+                correct_action_in_candidates_count / total_runs
+            )
+            aggregate["strict_success_given_correct_candidates_rate"] = (
+                strict_given_correct_candidates_count / correct_action_in_candidates_count
+                if correct_action_in_candidates_count
+                else 0.0
+            )
+            aggregate["correct_action_in_candidates_runs"] = correct_action_in_candidates_count
+            aggregate["strict_success_given_correct_candidates_runs"] = (
+                strict_given_correct_candidates_count
+            )
+            aggregate["strict_success_given_correct_candidates_denominator"] = (
+                correct_action_in_candidates_count
             )
             aggregate["avg_rounds_used"] = rounds_sum / total_runs
             aggregate["avg_planner_calls"] = planner_calls_sum / total_runs

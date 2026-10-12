@@ -23,6 +23,20 @@ def _format_pct(value: float) -> str:
     return f"{value * 100:6.2f}%"
 
 
+def _sum_metric(
+    *,
+    breakdown: dict[str, dict[str, int | float]],
+    success_key: str,
+    total_key: str,
+) -> tuple[int, int]:
+    successes = 0
+    totals = 0
+    for scenario in breakdown.values():
+        successes += int(scenario.get(success_key, 0))
+        totals += int(scenario.get(total_key, 0))
+    return successes, totals
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize full_loop_outcome_compare with Wilson CIs")
     parser.add_argument("--report", type=Path, required=True, help="Path to full_loop_outcome_compare JSON")
@@ -45,11 +59,11 @@ def main() -> int:
         aggregate = item.get("aggregate", {})
         breakdown = aggregate.get("scenario_breakdown", {})
 
-        total_runs = 0
-        strict_runs = 0
-        for scenario in breakdown.values():
-            total_runs += int(scenario.get("total_runs", 0))
-            strict_runs += int(scenario.get("strict_success_runs", 0))
+        strict_runs, total_runs = _sum_metric(
+            breakdown=breakdown,
+            success_key="strict_success_runs",
+            total_key="total_runs",
+        )
 
         point, low, high = wilson_ci(strict_runs, total_runs)
         print(f"\n[{label}] aggregate: {strict_runs}/{total_runs}  rate={_format_pct(point)}  CI95=[{_format_pct(low)}, {_format_pct(high)}]")
@@ -63,6 +77,52 @@ def main() -> int:
             sp, sl, sh = wilson_ci(success, total)
             print(
                 f"{scenario_id:<8}  {success:>3}/{total:<9}  {_format_pct(sp)}  [{_format_pct(sl)}, {_format_pct(sh)}]"
+            )
+
+        print("\nCORRECT ACTION IN CANDIDATES (Wilson 95% CI)")
+        in_candidates_runs, in_candidates_total = _sum_metric(
+            breakdown=breakdown,
+            success_key="correct_action_in_candidates_runs",
+            total_key="total_runs",
+        )
+        point, low, high = wilson_ci(in_candidates_runs, in_candidates_total)
+        print(
+            f"[{label}] aggregate: {in_candidates_runs}/{in_candidates_total}  "
+            f"rate={_format_pct(point)}  CI95=[{_format_pct(low)}, {_format_pct(high)}]"
+        )
+        print("scenario  in-candidates/total   rate       CI95")
+        print("--------  -------------------  --------  -----------------------")
+        for scenario_id in sorted(breakdown):
+            row = breakdown[scenario_id]
+            success = int(row.get("correct_action_in_candidates_runs", 0))
+            total = int(row.get("total_runs", 0))
+            sp, sl, sh = wilson_ci(success, total)
+            print(
+                f"{scenario_id:<8}  {success:>3}/{total:<16}  {_format_pct(sp)}  "
+                f"[{_format_pct(sl)}, {_format_pct(sh)}]"
+            )
+
+        print("\nSTRICT SUCCESS | CORRECT-IN-CANDIDATES (Wilson 95% CI)")
+        conditional_runs, conditional_total = _sum_metric(
+            breakdown=breakdown,
+            success_key="strict_success_given_correct_candidates_runs",
+            total_key="strict_success_given_correct_candidates_denominator",
+        )
+        point, low, high = wilson_ci(conditional_runs, conditional_total)
+        print(
+            f"[{label}] aggregate: {conditional_runs}/{conditional_total}  "
+            f"rate={_format_pct(point)}  CI95=[{_format_pct(low)}, {_format_pct(high)}]"
+        )
+        print("scenario  strict|in-candidates  rate       CI95")
+        print("--------  --------------------  --------  -----------------------")
+        for scenario_id in sorted(breakdown):
+            row = breakdown[scenario_id]
+            success = int(row.get("strict_success_given_correct_candidates_runs", 0))
+            total = int(row.get("strict_success_given_correct_candidates_denominator", 0))
+            sp, sl, sh = wilson_ci(success, total)
+            print(
+                f"{scenario_id:<8}  {success:>3}/{total:<17}  {_format_pct(sp)}  "
+                f"[{_format_pct(sl)}, {_format_pct(sh)}]"
             )
 
     return 0
