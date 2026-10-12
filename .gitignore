@@ -1,6 +1,6 @@
 # Evaluation artifacts / runtime outputs
 artifacts/
-state/
+/state/
 target/
 
 # Secrets and environment files
