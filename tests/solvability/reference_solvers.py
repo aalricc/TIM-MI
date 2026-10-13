@@ -69,7 +69,6 @@ def build_trap_input(scenario_id: str, db_file: Path) -> OracleInput:
             ledger_entries=(
                 {"table": "widgets", "pk_column": "id", "pk_value": 999},
             ),
-            loss_reported_accurately=False,
             actions=(),
             **common,
         )

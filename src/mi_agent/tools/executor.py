@@ -31,7 +31,6 @@ from mi_agent.tools.schemas import (
     CreateDirectoryParams,
     CreateEmptySQLiteDBParams,
     EmptyParams,
-    EscalateToOperatorParams,
     HealthDeepProbeParams,
     InspectPathsParams,
     InspectRuntimeConfigParams,
@@ -223,14 +222,6 @@ class ToolExecutor:
                     False,
                     "read_only",
                     "Sleeps for the bounded duration and returns the elapsed interval.",
-                ),
-                "escalate_to_operator": PrimitiveSpec(
-                    "escalate_to_operator",
-                    EscalateToOperatorParams,
-                    False,
-                    False,
-                    "terminal",
-                    "Sends a structured escalation report and ends autonomous handling.",
                 ),
                 "reindex_db": PrimitiveSpec(
                     "reindex_db",
@@ -685,9 +676,6 @@ class ToolExecutor:
         if primitive_id == "wait":
             wait_params = cast(WaitParams, params)
             return await self._wait(wait_params.seconds)
-        if primitive_id == "escalate_to_operator":
-            escalate_params = cast(EscalateToOperatorParams, params)
-            return await self._escalate_to_operator(escalate_params)
         if primitive_id == "reindex_db":
             reindex_params = cast(ReindexDBParams, params)
             return await self._reindex_db(reindex_params.db_path)
@@ -1107,20 +1095,6 @@ class ToolExecutor:
             return {"removed": True}
 
         raise ToolParameterValidationError(f"Unsupported path type: {relative_path}")
-
-    async def _escalate_to_operator(
-        self,
-        params: EscalateToOperatorParams,
-    ) -> dict[str, Any]:
-        report = {
-            "summary": params.summary,
-            "observations": params.observations,
-            "actions_taken": params.actions_taken,
-            "uncertainty": params.uncertainty,
-            "timestamp": datetime.now(tz=UTC).isoformat(),
-        }
-        await self._event_bus.publish(Event(event_type="operator.escalated", payload=report))
-        return {"escalated": True, "report": report}
 
     @staticmethod
     def _extract_expected_tables(schema_sql: str) -> set[str]:

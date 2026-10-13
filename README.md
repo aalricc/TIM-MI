@@ -29,6 +29,15 @@ ruff check .
 mypy --strict src
 ```
 
+## Environment variable names
+
+Use `.env.example` as the canonical list of supported variable names.
+
+- Core model/auth: `MI_LLM_MODEL`, `MI_LLM_ENDPOINT`, `MI_LLM_AUTH_MODE`, `MI_LLM_API_KEY_HEADER`, `OPENAI_API_KEY` (or `MI_OPENAI_API_KEY`)
+- Selector controls: `MI_EPSILON_START`, `MI_EPSILON_MIN`, `MI_EPSILON_DECAY`, `MI_EVAL_EPSILON`
+- Incident limits: `MI_MAX_ATTEMPTS_PER_INCIDENT`, `MI_MAX_ATTEMPTS_PER_HOUR`, `MI_MAX_INCIDENT_SECONDS`
+- Runtime paths: `MI_APP_ROOT`, `MI_SANDBOX_ROOT`, `MI_BACKUPS_ROOT`, `MI_DB_FILE`, `MI_SCHEMA_FILE`, `MI_APP_LOG`
+
 ## LLM provider configuration
 
 By default MI uses OpenAI Responses API with bearer auth.
@@ -60,6 +69,10 @@ Candidate rejection telemetry controls:
 - `MI_CANDIDATE_REJECTION_SUMMARY_ENABLED=true|false`
 - `MI_CANDIDATE_REJECTION_SUMMARY_SAMPLE_LIMIT=5`
 - `MI_CANDIDATE_REJECTION_LOG_DECISION_ENABLED=true|false`
+
+Selector evaluation override:
+
+- `MI_EVAL_EPSILON=0` (deterministic exploit-only selection for evaluation)
 
 ## Run demo (Docker Compose)
 
@@ -141,6 +154,38 @@ PYTHONPATH=src python -m mi_agent.eval.cli audit-export \
   --event-log state/events.jsonl \
   --output-dir artifacts/eval --run-id phase8_audit
 ```
+
+## Oracle gate (S01-S10)
+
+Run the reference-route oracle validation across S01-S10:
+
+```bash
+PYTHONPATH=src python scripts/real_planner_shapes.py \
+  --mode validate_reference_routes \
+  --scenarios S01,S02,S03,S04,S05,S06,S07,S08,S09,S10 \
+  --baseline-app-root target/app \
+  --output artifacts/eval/reference_route_validation_s01_s10.json
+```
+
+## Full-loop baseline command (reference)
+
+```bash
+PYTHONPATH=src python scripts/real_planner_shapes.py \
+  --mode full_loop_outcome_compare \
+  --runs 10 \
+  --scenarios S01,S02,S03,S04,S05,S06,S07,S08,S09,S10 \
+  --baseline-app-root target/app \
+  --acceptable-remediations artifacts/eval/acceptable_remediations_s01_s10.json \
+  --output artifacts/eval/full_loop_outcome_compare_s01_s10_runs10_final.json
+```
+
+## Known issues
+
+- Historical `full_loop_outcome_compare` numbers (`15%` flag-off / `27%` flag-on) are not directly comparable after harness fixes.
+- Two root causes in older harness runs were:
+  - Full-loop sandboxes did not consistently seed verified pre-injection backups.
+  - `correct_action_in_candidates` counted acceptable actions anywhere in planner-ranked plans, while runtime executes step 1 candidates only.
+- Remaining work is tracked in code/tests for scenario-level validity checks under "do-nothing/wait-only" stubs.
 
 ## MI v2 live scenario injection (one-by-one)
 

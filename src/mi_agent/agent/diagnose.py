@@ -14,6 +14,8 @@ from mi_agent.workflow.models import Diagnosis
 
 _MAX_LOG_LINES = 100
 _MAX_LINE_LEN = 300
+
+
 def sanitize_lines(lines: Sequence[str]) -> list[str]:
     sanitized: list[str] = []
     for line in lines[-_MAX_LOG_LINES:]:
@@ -59,12 +61,14 @@ class Diagnoser:
         db_stat = await self._tools.execute("stat_path", {"path": db_path})
         schema_stat = await self._tools.execute("stat_path", {"path": schema_path})
         schema_check = await self._tools.execute("check_schema", {})
+        backups = await self._tools.execute("list_backups", {"limit": 10})
 
         return {
             "db_ping": bool(ping_result.data.get("ok", False)),
             "db_file": db_stat.data,
             "schema_file": schema_stat.data,
             "schema_ok": bool(schema_check.data.get("schema_ok", False)),
+            "backups": backups.data,
         }
 
     async def diagnose(

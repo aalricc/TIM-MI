@@ -98,15 +98,18 @@ def _corrupt_index_root_page(db_path: Path, *, index_name: str, seed: int) -> tu
     if root_page <= 1:
         raise RuntimeError(f"Unexpected index root page for {index_name}: {root_page}")
 
-    randomizer = _rng(seed)
+    del seed
     page_offset = (root_page - 1) * page_size
-    offset_within_page = max(32, page_size // 3)
-    bytes_to_write = min(128, max(48, page_size // 6))
+    offset_within_page = 1
+    bytes_to_write = 1
 
     with db_path.open("r+b") as handle:
         handle.seek(page_offset + offset_within_page)
-        payload = bytes(randomizer.randint(0, 255) for _ in range(bytes_to_write))
-        handle.write(payload)
+        current = handle.read(1)
+        if not current:
+            raise RuntimeError("Unable to read index root page byte for corruption")
+        handle.seek(page_offset + offset_within_page)
+        handle.write(bytes([(current[0] + 1) % 256]))
 
     return root_page, offset_within_page, bytes_to_write
 
@@ -116,14 +119,20 @@ def _inject_s05(ctx: InjectorContext, seed: int) -> InjectionResult:
     wal_path = Path(f"{ctx.db_file}-wal")
     wal_path.write_bytes(b"pending wal bytes")
     wal_path.unlink(missing_ok=True)
-    return InjectionResult("S05", "wal_loss", "Removed WAL file after synthetic writes")
+    if ctx.db_file.exists():
+        ctx.db_file.chmod(0o444)
+    return InjectionResult(
+        "S05",
+        "wal_loss_with_db_readonly",
+        "Removed WAL file and forced DB into read-only mode",
+    )
 
 
 def _inject_s06(ctx: InjectorContext, seed: int) -> InjectionResult:
     del seed
-    journal_path = Path(f"{ctx.db_file}-journal")
-    journal_path.write_text("stale-hot-journal", encoding="utf-8")
-    return InjectionResult("S06", "stale_lock_or_journal", "Created stale journal marker")
+    lock_path = ctx.db_file.with_name(f"{ctx.db_file.name}.lock")
+    lock_path.write_text("stale-lock", encoding="utf-8")
+    return InjectionResult("S06", "stale_lock", "Created stale DB lock marker")
 
 
 def _inject_s07(ctx: InjectorContext, seed: int) -> InjectionResult:

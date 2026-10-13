@@ -21,6 +21,7 @@ class MISettings(BaseSettings):
     epsilon_start: float = Field(default=0.30, ge=0.0, le=1.0)
     epsilon_min: float = Field(default=0.02, ge=0.0, le=1.0)
     epsilon_decay: float = Field(default=0.985, gt=0.0, le=1.0)
+    eval_epsilon: float | None = Field(default=None, ge=0.0, le=1.0)
     policy_recency_alpha: float = Field(default=0.3, gt=0.0, le=1.0)
     failed_action_ttl_seconds: float = Field(default=900.0, ge=1.0)
     random_seed: int = 7

@@ -67,13 +67,6 @@ class WaitParams(BaseModel):
     seconds: float = Field(default=1.0, ge=0.0, le=30.0)
 
 
-class EscalateToOperatorParams(BaseModel):
-    summary: str = Field(min_length=1, max_length=500)
-    observations: list[str] = Field(default_factory=list, max_length=20)
-    actions_taken: list[str] = Field(default_factory=list, max_length=20)
-    uncertainty: str = Field(default="", max_length=300)
-
-
 class ReindexDBParams(BaseModel):
     db_path: str = "data/app.db"
 

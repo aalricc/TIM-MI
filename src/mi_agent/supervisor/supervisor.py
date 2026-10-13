@@ -92,7 +92,10 @@ class Supervisor:
             and incident.attempts >= self._settings.max_attempts_per_incident
         ):
             return AttemptGate(True, incident.attempts, elapsed, 0.0)
-        if self._settings.max_incident_seconds > 0 and elapsed >= self._settings.max_incident_seconds:
+        if (
+            self._settings.max_incident_seconds > 0
+            and elapsed >= self._settings.max_incident_seconds
+        ):
             return AttemptGate(True, incident.attempts, elapsed, 0.0)
 
         backoff = 0.0

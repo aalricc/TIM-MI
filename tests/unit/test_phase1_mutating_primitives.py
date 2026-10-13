@@ -5,8 +5,8 @@ from stat import S_IMODE
 
 import pytest
 
-from mi_agent.events.bus import EventBus
 from mi_agent.errors import ToolExecutionError
+from mi_agent.events.bus import EventBus
 from mi_agent.tools.executor import ToolExecutor
 
 pytestmark = pytest.mark.phase1

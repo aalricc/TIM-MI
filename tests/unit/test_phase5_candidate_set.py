@@ -9,7 +9,7 @@ from mi_agent.tools.schemas import CandidatePlan
 pytestmark = [pytest.mark.asyncio(), pytest.mark.phase5]
 
 
-async def test_candidate_builder_includes_wait_and_escalate_when_planned(test_settings) -> None:
+async def test_candidate_builder_includes_wait_when_planned(test_settings) -> None:
     agent, context = build_agent(test_settings, FakeLLMClient())
 
     plans = [
@@ -18,23 +18,6 @@ async def test_candidate_builder_includes_wait_and_escalate_when_planned(test_se
                 "name": "wait-first",
                 "rationale": "allow transient lock to clear",
                 "steps": [{"action_id": "wait", "parameters": {"seconds": 1.0}}],
-            }
-        ),
-        CandidatePlan.model_validate(
-            {
-                "name": "escalate",
-                "rationale": "terminal handoff",
-                "steps": [
-                    {
-                        "action_id": "escalate_to_operator",
-                        "parameters": {
-                            "summary": "need operator",
-                            "observations": ["probe mismatch"],
-                            "actions_taken": [],
-                            "uncertainty": "low confidence",
-                        },
-                    }
-                ],
             }
         ),
         CandidatePlan.model_validate(
@@ -57,7 +40,6 @@ async def test_candidate_builder_includes_wait_and_escalate_when_planned(test_se
 
     action_ids = {candidate.action_id for candidate in build_result.candidates}
     assert "wait" in action_ids
-    assert "escalate_to_operator" in action_ids
     assert "read_app_file" not in action_ids
 
 
@@ -91,7 +73,7 @@ async def test_candidate_builder_applies_shield_intersection(test_settings) -> N
     assert build_result.candidates == []
 
 
-async def test_candidate_builder_classifies_needs_diagnosis_when_flag_enabled(
+async def test_candidate_builder_rejects_non_executable_first_step_even_when_flag_enabled(
     test_settings,
 ) -> None:
     settings = test_settings.model_copy(update={"readonly_replan_enabled": True})
@@ -129,9 +111,9 @@ async def test_candidate_builder_classifies_needs_diagnosis_when_flag_enabled(
     )
 
     assert build_result.candidates == []
-    assert build_result.rejections == []
-    assert len(build_result.needs_diagnosis) == 1
-    assert build_result.needs_diagnosis[0].plan_class == "read_then_mutate"
+    assert len(build_result.rejections) == 1
+    assert build_result.rejections[0].reason == "first_step_not_executable"
+    assert build_result.needs_diagnosis == []
 
 
 async def test_candidate_builder_rejects_first_step_not_executable_when_flag_disabled(

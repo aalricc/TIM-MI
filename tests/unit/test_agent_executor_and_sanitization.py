@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mi_agent.agent.diagnose import Diagnoser
-from mi_agent.agent.diagnose import sanitize_lines
+from mi_agent.agent.diagnose import Diagnoser, sanitize_lines
 from mi_agent.agent.executor import AgentActionExecutor
 from mi_agent.errors import PrimitiveNotAllowedError
 from mi_agent.events.bus import EventBus

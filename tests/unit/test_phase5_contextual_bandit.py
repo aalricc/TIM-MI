@@ -53,3 +53,34 @@ def test_bandit_code_does_not_reference_harness_labels() -> None:
         assert forbidden not in selector_source
         assert forbidden not in bandit_source
 
+
+def test_eval_epsilon_overrides_decay_schedule(test_settings) -> None:
+    settings = test_settings.model_copy(
+        update={
+            "epsilon_start": 0.8,
+            "epsilon_min": 0.2,
+            "epsilon_decay": 0.5,
+            "eval_epsilon": 0.0,
+        }
+    )
+    selector = EpsilonGreedySelector(settings)
+    assert selector.epsilon(visits=0, has_proven_skill=False) == pytest.approx(0.0)
+    assert selector.epsilon(visits=100, has_proven_skill=True) == pytest.approx(0.0)
+
+
+def test_selector_breaks_ties_deterministically_by_action_key(test_settings) -> None:
+    settings = test_settings.model_copy(update={"epsilon_start": 0.0, "epsilon_min": 0.0})
+    selector = EpsilonGreedySelector(settings)
+    candidates = [
+        SelectableAction("a", "action_a", {}, 0.0),
+        SelectableAction("b", "action_b", {}, 0.0),
+    ]
+    selected, _, mode = selector.select(
+        candidates=candidates,
+        visits=0,
+        has_proven_skill=False,
+        failed_action_keys=set(),
+        state_changed_since_failure=False,
+    )
+    assert mode == "exploit"
+    assert selected.action_key == "b"

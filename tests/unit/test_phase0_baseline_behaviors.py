@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
+from mi_agent.errors import ToolExecutionError
 from mi_agent.events.bus import EventBus
 from mi_agent.tools.executor import ToolExecutor
 
@@ -22,7 +21,7 @@ async def test_apply_schema_current_behavior_is_not_idempotent(
     result = await tools.execute("apply_schema", {})
     assert result.data["applied"] is True
 
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(ToolExecutionError):
         await tools.execute("apply_schema", {})
 
 

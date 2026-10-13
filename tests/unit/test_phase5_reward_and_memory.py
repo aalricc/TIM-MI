@@ -46,6 +46,29 @@ def test_reward_model_applies_tier_and_data_loss_costs() -> None:
     assert failed_with_loss.rollback_penalty > 0.0
 
 
+def test_s01_restore_reward_beats_empty_recreate_runtime_pattern() -> None:
+    request_backup_restore_reward = score_outcome(
+        verifier_healthy=True,
+        duration_seconds=1.0,
+        attempts=1,
+        risk_tier="brokered",
+        rolled_back=False,
+        used_last_resort=False,
+        data_loss_ratio=0.0,
+    )
+    create_empty_sqlite_db_reward = score_outcome(
+        verifier_healthy=False,
+        duration_seconds=1.0,
+        attempts=1,
+        risk_tier="reversible",
+        rolled_back=True,
+        used_last_resort=False,
+        data_loss_ratio=1.0,
+    )
+
+    assert create_empty_sqlite_db_reward.net_reward < request_backup_restore_reward.net_reward
+
+
 def test_policy_store_supports_recency_weighting(tmp_path) -> None:
     path = tmp_path / "policy.json"
 
@@ -115,4 +138,3 @@ async def test_failed_action_memory_invalidates_on_state_change(test_settings) -
 
     assert first.success
     assert second.success
-

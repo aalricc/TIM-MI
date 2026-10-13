@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -43,22 +42,6 @@ from mi_agent.verifier.verifier import Verifier
 from mi_agent.workflow.models import Diagnosis, EpisodeAction
 
 _UNCLASSIFIED_FAILURE = UNCLASSIFIED_FAILURE
-_READONLY_REPLAN_ALLOWED_APP_FILES = frozenset(
-    {
-        "schema.sql",
-        "app.log",
-        "config/runtime.env",
-        "config/app.env",
-    }
-)
-_SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9-]{20,}"),
-    re.compile(
-        r"(?i)\b[A-Za-z0-9_]*(api[_-]?key|token|secret|password)\b\s*[:=]\s*[^\s,;\\]+"
-    ),
-)
-
-
 @dataclass(slots=True)
 class MIContext:
     settings: MISettings
@@ -120,16 +103,6 @@ class PlannerTrace:
     token_estimate: int
 
 
-@dataclass(frozen=True, slots=True)
-class ReadonlyReplanOutcome:
-    plans: list[Any]
-    build_result: CandidateBuildResult
-    replan_attempt: int
-    cache_hit: bool
-    escalation_action: SelectableAction | None
-    planner_trace: PlannerTrace
-
-
 class MIAgent:
     def __init__(self, context: MIContext) -> None:
         self._context = context
@@ -185,6 +158,8 @@ class MIAgent:
         credited_actions: list[EpisodeAction] = []
         visits = 0
         resolved = False
+        terminal_outcome: str | None = None
+        state_fingerprint = ""
         permitted_primitives = self._context.tools.primitive_ids
         blocked_skill_names: set[str] = set()
         recent_rejections: deque[CandidateRejection] = deque(
@@ -206,6 +181,7 @@ class MIAgent:
                             incident_failure_type,
                             credited_actions,
                         )
+                        terminal_outcome = "supervisor_rescued"
                     except LastResortError as exc:
                         await self._context.events.publish(
                             Event(
@@ -216,6 +192,7 @@ class MIAgent:
                                 },
                             )
                         )
+                        terminal_outcome = "unresolved_autonomous"
                     break
 
                 observe_started = perf_counter()
@@ -266,64 +243,8 @@ class MIAgent:
                         probes,
                     )
                     if diagnosis_payload is None:
-                        degraded_skill = self._trusted_skill_for_degraded_mode(
-                            incident_failure_type,
-                            fingerprint,
-                        )
-                        if (
-                            degraded_skill is not None
-                            and degraded_skill.name in blocked_skill_names
-                        ):
-                            degraded_skill = None
-                        if degraded_skill is not None:
-                            action_key = f"skill:{degraded_skill.name}:v{degraded_skill.version}"
-                            score = self._context.policy.score(incident_failure_type, action_key)
-                            action_selected = SelectableAction(
-                                action_key=action_key,
-                                action_id=degraded_skill.name,
-                                parameters={},
-                                value_score=score,
-                            )
-                            matched_skill = degraded_skill
-                            skill_used = True
-                            candidate_action_keys = [action_key]
-                            propensities = {action_key: 1.0}
-                            await self._context.events.publish(
-                                Event(
-                                    event_type="agent.degraded_mode",
-                                    payload={
-                                        "incident_id": incident.incident_id,
-                                        "mode": "trusted_skill",
-                                        "skill": degraded_skill.name,
-                                    },
-                                )
-                            )
-                        else:
-                            action_selected = self._build_escalation_action(
-                                failure_type=incident_failure_type,
-                                incident_id=incident.incident_id,
-                                state_fingerprint=state_fingerprint,
-                                recent_logs=recent_logs,
-                                actions_taken=[
-                                    action.action_key
-                                    for action in credited_actions[-5:]
-                                ],
-                            )
-                            candidate_action_keys = [action_selected.action_key]
-                            propensities = {action_selected.action_key: 1.0}
-                            await self._context.events.publish(
-                                Event(
-                                    event_type="agent.degraded_mode",
-                                    payload={
-                                        "incident_id": incident.incident_id,
-                                        "mode": "escalate",
-                                        "failure_type": incident_failure_type,
-                                    },
-                                )
-                            )
-                        if action_selected is None:
-                            visits += 1
-                            continue
+                        terminal_outcome = "unresolved_autonomous"
+                        break
                     else:
                         diagnosis, _, _ = diagnosis_payload
                         inferred_failure_type = self._canonical_failure_type(
@@ -422,59 +343,19 @@ class MIAgent:
                             recent_rejections.extend(build_result.rejections)
                             candidates = build_result.candidates
                             if not candidates:
-                                if (
-                                    self._context.settings.readonly_replan_enabled
-                                    and build_result.needs_diagnosis
-                                ):
-                                    readonly_outcome = await self._run_readonly_replan_rounds(
-                                        incident_id=incident.incident_id,
-                                        failure_type=incident_failure_type,
-                                        state_fingerprint=state_fingerprint,
-                                        diagnosis=diagnosis,
-                                        permitted_primitives=permitted_primitives,
-                                        failed_action_keys=failed_keys,
-                                        attempt_number=gate.attempts,
-                                        initial_build=build_result,
-                                        recent_rejections=recent_rejections,
-                                    )
-                                    plans = readonly_outcome.plans
-                                    build_result = readonly_outcome.build_result
-                                    candidates = build_result.candidates
-                                    latest_planner_trace = readonly_outcome.planner_trace
-                                    recent_rejections.extend(build_result.rejections)
-                                    if readonly_outcome.escalation_action is not None:
-                                        action_selected = readonly_outcome.escalation_action
-                                        candidates = [action_selected]
-                                        candidate_action_keys = [action_selected.action_key]
-                                        propensities = {action_selected.action_key: 1.0}
-                                    if not candidates:
-                                        await self._emit_no_viable_summary(
-                                            incident_id=incident.incident_id,
-                                            failure_type=incident_failure_type,
-                                            state_fingerprint=state_fingerprint,
-                                            attempt_number=gate.attempts,
-                                            replan_attempt=readonly_outcome.replan_attempt,
-                                            cache_hit=readonly_outcome.cache_hit,
-                                            plans=plans,
-                                            rejections=build_result.rejections,
-                                            planner_trace=latest_planner_trace,
-                                        )
-                                        visits += 1
-                                        continue
-                                else:
-                                    await self._emit_no_viable_summary(
-                                        incident_id=incident.incident_id,
-                                        failure_type=incident_failure_type,
-                                        state_fingerprint=state_fingerprint,
-                                        attempt_number=gate.attempts,
-                                        replan_attempt=0,
-                                        cache_hit=plans_from_cache,
-                                        plans=plans,
-                                        rejections=build_result.rejections,
-                                        planner_trace=latest_planner_trace,
-                                    )
-                                    visits += 1
-                                    continue
+                                await self._emit_no_viable_summary(
+                                    incident_id=incident.incident_id,
+                                    failure_type=incident_failure_type,
+                                    state_fingerprint=state_fingerprint,
+                                    attempt_number=gate.attempts,
+                                    replan_attempt=0,
+                                    cache_hit=plans_from_cache,
+                                    plans=plans,
+                                    rejections=build_result.rejections,
+                                    planner_trace=latest_planner_trace,
+                                )
+                                terminal_outcome = "unresolved_autonomous"
+                                break
 
                             if failed_keys:
                                 filtered = [
@@ -585,8 +466,8 @@ class MIAgent:
                                     rejections=build_result.rejections,
                                     planner_trace=latest_planner_trace,
                                 )
-                                visits += 1
-                                continue
+                                terminal_outcome = "unresolved_autonomous"
+                                break
 
                             candidate_action_keys = [
                                 candidate.action_key for candidate in candidates
@@ -868,19 +749,9 @@ class MIAgent:
                         planner_trace=latest_planner_trace,
                         shield_outcome="allowed",
                         step_cost_ms=0.0,
-                        recovery_result="escalated",
+                        recovery_result="unresolved_autonomous",
                     )
-                    await self._context.events.publish(
-                        Event(
-                            event_type="agent.escalated_to_operator",
-                            payload={
-                                "incident_id": incident.incident_id,
-                                "failure_type": incident_failure_type,
-                                "action_key": execution.action_key,
-                                "steps": terminal_steps,
-                            },
-                        )
-                    )
+                    terminal_outcome = "unresolved_autonomous"
                     break
 
                 verify_started = perf_counter()
@@ -898,8 +769,9 @@ class MIAgent:
                 if verify_result.healthy:
                     risk_tier = self._execution_risk_tier(execution)
                     data_loss_ratio = self._data_loss_ratio(verify_result.details)
+                    credit_success = self._continuity_credit_ok(verify_result.details)
                     reward_components = score_outcome(
-                        verifier_healthy=True,
+                        verifier_healthy=credit_success,
                         duration_seconds=duration,
                         attempts=gate.attempts,
                         risk_tier=risk_tier,
@@ -910,17 +782,19 @@ class MIAgent:
                     reward = reward_components.net_reward
                     if skill_used and matched_skill is not None:
                         for step in matched_skill.steps:
-                            episode_actions.append((step.primitive_id, step.parameters, True))
+                            episode_actions.append(
+                                (step.primitive_id, step.parameters, credit_success)
+                            )
                     elif action_selected is not None:
                         episode_actions.append(
-                            (action_selected.action_id, action_selected.parameters, True)
+                            (action_selected.action_id, action_selected.parameters, credit_success)
                         )
                     credited_actions.append(
                         EpisodeAction(
                             action_key=execution.action_key,
                             reward=reward,
                             duration_seconds=duration,
-                            success=True,
+                            success=credit_success,
                         )
                     )
                     self._observe_selector_reward(
@@ -938,12 +812,14 @@ class MIAgent:
                         candidate_set=candidate_action_keys or [execution.action_key],
                         chosen_action=execution.action_key,
                         propensities=propensities or {execution.action_key: 1.0},
-                        verifier_healthy=True,
+                        verifier_healthy=credit_success,
                         reward_components=reward_components,
                         planner_trace=latest_planner_trace,
                         shield_outcome="allowed",
                         step_cost_ms=duration * 1000.0,
-                        recovery_result="recovered",
+                        recovery_result=(
+                            "recovered" if credit_success else "recovered_without_continuity_credit"
+                        ),
                     )
                     if skill_used and matched_skill is not None:
                         self._context.skill_library.record_result(
@@ -1022,12 +898,51 @@ class MIAgent:
                 visits += 1
 
             if not resolved:
+                outcome = terminal_outcome or "unresolved_autonomous"
                 await self._context.events.publish(
                     Event(
-                        event_type="agent.incident_unresolved",
-                        payload={"incident": incident.incident_id},
+                        event_type=f"agent.{outcome}",
+                        payload={
+                            "incident": incident.incident_id,
+                            "failure_type": incident_failure_type,
+                        },
                     )
                 )
+                if outcome != "supervisor_rescued":
+                    outcome_attempt = max(1, gate.attempts)
+                    reward_components = score_outcome(
+                        verifier_healthy=False,
+                        duration_seconds=0.0,
+                        attempts=outcome_attempt,
+                        risk_tier="terminal",
+                        rolled_back=False,
+                        used_last_resort=False,
+                        data_loss_ratio=0.0,
+                    )
+                    outcome_key = f"outcome:{outcome}"
+                    self._context.policy.update_action(
+                        failure_type=incident_failure_type,
+                        action_key=outcome_key,
+                        reward=reward_components.net_reward,
+                        success=False,
+                    )
+                    self._log_decision(
+                        incident_id=incident.incident_id,
+                        failure_type=incident_failure_type,
+                        state_features={
+                            "probe_fingerprint": state_fingerprint,
+                            "attempt": str(outcome_attempt),
+                        },
+                        candidate_set=[outcome_key],
+                        chosen_action=outcome_key,
+                        propensities={outcome_key: 1.0},
+                        verifier_healthy=False,
+                        reward_components=reward_components,
+                        planner_trace=latest_planner_trace,
+                        shield_outcome="not_checked",
+                        step_cost_ms=0.0,
+                        recovery_result=outcome,
+                    )
         finally:
             llm_usage_end = self._snapshot_llm_usage()
             await self._context.events.publish(
@@ -1061,6 +976,7 @@ class MIAgent:
             )
             if lesson is not None:
                 self._context.policy.record_lesson(failure_type, lesson)
+            return
 
         if not episode_actions:
             return
@@ -1122,6 +1038,39 @@ class MIAgent:
             action.success = False
         if credited_actions:
             self._context.policy.update_episode(failure_type, credited_actions)
+        outcome_key = "outcome:supervisor_rescued"
+        reward_components = score_outcome(
+            verifier_healthy=False,
+            duration_seconds=0.0,
+            attempts=max(1, incident.attempts),
+            risk_tier="terminal",
+            rolled_back=False,
+            used_last_resort=True,
+            data_loss_ratio=self._data_loss_ratio(verify.details),
+        )
+        self._context.policy.update_action(
+            failure_type=failure_type,
+            action_key=outcome_key,
+            reward=reward_components.net_reward,
+            success=False,
+        )
+        self._log_decision(
+            incident_id=incident.incident_id,
+            failure_type=failure_type,
+            state_features={
+                "probe_fingerprint": "cap_reached",
+                "attempt": str(max(1, incident.attempts)),
+            },
+            candidate_set=[outcome_key],
+            chosen_action=outcome_key,
+            propensities={outcome_key: 1.0},
+            verifier_healthy=False,
+            reward_components=reward_components,
+            planner_trace=None,
+            shield_outcome="not_checked",
+            step_cost_ms=0.0,
+            recovery_result="supervisor_rescued",
+        )
         lesson = await self._safe_write_lesson(
             failure_type,
             summary=(
@@ -1144,36 +1093,6 @@ class MIAgent:
             if skill.trigger_fingerprint == fingerprint:
                 return skill
         return None
-
-    def _trusted_skill_for_degraded_mode(
-        self,
-        failure_type: str,
-        fingerprint: dict[str, str],
-    ) -> Any | None:
-        if failure_type == _UNCLASSIFIED_FAILURE:
-            candidates = self._context.skill_library.all()
-        else:
-            candidates = self._context.skill_library.all(failure_type)
-        trusted = [
-            skill
-            for skill in candidates
-            if skill.active and skill.stats.success_count > 0
-        ]
-        if not trusted:
-            return None
-
-        for skill in trusted:
-            if skill.trigger_fingerprint == fingerprint:
-                return skill
-
-        return max(
-            trusted,
-            key=lambda item: (
-                item.stats.success_count,
-                -item.stats.failure_count,
-                item.version,
-            ),
-        )
 
     async def _recheck_skill_preconditions(
         self,
@@ -1281,41 +1200,6 @@ class MIAgent:
             return float(token)
         except ValueError:
             return token
-
-    def _build_escalation_action(
-        self,
-        *,
-        failure_type: str,
-        incident_id: str,
-        state_fingerprint: str,
-        recent_logs: list[str],
-        actions_taken: list[str],
-    ) -> SelectableAction:
-        observations = [
-            f"failure_type={failure_type}",
-            f"probe_fingerprint={state_fingerprint}",
-        ]
-        if recent_logs:
-            observations.append(recent_logs[-1][:180])
-
-        parameters = {
-            "summary": f"Degraded mode escalation for incident {incident_id}",
-            "observations": observations,
-            "actions_taken": actions_taken,
-            "uncertainty": "LLM unavailable or low-confidence planning path.",
-        }
-        validated = self._context.tools.validate_action_schema(
-            "escalate_to_operator",
-            parameters,
-        )
-        normalized_parameters = validated.model_dump()
-        action_key = self._executor.action_key("escalate_to_operator", normalized_parameters)
-        return SelectableAction(
-            action_key=action_key,
-            action_id="escalate_to_operator",
-            parameters=normalized_parameters,
-            value_score=self._context.policy.score(failure_type, action_key),
-        )
 
     async def _safe_match_with_llm(
         self,
@@ -1630,24 +1514,6 @@ class MIAgent:
 
             first_step = validated_steps[0]
             if mutating_only and not first_step.executable:
-                if self._context.settings.readonly_replan_enabled:
-                    diagnostic_steps = [step for step in validated_steps if not step.executable]
-                    plan_class = (
-                        "read_only_throughout"
-                        if all(not step.executable for step in validated_steps)
-                        else "read_then_mutate"
-                    )
-                    needs_diagnosis.append(
-                        DiagnosePlan(
-                            plan_id=plan_id,
-                            plan_class=plan_class,
-                            steps=diagnostic_steps[
-                                : self._context.settings.max_readonly_steps_per_round
-                            ],
-                        )
-                    )
-                    continue
-
                 rejections.append(
                     CandidateRejection(
                         plan_id=plan_id,
@@ -1704,7 +1570,7 @@ class MIAgent:
             "recent_rejections": self._recent_rejection_feedback(recent_rejections),
             "readonly_round": readonly_round,
             "readonly_round_cap": max_rounds,
-            "must_return_executable_or_escalate": force_executable,
+            "must_return_executable_action": force_executable,
         }
         if read_observations:
             constraints["read_observations"] = read_observations
@@ -1741,379 +1607,6 @@ class MIAgent:
                 break
         deduped.reverse()
         return deduped
-
-    def _readonly_read_app_file_allowed(self, parameters: dict[str, Any]) -> bool:
-        raw_path = str(parameters.get("path", "")).strip().lstrip("./")
-        return raw_path in _READONLY_REPLAN_ALLOWED_APP_FILES
-
-    def _sanitize_read_observation(self, *, data: dict[str, Any], max_chars: int) -> str:
-        if max_chars <= 0:
-            return ""
-        serialized = json.dumps(data, sort_keys=True, default=str)
-        for pattern in _SECRET_PATTERNS:
-            serialized = pattern.sub("[REDACTED]", serialized)
-        max_per_read = self._context.settings.readonly_replan_max_chars_per_read
-        hard_cap = max(1, min(max_chars, max_per_read))
-        return serialized[:hard_cap]
-
-    async def _run_readonly_replan_rounds(
-        self,
-        *,
-        incident_id: str,
-        failure_type: str,
-        state_fingerprint: str,
-        diagnosis: Diagnosis,
-        permitted_primitives: frozenset[str],
-        failed_action_keys: set[str],
-        attempt_number: int,
-        initial_build: CandidateBuildResult,
-        recent_rejections: deque[CandidateRejection],
-    ) -> ReadonlyReplanOutcome:
-        max_rounds = self._context.settings.max_readonly_rounds_per_incident
-        if max_rounds <= 0:
-            escalation_action = self._build_escalation_action(
-                failure_type=failure_type,
-                incident_id=incident_id,
-                state_fingerprint=state_fingerprint,
-                recent_logs=[],
-                actions_taken=[],
-            )
-            return ReadonlyReplanOutcome(
-                plans=[],
-                build_result=initial_build,
-                replan_attempt=0,
-                cache_hit=False,
-                escalation_action=escalation_action,
-                planner_trace=PlannerTrace(
-                    planner_input_fields=(),
-                    latency_ms=0.0,
-                    token_estimate=0,
-                ),
-            )
-
-        current_build = initial_build
-        round_history: list[dict[str, Any]] = []
-        seen_observations: set[str] = set()
-        used_read_actions: set[str] = set()
-        latest_plans: list[Any] = []
-        latest_trace = PlannerTrace(planner_input_fields=(), latency_ms=0.0, token_estimate=0)
-        started_at = perf_counter()
-        stop_reason = "round_cap_exhausted"
-
-        for round_index in range(1, max_rounds + 1):
-            elapsed = perf_counter() - started_at
-            if elapsed > self._context.settings.readonly_replan_max_incident_seconds:
-                stop_reason = "readonly_time_budget_exhausted"
-                break
-            if not current_build.needs_diagnosis:
-                stop_reason = "no_diagnosis_plan"
-                break
-
-            diagnose_plan = current_build.needs_diagnosis[0]
-            round_outputs: list[dict[str, Any]] = []
-            round_rejections: list[CandidateRejection] = []
-            new_info = 0
-
-            for step in diagnose_plan.steps[: self._context.settings.max_readonly_steps_per_round]:
-                if step.action_key in used_read_actions:
-                    round_outputs.append(
-                        {
-                            "action_key": step.action_key,
-                            "action_id": step.action_id,
-                            "step_index": step.step_index,
-                            "status": "skipped_repeated_action",
-                            "shield": "not_checked",
-                            "output_size": 0,
-                            "step_cost_ms": 0.0,
-                        }
-                    )
-                    continue
-
-                if step.action_id == "read_app_file" and not self._readonly_read_app_file_allowed(
-                    step.parameters
-                ):
-                    rejection = CandidateRejection(
-                        plan_id=step.plan_id,
-                        step_index=step.step_index,
-                        action_key=step.action_key,
-                        reason="readonly_path_not_allowed",
-                        detail="read_app_file path is outside readonly round allowlist",
-                    )
-                    round_rejections.append(rejection)
-                    round_outputs.append(
-                        {
-                            "action_key": step.action_key,
-                            "action_id": step.action_id,
-                            "step_index": step.step_index,
-                            "status": "blocked",
-                            "shield": "path_allowlist_blocked",
-                            "output_size": 0,
-                            "step_cost_ms": 0.0,
-                        }
-                    )
-                    continue
-
-                shield_pre = self._shield.precheck_candidate(
-                    action_id=step.action_id,
-                    parameters=step.parameters,
-                    attempt_number=attempt_number,
-                    has_recent_read_observation=True,
-                )
-                if not shield_pre.allowed:
-                    rejection = CandidateRejection(
-                        plan_id=step.plan_id,
-                        step_index=step.step_index,
-                        action_key=step.action_key,
-                        reason=f"shield_pre_blocked:{shield_pre.reason or 'unknown'}",
-                        detail=(
-                            f"Readonly round pre-check blocked step {step.action_id} "
-                            f"with reason {shield_pre.reason or 'unknown'}"
-                        ),
-                    )
-                    round_rejections.append(rejection)
-                    round_outputs.append(
-                        {
-                            "action_key": step.action_key,
-                            "action_id": step.action_id,
-                            "step_index": step.step_index,
-                            "status": "blocked",
-                            "shield": "pre_blocked",
-                            "output_size": 0,
-                            "step_cost_ms": 0.0,
-                        }
-                    )
-                    continue
-
-                shield_post = self._shield.postcheck_candidate(
-                    action_id=step.action_id,
-                    parameters=step.parameters,
-                    parameter_state=shield_pre.parameter_state,
-                )
-                if not shield_post.allowed:
-                    rejection = CandidateRejection(
-                        plan_id=step.plan_id,
-                        step_index=step.step_index,
-                        action_key=step.action_key,
-                        reason=f"shield_post_blocked:{shield_post.reason or 'unknown'}",
-                        detail=(
-                            f"Readonly round post-check blocked step {step.action_id} "
-                            f"with reason {shield_post.reason or 'unknown'}"
-                        ),
-                    )
-                    round_rejections.append(rejection)
-                    round_outputs.append(
-                        {
-                            "action_key": step.action_key,
-                            "action_id": step.action_id,
-                            "step_index": step.step_index,
-                            "status": "blocked",
-                            "shield": "post_blocked",
-                            "output_size": 0,
-                            "step_cost_ms": 0.0,
-                        }
-                    )
-                    continue
-
-                step_started = perf_counter()
-                result = await self._context.tools.execute(
-                    step.action_id,
-                    step.parameters,
-                    allowed_primitives=permitted_primitives,
-                )
-                step_cost_ms = max(0.0, (perf_counter() - step_started) * 1000.0)
-                used_read_actions.add(step.action_key)
-
-                consumed_chars = sum(
-                    len(str(item.get("quoted_data", ""))) for item in round_outputs
-                )
-                remaining_chars = max(
-                    0,
-                    self._context.settings.readonly_replan_max_chars_per_round - consumed_chars,
-                )
-                quoted_data = self._sanitize_read_observation(
-                    data=result.data,
-                    max_chars=remaining_chars,
-                )
-                digest = (
-                    hashlib.sha256(quoted_data.encode("utf-8")).hexdigest()
-                    if quoted_data
-                    else ""
-                )
-                is_new = bool(quoted_data) and digest not in seen_observations
-                if is_new:
-                    new_info += 1
-                    seen_observations.add(digest)
-
-                round_outputs.append(
-                    {
-                        "action_key": step.action_key,
-                        "action_id": step.action_id,
-                        "step_index": step.step_index,
-                        "status": "executed",
-                        "shield": "allowed",
-                        "output_size": len(quoted_data),
-                        "quoted_data": quoted_data,
-                        "step_cost_ms": step_cost_ms,
-                    }
-                )
-
-                reward_components = score_outcome(
-                    verifier_healthy=False,
-                    duration_seconds=step_cost_ms / 1000.0,
-                    attempts=attempt_number,
-                    risk_tier="read_only",
-                    rolled_back=False,
-                    used_last_resort=False,
-                    data_loss_ratio=0.0,
-                )
-                self._log_decision(
-                    incident_id=incident_id,
-                    failure_type=failure_type,
-                    state_features={
-                        "probe_fingerprint": state_fingerprint,
-                        "attempt": str(attempt_number),
-                        "readonly_round": str(round_index),
-                    },
-                    candidate_set=[step.action_key],
-                    chosen_action=step.action_key,
-                    propensities={step.action_key: 1.0},
-                    verifier_healthy=None,
-                    reward_components=reward_components,
-                    shield_outcome="allowed",
-                    step_cost_ms=step_cost_ms,
-                    recovery_result="diagnosis_round",
-                )
-
-            if round_rejections:
-                recent_rejections.extend(round_rejections)
-                current_build = CandidateBuildResult(
-                    candidates=current_build.candidates,
-                    rejections=[*current_build.rejections, *round_rejections],
-                    needs_diagnosis=current_build.needs_diagnosis,
-                )
-
-            await self._context.events.publish(
-                Event(
-                    event_type="agent.readonly_diagnosis_round",
-                    payload={
-                        "incident_id": incident_id,
-                        "failure_type": failure_type,
-                        "round": round_index,
-                        "plan_id": diagnose_plan.plan_id,
-                        "plan_class": diagnose_plan.plan_class,
-                        "steps": round_outputs,
-                        "new_observations": new_info,
-                        "allowed_read_app_file_paths": sorted(_READONLY_REPLAN_ALLOWED_APP_FILES),
-                    },
-                )
-            )
-            round_history.append(
-                {
-                    "round": round_index,
-                    "plan_id": diagnose_plan.plan_id,
-                    "plan_class": diagnose_plan.plan_class,
-                    "steps": round_outputs,
-                    "new_observations": new_info,
-                }
-            )
-
-            if new_info <= 0:
-                stop_reason = "readonly_no_progress"
-                break
-
-            fresh_logs = await self._diagnoser.collect_logs()
-            fresh_probes = await self._diagnoser.collect_probes()
-            fresh_fingerprint = probe_fingerprint(fresh_probes, fresh_logs)
-            force_executable = round_index >= max_rounds
-            constraints = self._planner_constraints_payload(
-                state_fingerprint=fresh_fingerprint["probes"],
-                recent_rejections=recent_rejections,
-                readonly_round=round_index,
-                max_rounds=max_rounds,
-                force_executable=force_executable,
-                read_observations=[
-                    {
-                        "action_key": item["action_key"],
-                        "step_index": item["step_index"],
-                        "quoted_data": item.get("quoted_data", ""),
-                    }
-                    for item in round_outputs
-                    if item.get("status") == "executed"
-                ],
-                state_snapshot=fresh_probes,
-                state_version=hashlib.sha256(
-                    fresh_fingerprint["probes"].encode("utf-8")
-                ).hexdigest()[:16],
-            )
-
-            latest_plans, latest_trace = await self._safe_propose_plans(
-                diagnosis=diagnosis,
-                incident_id=incident_id,
-                failure_type=failure_type,
-                permitted_primitives=permitted_primitives,
-                failed_action_keys=failed_action_keys,
-                constraints=constraints,
-            )
-            current_build = await self._build_candidates_from_plans(
-                failure_type=failure_type,
-                permitted_primitives=permitted_primitives,
-                plans=latest_plans,
-                mutating_only=True,
-                attempt_number=attempt_number,
-                has_recent_read_observation=True,
-            )
-            recent_rejections.extend(current_build.rejections)
-            if current_build.candidates:
-                return ReadonlyReplanOutcome(
-                    plans=latest_plans,
-                    build_result=current_build,
-                    replan_attempt=round_index,
-                    cache_hit=False,
-                    escalation_action=None,
-                    planner_trace=latest_trace,
-                )
-
-        escalation_action = self._build_escalation_action(
-            failure_type=failure_type,
-            incident_id=incident_id,
-            state_fingerprint=state_fingerprint,
-            recent_logs=[f"readonly_replan_stop_reason={stop_reason}"],
-            actions_taken=list(sorted(used_read_actions))[-5:],
-        )
-        await self._context.events.publish(
-            Event(
-                event_type="agent.readonly_replan_escalated",
-                payload={
-                    "incident_id": incident_id,
-                    "failure_type": failure_type,
-                    "reason": stop_reason,
-                    "round_history": round_history,
-                },
-            )
-        )
-        current_build = CandidateBuildResult(
-            candidates=current_build.candidates,
-            rejections=[
-                *current_build.rejections,
-                CandidateRejection(
-                    plan_id="readonly-replan",
-                    step_index=-1,
-                    action_key=escalation_action.action_key,
-                    reason=stop_reason,
-                    detail="Readonly diagnose/replan exhausted before executable plan",
-                ),
-            ],
-            needs_diagnosis=current_build.needs_diagnosis,
-        )
-        recent_rejections.extend(current_build.rejections[-1:])
-        return ReadonlyReplanOutcome(
-            plans=latest_plans,
-            build_result=current_build,
-            replan_attempt=max_rounds,
-            cache_hit=False,
-            escalation_action=escalation_action,
-            planner_trace=latest_trace,
-        )
 
     async def _emit_no_viable_summary(
         self,
@@ -2254,8 +1747,6 @@ class MIAgent:
         if recovery_result is None:
             if verifier_healthy is True:
                 recovery_result = "recovered"
-            elif chosen_action.startswith("escalate_to_operator"):
-                recovery_result = "escalated"
             elif chosen_action == "agent.no_viable_candidates":
                 recovery_result = "rejected"
             else:
@@ -2290,6 +1781,19 @@ class MIAgent:
             for result in execution.step_results
         ]
         return max(tiers, key=lambda tier: ordered.get(tier, 1))
+
+    @staticmethod
+    def _continuity_credit_ok(details: dict[str, Any]) -> bool:
+        continuity = details.get("data_continuity")
+        if not isinstance(continuity, dict):
+            return False
+        checked = continuity.get("checked")
+        missing = continuity.get("missing")
+        if not isinstance(checked, int) or checked <= 0:
+            return False
+        if not isinstance(missing, int) or missing < 0:
+            return False
+        return missing == 0
 
     @staticmethod
     def _data_loss_ratio(details: dict[str, Any]) -> float:

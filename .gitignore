@@ -1,5 +1,6 @@
 # Evaluation artifacts / runtime outputs
-artifacts/
+artifacts/eval/*.json
+artifacts/eval/*.log
 /state/
 target/
 
@@ -15,6 +16,7 @@ target/
 
 # Python caches and virtualenvs
 __pycache__/
+*.pyc
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
@@ -23,3 +25,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+!.env.example
+/artifacts/eval/

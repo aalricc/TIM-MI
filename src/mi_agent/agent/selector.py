@@ -25,6 +25,8 @@ class EpsilonGreedySelector:
         self._pending_features: dict[str, list[float]] = {}
 
     def epsilon(self, *, visits: int, has_proven_skill: bool) -> float:
+        if self._settings.eval_epsilon is not None:
+            return self._settings.eval_epsilon
         base = max(
             self._settings.epsilon_min,
             self._settings.epsilon_start * (self._settings.epsilon_decay**visits),
@@ -69,7 +71,10 @@ class EpsilonGreedySelector:
             choice = self._random.choice(pool)
             self._pending_features[choice.action_key] = context_vectors[choice.action_key]
             return choice, epsilon, "explore"
-        best = max(filtered, key=lambda candidate: scored[candidate.action_key])
+        best = max(
+            filtered,
+            key=lambda candidate: (scored[candidate.action_key], candidate.action_key),
+        )
         self._pending_features[best.action_key] = context_vectors[best.action_key]
         return best, epsilon, "exploit"
 
@@ -104,7 +109,10 @@ class EpsilonGreedySelector:
 
         epsilon = self.epsilon(visits=visits, has_proven_skill=has_proven_skill)
         pool = self._exploration_pool(filtered, scored)
-        best = max(filtered, key=lambda candidate: scored[candidate.action_key])
+        best = max(
+            filtered,
+            key=lambda candidate: (scored[candidate.action_key], candidate.action_key),
+        )
         explore_weight = epsilon / len(pool)
 
         distribution: dict[str, float] = {}

@@ -42,7 +42,7 @@ def _apply_schema_step() -> dict[str, object]:
 
 
 @pytest.mark.asyncio()
-async def test_recovers_missing_db_and_creates_skill(test_settings) -> None:
+async def test_recovers_missing_db_without_learning_when_continuity_unknown(test_settings) -> None:
     llm = FakeLLMClient()
     llm.queue_response("diagnose", _make_diagnosis())
     llm.queue_response(
@@ -78,7 +78,7 @@ async def test_recovers_missing_db_and_creates_skill(test_settings) -> None:
 
     assert test_settings.db_file.exists()
     skills = context.skill_library.all("db_file_missing")
-    assert any(skill.name == "recover-db-from-schema" for skill in skills)
+    assert not any(skill.name == "recover-db-from-schema" for skill in skills)
 
 
 @pytest.mark.asyncio()
@@ -182,7 +182,7 @@ async def test_canonicalized_failure_type_rechecks_skills_before_planning(test_s
 
 
 @pytest.mark.asyncio()
-async def test_llm_outage_still_allows_learned_skill_execution(test_settings) -> None:
+async def test_llm_outage_without_verified_skill_ends_unresolved(test_settings) -> None:
     llm = FakeLLMClient()
     llm.queue_response("diagnose", _make_diagnosis())
     llm.queue_response(
@@ -226,7 +226,8 @@ async def test_llm_outage_still_allows_learned_skill_execution(test_settings) ->
     _write_signature_log(test_settings)
     await agent._recover_loop()
 
-    assert test_settings.db_file.exists()
+    events = [event.event_type for event in context.events.events]
+    assert "agent.unresolved_autonomous" in events
 
 
 @pytest.mark.asyncio()
@@ -329,8 +330,7 @@ async def test_invalid_readonly_plan_does_not_use_fallback_candidates(test_setti
 
 @pytest.mark.asyncio()
 async def test_cap_reached_triggers_last_resort_restore_and_alert(test_settings) -> None:
-    # reduce cap so test is quick
-    settings = test_settings.model_copy(update={"max_attempts_per_incident": 2})
+    settings = test_settings.model_copy(update={"max_attempts_per_incident": 1})
 
     backup_db = settings.backups_root / "backup-1.db"
     backup_db.parent.mkdir(parents=True, exist_ok=True)
@@ -351,18 +351,6 @@ async def test_cap_reached_triggers_last_resort_restore_and_alert(test_settings)
             }
         ],
     )
-    llm.queue_response("diagnose", _make_diagnosis())
-    llm.queue_response(
-        "propose_plans",
-        [
-            {
-                "name": "bad-plan-2",
-                "rationale": "",
-                "steps": [{"action_id": "restart_service", "parameters": {}}],
-            }
-        ],
-    )
-    llm.queue_response("write_lesson", {"lesson": "Fallback was required after repeated failures."})
 
     agent, context = build_agent(settings, llm)
     async def _always_false() -> bool:
@@ -377,6 +365,8 @@ async def test_cap_reached_triggers_last_resort_restore_and_alert(test_settings)
     await agent._recover_loop()
 
     assert settings.db_file.exists()
+    events = [event.event_type for event in context.events.events]
+    assert "agent.supervisor_rescued" in events
     assert fake_alerts.messages
     snapshot = context.policy.snapshot()
     assert "db_file_missing" in snapshot.failures
@@ -409,11 +399,11 @@ async def test_agent_cannot_self_report_success_only_verifier_can_resolve(test_s
     await agent._recover_loop()
 
     events = [event.event_type for event in context.events.events]
-    assert "agent.incident_unresolved" in events
+    assert "agent.unresolved_autonomous" in events
 
 
 @pytest.mark.asyncio()
-async def test_distill_failure_emits_event(test_settings) -> None:
+async def test_distill_not_attempted_without_continuity_credit(test_settings) -> None:
     llm = FakeLLMClient()
     llm.queue_response("diagnose", _make_diagnosis())
     llm.queue_response(
@@ -440,7 +430,8 @@ async def test_distill_failure_emits_event(test_settings) -> None:
     await agent._recover_loop()
 
     events = [event.event_type for event in context.events.events]
-    assert "skills.distill_failed" in events
+    assert "skills.distill_failed" not in events
+    assert "skills.learned" not in events
 
 
 @pytest.mark.asyncio()

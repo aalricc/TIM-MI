@@ -17,6 +17,7 @@ from typing import Any
 
 from mi_agent.agent.diagnose import Diagnoser
 from mi_agent.config import MISettings
+from mi_agent.errors import PrimitiveNotAllowedError
 from mi_agent.eval.injectors import InjectorContext, run_injector
 from mi_agent.eval.scenarios import SCENARIO_BY_ID
 from mi_agent.events.bus import EventBus
@@ -187,7 +188,10 @@ def _parse_scenario_ids(raw: str) -> list[str]:
 
 
 def _is_executable_step(tools: ToolExecutor, action_id: str) -> bool:
-    risk_tier = tools.risk_tier(action_id)
+    try:
+        risk_tier = tools.risk_tier(action_id)
+    except PrimitiveNotAllowedError:
+        return True
     return (
         action_id == "wait"
         or tools.is_mutating(action_id)
@@ -571,6 +575,61 @@ def _capture_db_rowcount_snapshot(db_path: Path) -> dict[str, Any]:
         return {"exists": True, "tables": {}, "total_rows": -1, "error": "sqlite_error"}
 
 
+def _seed_verified_backup(*, app_root: Path, backups_root: Path) -> Path | None:
+    db_path = app_root / "data" / "app.db"
+    if not db_path.exists():
+        return None
+    backup_path = backups_root / "seed_backup.db"
+    backup_path.write_bytes(db_path.read_bytes())
+    try:
+        with sqlite3.connect(backup_path) as conn:
+            row = conn.execute("PRAGMA integrity_check;").fetchone()
+        if row is None or str(row[0]).strip().lower() != "ok":
+            backup_path.unlink(missing_ok=True)
+            return None
+    except sqlite3.Error:
+        backup_path.unlink(missing_ok=True)
+        return None
+    return backup_path
+
+
+def _seed_continuity_ledger(*, app_root: Path, state_dir: Path) -> Path:
+    db_path = app_root / "data" / "app.db"
+    ledger_path = state_dir / "ack_ledger.json"
+    entries: list[dict[str, int | str]] = []
+    if db_path.exists():
+        try:
+            with sqlite3.connect(db_path) as conn:
+                table_rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+                for table_row in table_rows:
+                    table = str(table_row[0])
+                    columns = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+                    pk_columns = [str(col[1]) for col in columns if int(col[5]) > 0]
+                    if not pk_columns:
+                        continue
+                    pk_column = pk_columns[0]
+                    values = conn.execute(
+                        f'SELECT "{pk_column}" FROM "{table}" LIMIT 25'
+                    ).fetchall()
+                    for value_row in values:
+                        value = value_row[0]
+                        if isinstance(value, (int, str)):
+                            entries.append(
+                                {
+                                    "table": table,
+                                    "pk_column": pk_column,
+                                    "pk_value": value,
+                                }
+                            )
+        except sqlite3.Error:
+            entries = []
+
+    ledger_path.write_text(json.dumps(entries, sort_keys=True), encoding="utf-8")
+    return ledger_path
+
+
 def _data_preserved(
     before_data: dict[str, Any],
     after_data: dict[str, Any],
@@ -648,6 +707,9 @@ def _select_route_parameters(
             "overwrite": True,
         }
     if action_id == "remove_path":
+        lock_path = app_root / "data" / "app.db.lock"
+        if lock_path.exists():
+            return {"path": "data/app.db.lock", "recursive": False}
         journal_path = app_root / "data" / "app.db-journal"
         if journal_path.exists():
             return {"path": "data/app.db-journal", "recursive": False}
@@ -656,13 +718,6 @@ def _select_route_parameters(
         return {"path": "data/app.db", "mode": 0o660}
     if action_id == "write_app_file":
         return {"path": "config/runtime.env", "content": "DB_PATH=/target/app/data/app.db\n"}
-    if action_id == "escalate_to_operator":
-        return {
-            "summary": "Escalating during route validation",
-            "observations": ["route_validation"],
-            "actions_taken": [],
-            "uncertainty": "Route includes escalation",
-        }
     return {}
 
 
@@ -938,6 +993,8 @@ async def _run_full_loop_compare(args: argparse.Namespace) -> dict[str, Any]:
                     copytree(baseline_app_root, app_root)
                     backups_root.mkdir(parents=True, exist_ok=True)
                     state_dir.mkdir(parents=True, exist_ok=True)
+                    _seed_verified_backup(app_root=app_root, backups_root=backups_root)
+                    _seed_continuity_ledger(app_root=app_root, state_dir=state_dir)
 
                     settings = base_settings.model_copy(
                         update={
@@ -993,10 +1050,7 @@ async def _run_full_loop_compare(args: argparse.Namespace) -> dict[str, Any]:
                     ]
                     if not planner_calls:
                         llm_events = [
-                            event
-                            for event in events
-                            if event.event_type.startswith("llm.")
-                            or event.event_type == "agent.degraded_mode"
+                            event for event in events if event.event_type.startswith("llm.")
                         ]
                         llm_details = [
                             {
@@ -1291,6 +1345,8 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                     copytree(baseline_app_root, app_root)
                     backups_root.mkdir(parents=True, exist_ok=True)
                     state_dir.mkdir(parents=True, exist_ok=True)
+                    _seed_verified_backup(app_root=app_root, backups_root=backups_root)
+                    _seed_continuity_ledger(app_root=app_root, state_dir=state_dir)
 
                     before_files = _snapshot_app_tree(app_root)
                     before_data = _capture_db_rowcount_snapshot(app_root / "data" / "app.db")
@@ -1349,10 +1405,7 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                     ]
                     if not planner_calls:
                         llm_events = [
-                            event
-                            for event in events
-                            if event.event_type.startswith("llm.")
-                            or event.event_type == "agent.degraded_mode"
+                            event for event in events if event.event_type.startswith("llm.")
                         ]
                         llm_details = [
                             {
@@ -1428,15 +1481,31 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                             }
                         )
 
-                    correct_action_in_candidates = any(
+                    correct_action_anywhere_in_plan = any(
                         action in acceptable_actions
                         for action in planner_candidate_first_executable_actions
                     )
-                    action_name_match_non_escalation = (
-                        remediation_in_acceptable_set
-                        and first_executable_action != "escalate_to_operator"
+                    decision_entries = context.decision_log.read_all()
+                    selector_step1_candidate_action_ids: list[str] = []
+                    for entry in decision_entries:
+                        if entry.chosen_action == "agent.no_viable_candidates":
+                            continue
+                        selector_step1_candidate_action_ids = [
+                            _parse_action_id_from_action_key(action_key)
+                            for action_key in entry.candidate_set
+                            if not action_key.startswith("skill:")
+                        ]
+                        break
+                    correct_action_in_step1_candidates = any(
+                        action in acceptable_actions
+                        for action in selector_step1_candidate_action_ids
                     )
-                    escalation_action = "escalate_to_operator" in executed_action_ids
+                    gave_up_or_unresolved = any(
+                        event.event_type == "agent.unresolved_autonomous" for event in events
+                    )
+                    used_last_resort = any(
+                        event.event_type == "supervisor.last_resort_restored" for event in events
+                    )
                     recovery_verified = any(
                         bool(event.payload.get("healthy", False)) for event in verifier_events
                     )
@@ -1453,7 +1522,8 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                         recovery_verified
                         and data_preserved
                         and no_collateral_damage
-                        and not escalation_action
+                        and not used_last_resort
+                        and not gave_up_or_unresolved
                     )
 
                     run_reports.append(
@@ -1472,10 +1542,17 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                             "planner_candidate_first_executable_actions": (
                                 planner_candidate_first_executable_actions
                             ),
-                            "correct_action_in_candidates": correct_action_in_candidates,
+                            "correct_action_anywhere_in_plan": correct_action_anywhere_in_plan,
+                            "correct_action_in_step1_candidates": (
+                                correct_action_in_step1_candidates
+                            ),
+                            "selector_step1_candidate_action_ids": (
+                                selector_step1_candidate_action_ids
+                            ),
+                            "correct_action_in_candidates": correct_action_anywhere_in_plan,
                             "action_name_match": remediation_in_acceptable_set,
-                            "action_name_match_non_escalation": action_name_match_non_escalation,
-                            "escalation_action": escalation_action,
+                            "gave_up_or_unresolved": gave_up_or_unresolved,
+                            "used_last_resort": used_last_resort,
                             "recovery_verified": recovery_verified,
                             "data_preserved": data_preserved,
                             "data_before": before_data,
@@ -1502,11 +1579,14 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             "recovery_verified_rate": 0.0,
             "data_preserved_rate": 0.0,
             "no_collateral_damage_rate": 0.0,
-            "escalation_rate": 0.0,
+            "gave_up_or_unresolved_rate": 0.0,
             "action_name_match_rate": 0.0,
-            "action_name_match_non_escalation_rate": 0.0,
+            "correct_action_anywhere_in_plan_rate": 0.0,
+            "correct_action_in_step1_candidates_rate": 0.0,
             "correct_action_in_candidates_rate": 0.0,
             "strict_success_given_correct_candidates_rate": 0.0,
+            "correct_action_anywhere_in_plan_runs": 0,
+            "correct_action_in_step1_candidates_runs": 0,
             "correct_action_in_candidates_runs": 0,
             "strict_success_given_correct_candidates_runs": 0,
             "strict_success_given_correct_candidates_denominator": 0,
@@ -1521,10 +1601,10 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
         recovery_count = 0
         preserved_count = 0
         no_collateral_count = 0
-        escalation_count = 0
+        unresolved_count = 0
         action_match_count = 0
-        action_match_non_escalation_count = 0
-        correct_action_in_candidates_count = 0
+        correct_action_anywhere_in_plan_count = 0
+        correct_action_in_step1_candidates_count = 0
         strict_given_correct_candidates_count = 0
         rounds_sum = 0
         planner_calls_sum = 0
@@ -1535,10 +1615,10 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             scenario_recovery = 0
             scenario_preserved = 0
             scenario_no_collateral = 0
-            scenario_escalation = 0
+            scenario_unresolved = 0
             scenario_action_match = 0
-            scenario_action_non_escalation = 0
-            scenario_correct_candidates = 0
+            scenario_correct_anywhere_candidates = 0
+            scenario_correct_step1_candidates = 0
             scenario_strict_given_correct_candidates = 0
             scenario_rounds_sum = 0
             scenario_planner_sum = 0
@@ -1565,21 +1645,21 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                 if run["no_collateral_damage"]:
                     no_collateral_count += 1
                     scenario_no_collateral += 1
-                if run["escalation_action"]:
-                    escalation_count += 1
-                    scenario_escalation += 1
+                if run["gave_up_or_unresolved"]:
+                    unresolved_count += 1
+                    scenario_unresolved += 1
                 if run["action_name_match"]:
                     action_match_count += 1
                     scenario_action_match += 1
-                if run["action_name_match_non_escalation"]:
-                    action_match_non_escalation_count += 1
-                    scenario_action_non_escalation += 1
-                if run["correct_action_in_candidates"]:
-                    correct_action_in_candidates_count += 1
-                    scenario_correct_candidates += 1
+                if run["correct_action_anywhere_in_plan"]:
+                    correct_action_anywhere_in_plan_count += 1
+                    scenario_correct_anywhere_candidates += 1
                     if run["strict_success"]:
                         strict_given_correct_candidates_count += 1
                         scenario_strict_given_correct_candidates += 1
+                if run["correct_action_in_step1_candidates"]:
+                    correct_action_in_step1_candidates_count += 1
+                    scenario_correct_step1_candidates += 1
 
             scenario_total = len(scenario_report["runs"])
             aggregate["scenario_breakdown"][scenario_report["scenario_id"]] = {
@@ -1587,21 +1667,30 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                 "recovery_verified_runs": scenario_recovery,
                 "data_preserved_runs": scenario_preserved,
                 "no_collateral_damage_runs": scenario_no_collateral,
-                "escalation_runs": scenario_escalation,
+                "gave_up_or_unresolved_runs": scenario_unresolved,
                 "action_name_match_runs": scenario_action_match,
-                "action_name_match_non_escalation_runs": scenario_action_non_escalation,
-                "correct_action_in_candidates_runs": scenario_correct_candidates,
+                "correct_action_anywhere_in_plan_runs": scenario_correct_anywhere_candidates,
+                "correct_action_in_step1_candidates_runs": scenario_correct_step1_candidates,
+                "correct_action_in_candidates_runs": scenario_correct_anywhere_candidates,
                 "strict_success_given_correct_candidates_runs": (
                     scenario_strict_given_correct_candidates
                 ),
-                "strict_success_given_correct_candidates_denominator": scenario_correct_candidates,
+                "strict_success_given_correct_candidates_denominator": (
+                    scenario_correct_anywhere_candidates
+                ),
                 "total_runs": scenario_total,
+                "correct_action_anywhere_in_plan_rate": (
+                    scenario_correct_anywhere_candidates / scenario_total if scenario_total else 0.0
+                ),
+                "correct_action_in_step1_candidates_rate": (
+                    scenario_correct_step1_candidates / scenario_total if scenario_total else 0.0
+                ),
                 "correct_action_in_candidates_rate": (
-                    scenario_correct_candidates / scenario_total if scenario_total else 0.0
+                    scenario_correct_anywhere_candidates / scenario_total if scenario_total else 0.0
                 ),
                 "strict_success_given_correct_candidates_rate": (
-                    scenario_strict_given_correct_candidates / scenario_correct_candidates
-                    if scenario_correct_candidates
+                    scenario_strict_given_correct_candidates / scenario_correct_anywhere_candidates
+                    if scenario_correct_anywhere_candidates
                     else 0.0
                 ),
                 "avg_rounds_used": (
@@ -1618,25 +1707,34 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             aggregate["recovery_verified_rate"] = recovery_count / total_runs
             aggregate["data_preserved_rate"] = preserved_count / total_runs
             aggregate["no_collateral_damage_rate"] = no_collateral_count / total_runs
-            aggregate["escalation_rate"] = escalation_count / total_runs
+            aggregate["gave_up_or_unresolved_rate"] = unresolved_count / total_runs
             aggregate["action_name_match_rate"] = action_match_count / total_runs
-            aggregate["action_name_match_non_escalation_rate"] = (
-                action_match_non_escalation_count / total_runs
+            aggregate["correct_action_anywhere_in_plan_rate"] = (
+                correct_action_anywhere_in_plan_count / total_runs
+            )
+            aggregate["correct_action_in_step1_candidates_rate"] = (
+                correct_action_in_step1_candidates_count / total_runs
             )
             aggregate["correct_action_in_candidates_rate"] = (
-                correct_action_in_candidates_count / total_runs
+                correct_action_anywhere_in_plan_count / total_runs
             )
             aggregate["strict_success_given_correct_candidates_rate"] = (
-                strict_given_correct_candidates_count / correct_action_in_candidates_count
-                if correct_action_in_candidates_count
+                strict_given_correct_candidates_count / correct_action_anywhere_in_plan_count
+                if correct_action_anywhere_in_plan_count
                 else 0.0
             )
-            aggregate["correct_action_in_candidates_runs"] = correct_action_in_candidates_count
+            aggregate["correct_action_anywhere_in_plan_runs"] = (
+                correct_action_anywhere_in_plan_count
+            )
+            aggregate["correct_action_in_step1_candidates_runs"] = (
+                correct_action_in_step1_candidates_count
+            )
+            aggregate["correct_action_in_candidates_runs"] = correct_action_anywhere_in_plan_count
             aggregate["strict_success_given_correct_candidates_runs"] = (
                 strict_given_correct_candidates_count
             )
             aggregate["strict_success_given_correct_candidates_denominator"] = (
-                correct_action_in_candidates_count
+                correct_action_anywhere_in_plan_count
             )
             aggregate["avg_rounds_used"] = rounds_sum / total_runs
             aggregate["avg_planner_calls"] = planner_calls_sum / total_runs
