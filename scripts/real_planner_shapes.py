@@ -174,6 +174,15 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Source app root to copy into temp sandboxes (default: MI app_root)",
     )
+    parser.add_argument(
+        "--arms",
+        choices=("both", "single"),
+        default="both",
+        help=(
+            "For --mode full_loop_outcome_compare: run both readonly arms (default) "
+            "or a single arm with no readonly flag injection"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1328,9 +1337,17 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
     acceptable_overrides = _load_acceptable_remediations(args.acceptable_remediations)
     comparison_reports: list[dict[str, Any]] = []
 
-    for readonly_enabled in (False, True):
+    if args.arms == "single":
+        arm_configs: list[tuple[str, bool | None]] = [("single_no_readonly_flag", None)]
+    else:
+        arm_configs = [
+            ("readonly_replan_off", False),
+            ("readonly_replan_on", True),
+        ]
+
+    for arm_label, readonly_enabled in arm_configs:
         scenario_reports: list[dict[str, Any]] = []
-        mode_label = "on" if readonly_enabled else "off"
+        mode_label = "single" if readonly_enabled is None else "on" if readonly_enabled else "off"
         with tempfile.TemporaryDirectory(prefix=f"mi-outcome-compare-{mode_label}-") as temp_dir:
             temp_root = Path(temp_dir)
             for scenario_index, scenario_id in enumerate(scenario_ids):
@@ -1351,23 +1368,23 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                     before_files = _snapshot_app_tree(app_root)
                     before_data = _capture_db_rowcount_snapshot(app_root / "data" / "app.db")
 
-                    settings = base_settings.model_copy(
-                        update={
-                            "readonly_replan_enabled": readonly_enabled,
-                            "sandbox_root": sandbox_root,
-                            "app_root": app_root,
-                            "backups_root": backups_root,
-                            "db_file": app_root / "data" / "app.db",
-                            "app_log": app_root / "app.log",
-                            "schema_file": app_root / "schema.sql",
-                            "state_dir": state_dir,
-                            "policy_store_path": state_dir / "policy_store.json",
-                            "skill_store_path": state_dir / "skills.md",
-                            "decision_log_path": state_dir / "decision_log.jsonl",
-                            "event_log_path": state_dir / "events.jsonl",
-                            "failure_taxonomy_path": state_dir / "failure_taxonomy.json",
-                        }
-                    )
+                    settings_update: dict[str, Any] = {
+                        "sandbox_root": sandbox_root,
+                        "app_root": app_root,
+                        "backups_root": backups_root,
+                        "db_file": app_root / "data" / "app.db",
+                        "app_log": app_root / "app.log",
+                        "schema_file": app_root / "schema.sql",
+                        "state_dir": state_dir,
+                        "policy_store_path": state_dir / "policy_store.json",
+                        "skill_store_path": state_dir / "skills.md",
+                        "decision_log_path": state_dir / "decision_log.jsonl",
+                        "event_log_path": state_dir / "events.jsonl",
+                        "failure_taxonomy_path": state_dir / "failure_taxonomy.json",
+                    }
+                    if readonly_enabled is not None:
+                        settings_update["readonly_replan_enabled"] = readonly_enabled
+                    settings = base_settings.model_copy(update=settings_update)
                     seed = args.base_seed + (scenario_index * args.runs) + run_index
 
                     recording_llm = RecordingLLMClient(OpenAILLMClient(settings))
@@ -1742,7 +1759,12 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
 
         comparison_reports.append(
             {
-                "readonly_replan_enabled": readonly_enabled,
+                "arm": arm_label,
+                **(
+                    {"readonly_replan_enabled": readonly_enabled}
+                    if readonly_enabled is not None
+                    else {}
+                ),
                 "scenarios": scenario_reports,
                 "aggregate": aggregate,
             }
@@ -1750,6 +1772,7 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
 
     return {
         "mode": "full_loop_outcome_compare",
+        "arms_mode": args.arms,
         "baseline_app_root": str(baseline_app_root),
         "comparison": comparison_reports,
     }

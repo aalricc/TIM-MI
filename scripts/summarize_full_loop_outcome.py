@@ -65,8 +65,13 @@ def main() -> int:
     print("\nSTRICT SUCCESS SUMMARY (Wilson 95% CI)")
 
     for item in comparison:
-        enabled = bool(item.get("readonly_replan_enabled", False))
-        label = "flag ON" if enabled else "flag OFF"
+        if "arm" in item:
+            label = str(item.get("arm"))
+        elif "readonly_replan_enabled" in item:
+            enabled = bool(item.get("readonly_replan_enabled", False))
+            label = "flag ON" if enabled else "flag OFF"
+        else:
+            label = "single"
         aggregate = item.get("aggregate", {})
         breakdown = aggregate.get("scenario_breakdown", {})
 
