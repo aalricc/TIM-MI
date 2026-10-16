@@ -102,7 +102,7 @@ for idx in "${!SCENARIOS[@]}"; do
   prepare_scenario_baseline
 
   payload=$(PYTHONPATH=src python -m mi_agent.eval.cli scenario \
-    --id "${scenario_id}" \
+    "${scenario_id}" \
     --seed "${seed}" \
     --sandbox-root "${SANDBOX_ROOT}" \
     --app-root "${APP_ROOT}" \

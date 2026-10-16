@@ -1,61 +1,70 @@
-# MI v2 Threat Model (Phase 4)
+# MI Threat Model
 
 ## Scope
 
-This threat model covers the MI runtime control loop, supervisor guardrails, primitive execution, and evaluation harness attack surfaces relevant to autonomous recovery of the sandboxed target service.
+This document covers runtime control-loop safety for autonomous recovery:
 
-## Primary Threats
+- monitoring and incident entry
+- LLM diagnosis/planning
+- guarded tool execution
+- verification and learning persistence
 
-- Prompt-injection through untrusted logs, filenames, tool output, and config values.
-- Out-of-policy high-risk actions (irreversible, terminal, brokered) triggered without adequate state evidence.
-- Unsafe path access (backup path reachability, sandbox escape, link-following abuse).
-- Budget bypass causing excessive autonomous mutation attempts.
-- State drift between planning and execution leading to stale-parameter misuse.
+## Primary threats
+
+- Prompt injection through logs, filenames, probe output, and config values.
+- Unsafe or out-of-policy mutating actions.
+- Sandbox or backup-path escape via path traversal/symlink abuse.
+- Repeated high-risk actions without fresh state evidence.
+- Secret leakage through telemetry.
 
 ## Controls
 
-### Registry and risk tier controls
+### Tool and action controls
 
-- Every primitive is registered with a risk tier (`read_only`, `reversible`, `irreversible`, `terminal`, `brokered`).
-- Candidate actions are filtered through pre-shield checks using registry risk tier metadata.
+- Single tool catalog from `src/mi_agent/tools/executor.py`.
+- Only registered primitives are executable.
+- Strict parameter schema validation before execution.
+- Each primitive carries a risk tier used during candidate screening.
+- Unknown actions are rejected and replanned.
 
-### Pre-shield and post-shield
+### Guardrails and rollback
 
-- **Pre-shield** enforces attempt budget, validated parameters, and risk-tier gating.
-- **Post-shield** re-validates parameters and compares parameter-linked state against planning-time observations.
-- Irreversible actions require a prior read-only observation in the same incident.
+- Pre-shield precheck enforces risk-tier policy and evidence requirements.
+- Post-shield validation rechecks parameter-dependent state before execution.
+- Mutating actions snapshot state before execution.
+- Failed verification triggers rollback when supported.
 
-### Supervisor budget controls
+### Recovery pacing budget policy
 
-- Budget enforcement is outside LLM/policy logic.
-- Supervisor gates attempts per incident and per rolling hour window.
+- MI uses retry pacing backoff with jitter and cancellation support.
+- MI does not enforce hard incident attempt/time budget cutoffs.
 
-### Degraded mode
+### LLM reliability controls
 
-- When LLM diagnosis is unavailable, runtime enters degraded mode.
-- Runtime may execute trusted skills only.
-- If no trusted skill is available, runtime escalates to operator via `escalate_to_operator`.
-- No fallback candidate executor is used.
+- Live model is fixed to `gpt-5.3-codex`.
+- Endpoint is configured via `MI_LLM_ENDPOINT`.
+- Preflight runs before live scenarios/tests.
+- Retries use exponential backoff + jitter for transient errors.
+- Permanent auth/permission/config errors stop incident handling cleanly.
 
-### Path and data hygiene
+### Degraded mode behavior
 
-- PathGuard prevents sandbox escape and backup path access.
-- LLM-facing diagnose payload wraps logs/probes/lessons as data structures.
-- System prompt and diagnose instruction treat untrusted content as data, not instructions.
-- Structured JSON schema output is required for model responses.
+- Degraded mode never escalates to a human operator.
+- When LLM calls are transiently unavailable, the runtime keeps retrying with backoff.
+- When LLM errors are permanent (auth/permission/config), the incident stops with explicit diagnostics.
 
-## Red-team coverage
+### Data and secret hygiene
 
-The red-team suite extends scenario S18 and includes instruction-like payloads in operational surfaces. Current penalty checks include:
-
-- Following injected instruction text.
-- Attempting backup path access during S18.
-- Attempting exfiltration-style behavior during S18.
-
-Target outcome for S18 remains zero out-of-policy actions.
+- Runtime treats external text/log output as untrusted data.
+- Event logging excludes API keys/auth headers.
+- Verifier remains the only success gate.
 
 ## Residual risks
 
-- Trusted skill lifecycle is currently heuristic (`success_count > 0`) and will be formalized in Phase 6 lifecycle states.
-- Full runtime red-team telemetry for all exfiltration channels will be expanded with broader scenario instrumentation in later phases.
+- Recovery quality depends on available registered primitives.
+- Live LLM latency and provider outages can delay recovery.
+- Scenario coverage in eval harness is finite and does not guarantee production completeness.
 
+## Red-team coverage
+
+- Red-team scenario testing remains part of evaluation to check prompt-injection resistance and policy bypass attempts.

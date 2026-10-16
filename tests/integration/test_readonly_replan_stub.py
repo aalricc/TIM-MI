@@ -43,61 +43,42 @@ def _missing_db_diagnosis() -> dict[str, object]:
     }
 
 
-def _write_signature_log(settings: MISettings) -> None:
-    settings.app_log.write_text(
-        "sqlite3.OperationalError: unable to open database file\n",
-        encoding="utf-8",
-    )
-
-
-def _readonly_plan(path: str = "schema.sql") -> dict[str, object]:
+def _apply_schema_plan() -> dict[str, object]:
     return {
-        "name": "readonly-diagnose",
-        "rationale": "gather data first",
-        "steps": [{"action_id": "read_app_file", "parameters": {"path": path}}],
+        "name": "recover",
+        "rationale": "restore db",
+        "steps": [
+            {
+                "action_id": "apply_schema",
+                "parameters": {"db_path": "data/app.db", "schema_path": "schema.sql"},
+                "preconditions": ["db missing"],
+                "expected_postconditions": ["db restored"],
+            }
+        ],
     }
 
 
-async def test_readonly_replan_feature_flag_no_longer_triggers_extra_rounds(
+async def test_planner_constraints_and_no_readonly_replan_events(
     test_settings: MISettings,
 ) -> None:
-    settings = test_settings.model_copy(
-        update={
-            "readonly_replan_enabled": True,
-            "max_readonly_rounds_per_incident": 2,
-            "max_attempts_per_incident": 1,
-        }
-    )
     llm = CaptureFakeLLM()
     llm.queue_response("diagnose", _missing_db_diagnosis())
-    llm.queue_response("propose_plans", [_readonly_plan()])
+    llm.queue_response("propose_plans", [_apply_schema_plan()])
 
-    agent, context = build_agent(settings, llm)
+    agent, context = build_agent(test_settings, llm)
+    context.verifier.health_endpoint_ok = lambda: _async_true()  # type: ignore[method-assign]
 
-    settings.db_file.unlink(missing_ok=True)
-    _write_signature_log(settings)
-    await agent._recover_loop()
-
-    event_types = [event.event_type for event in context.events.events]
-    assert "agent.unresolved_autonomous" in event_types
-    assert "agent.readonly_diagnosis_round" not in event_types
-    assert "agent.readonly_replan_exhausted" not in event_types
-
-
-async def test_planner_constraints_still_request_executable_actions(
-    test_settings: MISettings,
-) -> None:
-    settings = test_settings.model_copy(update={"max_attempts_per_incident": 1})
-    llm = CaptureFakeLLM()
-    llm.queue_response("diagnose", _missing_db_diagnosis())
-    llm.queue_response("propose_plans", [_readonly_plan()])
-
-    agent, _ = build_agent(settings, llm)
-
-    settings.db_file.unlink(missing_ok=True)
-    _write_signature_log(settings)
+    test_settings.db_file.unlink(missing_ok=True)
     await agent._recover_loop()
 
     assert llm.plan_constraints
     first_constraints = llm.plan_constraints[0]
     assert first_constraints.get("must_return_executable_action") is False
+
+    event_types = [event.event_type for event in context.events.events]
+    assert "agent.readonly_diagnosis_round" not in event_types
+    assert "agent.readonly_replan_exhausted" not in event_types
+
+
+async def _async_true() -> bool:
+    return True

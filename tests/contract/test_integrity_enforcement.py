@@ -111,7 +111,7 @@ def test_primitive_catalog_exposes_risk_tier_and_neutral_description(test_settin
 def test_runtime_state_files_are_unseeded() -> None:
     policy_path = Path("state/policy_store.json")
     skills_json_path = Path("state/skills.json")
-    skills_md_path = Path("state/skills.md")
+    skills_md_path = Path("state/global_knowledge/skills.md")
 
     seeded = False
     if policy_path.exists():

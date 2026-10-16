@@ -36,29 +36,14 @@ def test_pre_shield_uses_registry_risk_tier_for_candidate_gate(
     assert any(key.startswith("db_path:") for key in outcome.parameter_state)
 
 
-def test_pre_shield_blocks_when_incident_budget_exhausted(test_settings) -> None:
+def test_pre_shield_does_not_block_on_attempt_number(test_settings) -> None:
     tools = ToolExecutor(test_settings, EventBus())
     shield = ActionShield(test_settings, tools)
 
     outcome = shield.precheck_candidate(
         action_id="apply_schema",
         parameters={"db_path": "data/app.db", "schema_path": "schema.sql"},
-        attempt_number=test_settings.max_attempts_per_incident + 1,
-    )
-
-    assert outcome.allowed is False
-    assert outcome.reason == "incident_attempt_budget_exhausted"
-
-
-def test_pre_shield_allows_when_incident_attempt_budget_disabled(test_settings) -> None:
-    settings = test_settings.model_copy(update={"max_attempts_per_incident": 0})
-    tools = ToolExecutor(settings, EventBus())
-    shield = ActionShield(settings, tools)
-
-    outcome = shield.precheck_candidate(
-        action_id="apply_schema",
-        parameters={"db_path": "data/app.db", "schema_path": "schema.sql"},
-        attempt_number=999,
+        attempt_number=9_999,
     )
 
     assert outcome.allowed is True

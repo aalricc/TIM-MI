@@ -37,6 +37,10 @@ class LLMUnavailableError(MIError):
     """Raised when LLM provider is unavailable."""
 
 
+class LLMPermanentError(MIError):
+    """Raised when LLM request has a permanent configuration/auth/permission failure."""
+
+
 class LLMOutputValidationError(MIError):
     """Raised for malformed LLM structured output."""
 

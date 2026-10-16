@@ -3,62 +3,34 @@ from __future__ import annotations
 import pytest
 
 from mi_agent.events.bus import EventBus
-from mi_agent.supervisor.last_resort import LocalLastResortClient
 from mi_agent.supervisor.supervisor import Supervisor
 
 pytestmark = pytest.mark.phase4
 
 
 @pytest.mark.asyncio()
-async def test_supervisor_enforces_hourly_budget_within_single_incident(test_settings) -> None:
-    settings = test_settings.model_copy(
-        update={
-            "max_attempts_per_incident": 10,
-            "max_attempts_per_hour": 2,
-        }
-    )
-    supervisor = Supervisor(
-        settings,
-        EventBus(),
-        LocalLastResortClient(settings.backups_root, settings.db_file),
-    )
+async def test_gate_attempt_increments_without_cap_field(test_settings) -> None:
+    supervisor = Supervisor(test_settings, EventBus(test_settings.event_log_path))
     incident = await supervisor.open_incident("db_file_missing")
 
     gate1 = await supervisor.gate_attempt(incident)
     gate2 = await supervisor.gate_attempt(incident)
     gate3 = await supervisor.gate_attempt(incident)
 
-    assert gate1.cap_reached is False
-    assert gate2.cap_reached is False
-    assert gate3.cap_reached is True
+    assert gate1.attempts == 1
+    assert gate2.attempts == 2
+    assert gate3.attempts == 3
+    assert hasattr(gate1, "cap_reached") is False
 
 
 @pytest.mark.asyncio()
-async def test_supervisor_enforces_hourly_budget_across_incidents(test_settings) -> None:
-    settings = test_settings.model_copy(
-        update={
-            "max_attempts_per_incident": 10,
-            "max_attempts_per_hour": 2,
-        }
-    )
-    supervisor = Supervisor(
-        settings,
-        EventBus(),
-        LocalLastResortClient(settings.backups_root, settings.db_file),
-    )
+async def test_attempts_continue_across_many_gates(test_settings) -> None:
+    supervisor = Supervisor(test_settings, EventBus(test_settings.event_log_path))
+    incident = await supervisor.open_incident("db_file_missing")
 
-    incident1 = await supervisor.open_incident("db_file_missing")
-    gate1 = await supervisor.gate_attempt(incident1)
-    await supervisor.release_incident(incident1.incident_id)
+    last = None
+    for _ in range(8):
+        last = await supervisor.gate_attempt(incident)
 
-    incident2 = await supervisor.open_incident("db_file_missing")
-    gate2 = await supervisor.gate_attempt(incident2)
-    await supervisor.release_incident(incident2.incident_id)
-
-    incident3 = await supervisor.open_incident("db_file_missing")
-    gate3 = await supervisor.gate_attempt(incident3)
-
-    assert gate1.cap_reached is False
-    assert gate2.cap_reached is False
-    assert gate3.cap_reached is True
-
+    assert last is not None
+    assert last.attempts == 8

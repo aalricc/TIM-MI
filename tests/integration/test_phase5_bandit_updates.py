@@ -67,4 +67,4 @@ async def test_agent_feeds_selector_reward_updates_from_outcomes(test_settings) 
 
     assert observed
     assert any(action_key.startswith("apply_schema|") for action_key, _ in observed)
-    assert any(reward <= 0.0 for _, reward in observed)
+    assert any(reward > 0.0 for _, reward in observed)

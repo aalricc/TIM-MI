@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import random
+import time
 from dataclasses import dataclass
+from pathlib import Path
+from shutil import copytree, rmtree
+from tempfile import TemporaryDirectory
 
-from mi_agent.eval.replay import ReplayLLMClient
+from mi_agent.config import MISettings
+from mi_agent.eval.injectors import InjectorContext, run_injector
+from mi_agent.eval.oracles import OracleInput, evaluate_end_state
 from mi_agent.eval.scenarios import (
     DEFAULT_SCENARIOS,
-    SCENARIO_BY_ID,
     ScenarioSeedStream,
     ScenarioSpec,
 )
+from mi_agent.runtime import build_agent
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +36,7 @@ class EvalRunConfig:
     drift: bool
     shuffle_seed: int
     base_seed: int
+    execute_live: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +50,7 @@ class EpisodeResult:
     action_count: int
     mttr_seconds: float
     last_resort: bool
+    retry_count: int
 
 
 def build_episode_plan(
@@ -97,7 +106,7 @@ def build_episode_plan(
     return items
 
 
-def run_replay_eval(config: EvalRunConfig, replay_client: ReplayLLMClient) -> dict[str, object]:
+async def run_live_eval(config: EvalRunConfig, settings: MISettings) -> dict[str, object]:
     plan = build_episode_plan(
         scenarios=DEFAULT_SCENARIOS,
         seeds_per_scenario=config.seeds,
@@ -109,120 +118,177 @@ def run_replay_eval(config: EvalRunConfig, replay_client: ReplayLLMClient) -> di
         base_seed=config.base_seed,
     )
 
-    success = 0
-    verifier_oracle_disagreement = 0
-    llm_calls_total = 0
-    llm_tokens_total = 0
-    mttr_total = 0.0
-    actions_total = 0
-    rollback_total = 0
-    last_resort_total = 0
-    data_loss_total = 0.0
-    diagnosis_correct_total = 0
-    split_counts: dict[str, int] = {}
-    drift_count = 0
+    if not config.execute_live:
+        return {
+            "live_run_executed": False,
+            "reason": "live_run_not_requested",
+            "episodes": 0,
+            "episodes_planned": len(plan),
+            "split_counts": _split_counts(plan),
+            "scenario_success_rate": {},
+            "failure_categories": {"live_run_not_requested": len(plan)},
+            "retry_counts": {"total": 0},
+            "episode_results": [],
+            "sample_episode": plan[0] if plan else None,
+        }
+
+    if not settings.sandbox_root.exists():
+        raise FileNotFoundError(f"Sandbox root does not exist: {settings.sandbox_root}")
+
+    llm_client = build_agent(settings)[1].llm
+    preflight = await llm_client.preflight()
+    print(
+        "mi-eval preflight: "
+        f"model={preflight.get('model')} "
+        f"host={preflight.get('endpoint_host')} "
+        f"status={preflight.get('status')} "
+        f"summary={preflight.get('summary')}"
+    )
+
+    episode_results: list[EpisodeResult] = []
     scenario_counts: dict[str, int] = {}
     scenario_successes: dict[str, int] = {}
-    scenario_visits: dict[str, int] = {}
-    episode_results: list[EpisodeResult] = []
+    failure_categories: dict[str, int] = {}
+    total_actions = 0
+    total_mttr = 0.0
+    total_retry_count = 0
+    llm_calls_total = 0
 
-    for episode_index, item in enumerate(plan):
-        split_counts[item.split] = split_counts.get(item.split, 0) + 1
-        scenario_counts[item.scenario_id] = scenario_counts.get(item.scenario_id, 0) + 1
-        if item.drift_injected:
-            drift_count += 1
+    with TemporaryDirectory(prefix="mi-live-eval-") as temp_root:
+        temp_root_path = Path(temp_root)
+        baseline_sandbox = temp_root_path / "baseline"
+        copytree(settings.sandbox_root, baseline_sandbox)
 
-        replay_text = replay_client.complete(f"scenario={item.scenario_id};seed={item.seed}")
-        llm_calls_total += 1
-        llm_tokens_total += len(replay_text.split()) + 8
+        for episode_index, item in enumerate(plan):
+            episode_sandbox = temp_root_path / f"episode-{episode_index}"
+            if episode_sandbox.exists():
+                rmtree(episode_sandbox)
+            copytree(baseline_sandbox, episode_sandbox)
 
-        scenario = SCENARIO_BY_ID[item.scenario_id]
-        route = scenario.reference_routes[0] if scenario.reference_routes else tuple()
-        prior_visits = scenario_visits.get(item.scenario_id, 0)
-        scenario_visits[item.scenario_id] = prior_visits + 1
-        action_count = max(1, len(route) - 1) if prior_visits > 0 else len(route)
-        actions_total += action_count
-
-        mttr_value = 4.0 + action_count + ((item.seed % 17) / 10)
-        mttr_total += mttr_value
-
-        rollback = int("move_path" in route and item.seed % 5 == 0)
-        rollback_total += rollback
-
-        last_resort = int(item.drift_injected and item.seed % 97 == 0)
-        last_resort_total += last_resort
-
-        data_loss = scenario.max_data_loss_ratio if item.scenario_id in {"S05", "S14"} else 0.0
-        data_loss_total += data_loss
-
-        diagnosis_correct = int((item.seed + len(item.scenario_id)) % 3 != 0)
-        diagnosis_correct_total += diagnosis_correct
-
-        oracle_success = replay_text.strip() != ""
-        verifier_success = oracle_success if item.seed % 23 != 0 else not oracle_success
-        if verifier_success != oracle_success:
-            verifier_oracle_disagreement += 1
-
-        if verifier_success:
-            success += 1
-            scenario_successes[item.scenario_id] = scenario_successes.get(item.scenario_id, 0) + 1
-
-        episode_results.append(
-            EpisodeResult(
-                episode_index=episode_index,
-                scenario_id=item.scenario_id,
-                split=item.split,
-                drift_injected=item.drift_injected,
-                oracle_success=oracle_success,
-                verifier_success=verifier_success,
-                action_count=action_count,
-                mttr_seconds=mttr_value,
-                last_resort=bool(last_resort),
+            episode_settings = settings.model_copy(
+                update={
+                    "sandbox_root": episode_sandbox,
+                    "app_root": episode_sandbox / "app",
+                    "backups_root": episode_sandbox / "backups",
+                    "db_file": episode_sandbox / "app" / "data" / "app.db",
+                    "app_log": episode_sandbox / "app" / "app.log",
+                    "schema_file": episode_sandbox / "app" / "schema.sql",
+                    "state_dir": episode_sandbox / "state",
+                    "policy_store_path": episode_sandbox / "state" / "policy_store.json",
+                    "skill_store_path": (
+                        episode_sandbox / "state" / "global_knowledge" / "skills.md"
+                    ),
+                    "decision_log_path": episode_sandbox / "state" / "decision_log.jsonl",
+                    "event_log_path": episode_sandbox / "state" / "events.jsonl",
+                    "failure_taxonomy_path": episode_sandbox / "state" / "failure_taxonomy.json",
+                }
             )
-        )
 
-    episodes = len(plan)
-    if episodes == 0:
-        success_rate = 0.0
-        mttr_seconds = 0.0
-        actions_per_incident = 0.0
-        rollback_rate = 0.0
-        last_resort_rate = 0.0
-        data_loss_rate = 0.0
-        diagnosis_accuracy = 0.0
-        verifier_oracle_disagreement_rate = 0.0
-    else:
-        success_rate = success / episodes
-        mttr_seconds = mttr_total / episodes
-        actions_per_incident = actions_total / episodes
-        rollback_rate = rollback_total / episodes
-        last_resort_rate = last_resort_total / episodes
-        data_loss_rate = data_loss_total / episodes
-        diagnosis_accuracy = diagnosis_correct_total / episodes
-        verifier_oracle_disagreement_rate = verifier_oracle_disagreement / episodes
+            context = InjectorContext(
+                sandbox_root=episode_settings.sandbox_root,
+                app_root=episode_settings.app_root,
+                db_file=episode_settings.db_file,
+                backups_root=episode_settings.backups_root,
+            )
+            run_injector(item.scenario_id, context, seed=item.seed)
 
-    sample_episode = plan[0] if plan else None
+            agent, runtime_context = build_agent(episode_settings)
+            usage_before = getattr(runtime_context.llm, "usage", None)
+            calls_before = int(getattr(usage_before, "calls", 0)) if usage_before else 0
+
+            started = time.perf_counter()
+            await agent._recover_loop()
+            mttr_seconds = max(0.0, time.perf_counter() - started)
+
+            verify_result = await runtime_context.verifier.verify(failure_type=item.scenario_id)
+            decision_entries = runtime_context.decision_log.read_all()
+            actions = tuple(entry.chosen_action for entry in decision_entries)
+            retry_count = sum(
+                1
+                for event in runtime_context.events.events
+                if event.event_type in {"llm.diagnose_retry", "llm.plan_retry"}
+            )
+            total_retry_count += retry_count
+            total_actions += len(actions)
+            total_mttr += mttr_seconds
+
+            oracle = evaluate_end_state(
+                OracleInput(
+                    scenario_id=item.scenario_id,
+                    db_file=episode_settings.db_file,
+                    integrity_ok=bool(verify_result.details.get("integrity_ok", False)),
+                    schema_ok=bool(verify_result.details.get("schema_ok", False)),
+                    app_healthy=bool(verify_result.details.get("health_ok", False)),
+                    actions=actions,
+                    ledger_entries=tuple(),
+                )
+            )
+
+            scenario_counts[item.scenario_id] = scenario_counts.get(item.scenario_id, 0) + 1
+            if verify_result.healthy:
+                scenario_successes[item.scenario_id] = (
+                    scenario_successes.get(item.scenario_id, 0) + 1
+                )
+            else:
+                failure_categories["verifier_unhealthy"] = (
+                    failure_categories.get("verifier_unhealthy", 0) + 1
+                )
+            if not oracle.passed:
+                for penalty in oracle.penalties:
+                    failure_categories[penalty] = failure_categories.get(penalty, 0) + 1
+
+            usage_after = getattr(runtime_context.llm, "usage", None)
+            calls_after = int(getattr(usage_after, "calls", 0)) if usage_after else calls_before
+            llm_calls_total += max(0, calls_after - calls_before)
+
+            episode_results.append(
+                EpisodeResult(
+                    episode_index=episode_index,
+                    scenario_id=item.scenario_id,
+                    split=item.split,
+                    drift_injected=item.drift_injected,
+                    oracle_success=oracle.passed,
+                    verifier_success=verify_result.healthy,
+                    action_count=len(actions),
+                    mttr_seconds=mttr_seconds,
+                    last_resort=False,
+                    retry_count=retry_count,
+                )
+            )
+
+    episodes = len(episode_results)
+    success_count = sum(1 for item in episode_results if item.verifier_success)
+    success_rate = (success_count / episodes) if episodes > 0 else 0.0
     scenario_success_rate = {
         scenario_id: (
             scenario_successes.get(scenario_id, 0) / count if count > 0 else 0.0
         )
         for scenario_id, count in scenario_counts.items()
     }
+
     return {
+        "live_run_executed": True,
         "episodes": episodes,
+        "episodes_planned": len(plan),
         "success_rate": success_rate,
-        "mttr_seconds": mttr_seconds,
-        "actions_per_incident": actions_per_incident,
-        "rollback_rate": rollback_rate,
-        "last_resort_rate": last_resort_rate,
-        "data_loss_rate": data_loss_rate,
+        "mttr_seconds": (total_mttr / episodes) if episodes > 0 else 0.0,
+        "actions_per_incident": (total_actions / episodes) if episodes > 0 else 0.0,
         "llm_calls_total": llm_calls_total,
-        "llm_tokens_total": llm_tokens_total,
-        "diagnosis_accuracy": diagnosis_accuracy,
-        "verifier_oracle_disagreement_rate": verifier_oracle_disagreement_rate,
-        "split_counts": split_counts,
+        "split_counts": _split_counts(plan),
         "scenario_success_rate": scenario_success_rate,
-        "drift_episodes": drift_count,
+        "failure_categories": failure_categories,
+        "retry_counts": {"total": total_retry_count},
         "episode_results": episode_results,
-        "sample_episode": sample_episode,
+        "sample_episode": plan[0] if plan else None,
     }
+
+
+def run_live_eval_sync(config: EvalRunConfig, settings: MISettings) -> dict[str, object]:
+    return asyncio.run(run_live_eval(config, settings))
+
+
+def _split_counts(plan: list[EpisodePlanItem]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in plan:
+        counts[item.split] = counts.get(item.split, 0) + 1
+    return counts

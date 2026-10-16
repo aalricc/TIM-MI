@@ -42,11 +42,7 @@ class ActionShield:
         attempt_number: int,
         has_recent_read_observation: bool = True,
     ) -> ShieldDecision:
-        if (
-            self._settings.max_attempts_per_incident > 0
-            and attempt_number > self._settings.max_attempts_per_incident
-        ):
-            return ShieldDecision(allowed=False, reason="incident_attempt_budget_exhausted")
+        del attempt_number
 
         try:
             risk_tier = self._tools.risk_tier(action_id)

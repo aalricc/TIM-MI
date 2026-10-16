@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -135,12 +134,6 @@ class CandidatePlan(BaseModel):
         return self
 
 
-class DiagnosisOutput(BaseModel):
-    failure_type: str
-    hypotheses: list[str] = Field(min_length=1, max_length=5)
-    evidence: list[str] = Field(min_length=1, max_length=10)
-
-
 class SkillProposal(BaseModel):
     name: str = Field(min_length=3, max_length=80)
     description: str = Field(min_length=8, max_length=300)
@@ -163,10 +156,3 @@ class LessonOutput(BaseModel):
     @classmethod
     def _length_bound(cls, value: str) -> str:
         return value[:500]
-
-
-def safe_rel_path(path: str) -> Path:
-    clean = path.strip()
-    if clean == "":
-        raise ValueError("Path cannot be empty")
-    return Path(clean)

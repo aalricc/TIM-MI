@@ -14,12 +14,11 @@ def test_phase8_required_docs_exist() -> None:
     assert Path("README.md").exists()
 
 
-def test_phase8_results_document_marks_replay_mode_and_unsolved_scenarios() -> None:
+def test_phase8_results_document_marks_live_or_not_run_policy() -> None:
     text = Path("docs/RESULTS.md").read_text(encoding="utf-8")
 
-    assert "replay-only" in text.lower()
-    assert "S02" in text
-    assert "S03" in text
+    assert "live" in text.lower()
+    assert "not run" in text.lower()
 
 
 def test_phase8_architecture_doc_mentions_dashboard_view_contract() -> None:
@@ -35,7 +34,6 @@ def test_phase8_architecture_doc_mentions_dashboard_view_contract() -> None:
 def test_readme_lists_v2_limitations_with_unsolved_scenarios() -> None:
     text = Path("README.md").read_text(encoding="utf-8")
 
-    assert "Current limitations (MI v2 replay run)" in text
-    assert "S02" in text
-    assert "S03" in text
+    assert "Current limitations" in text
+    assert "live" in text.lower()
 

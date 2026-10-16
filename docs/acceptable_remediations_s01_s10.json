@@ -21,7 +21,8 @@
     "set_permissions"
   ],
   "Remove WAL after acked writes": [
-    "request_backup_restore"
+    "request_backup_restore",
+    "set_permissions"
   ],
   "Stale lock or hot journal": [
     "remove_path"

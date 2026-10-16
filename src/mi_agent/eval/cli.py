@@ -11,18 +11,18 @@ from mi_agent.eval.audit import export_audit_trail
 from mi_agent.eval.baselines import compute_baselines, render_baselines_markdown
 from mi_agent.eval.experiments import (
     ExperimentSuiteConfig,
-    run_replay_experiments,
+    run_experiments,
     write_experiment_reports,
 )
 from mi_agent.eval.injectors import InjectorContext, run_injector
 from mi_agent.eval.learning_curve import run_learning_curve_smoke
 from mi_agent.eval.ope import estimate_off_policy, load_decision_log
 from mi_agent.eval.promotion import evaluate_promotion
-from mi_agent.eval.replay import ReplayLLMClient
 from mi_agent.eval.reporting import generate_phase8_report
 from mi_agent.eval.reports import write_eval_reports
-from mi_agent.eval.runner import EvalRunConfig, build_episode_plan, run_replay_eval
+from mi_agent.eval.runner import EvalRunConfig, build_episode_plan, run_live_eval_sync
 from mi_agent.eval.scenarios import DEFAULT_SCENARIOS, SCENARIO_BY_ID
+from mi_agent.llm.client import OpenAILLMClient
 
 
 def _csv_to_set(raw: str) -> frozenset[str]:
@@ -37,11 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     smoke = subparsers.add_parser("smoke", help="run lightweight harness smoke checks")
-    smoke.add_argument("--replay", action="store_true", help="use replay mode")
+    smoke.add_argument("--live", action="store_true", help="run real LLM connectivity preflight")
 
-    run = subparsers.add_parser("run", help="run replay evaluation episodes")
-    run.add_argument("--replay", action="store_true", help="use replay mode")
-    run.add_argument("--replay-file", type=Path, default=Path("artifacts/eval/replay.json"))
+    run = subparsers.add_parser("run", help="run evaluation episodes")
+    run.add_argument("--live", action="store_true", help="execute real live scenarios")
     run.add_argument("--seeds", type=int, default=1)
     run.add_argument("--curriculum", choices=("ordered", "shuffled"), default="ordered")
     run.add_argument("--held-out-scenarios", default="")
@@ -83,20 +82,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     learning_smoke = subparsers.add_parser(
         "learning-smoke",
-        help="run replay-only learning-curve smoke check",
+        help="run policy-learning smoke check",
     )
-    learning_smoke.add_argument("--replay", action="store_true", help="use replay mode")
     learning_smoke.add_argument("--episodes", type=int, default=60)
     learning_smoke.add_argument("--seed", type=int, default=7)
 
     experiments = subparsers.add_parser(
         "experiments",
-        help="run Phase 8 replay experiments with confidence intervals and ablations",
+        help="run experiment suite and write reports",
     )
-    experiments.add_argument("--replay", action="store_true", help="use replay mode")
-    experiments.add_argument(
-        "--replay-file", type=Path, default=Path("artifacts/eval/replay.json")
-    )
+    experiments.add_argument("--live", action="store_true", help="execute real live scenarios")
     experiments.add_argument("--seeds", type=int, default=5)
     experiments.add_argument("--shuffle-seed", type=int, default=17)
     experiments.add_argument("--base-seed", type=int, default=7)
@@ -107,67 +102,69 @@ def build_parser() -> argparse.ArgumentParser:
         dest="held_out_variants",
     )
     experiments.add_argument("--no-drift", action="store_false", dest="drift")
-    experiments.add_argument("--confidence", type=float, default=0.95)
     experiments.add_argument("--output-dir", type=Path, default=Path("artifacts/eval"))
     experiments.add_argument("--run-id", default="phase8_experiments")
     experiments.set_defaults(held_out_variants=True, drift=True)
 
-    scenario = subparsers.add_parser(
-        "scenario",
-        help="inject one live scenario fault into a target app sandbox",
-    )
-    scenario.add_argument("--id", dest="scenario_id", required=True)
+    scenario = subparsers.add_parser("scenario", help="inject a single scenario into sandbox")
+    scenario.add_argument("scenario_id")
     scenario.add_argument("--seed", type=int, default=7)
-    scenario.add_argument("--sandbox-root", type=Path, default=None)
-    scenario.add_argument("--app-root", type=Path, default=None)
-    scenario.add_argument("--db-file", type=Path, default=None)
-    scenario.add_argument("--backups-root", type=Path, default=None)
-    scenario.add_argument("--json", action="store_true", help="emit json payload")
+    scenario.add_argument("--sandbox-root", type=Path)
+    scenario.add_argument("--app-root", type=Path)
+    scenario.add_argument("--db-file", type=Path)
+    scenario.add_argument("--backups-root", type=Path)
+    scenario.add_argument("--json", action="store_true")
 
-    report = subparsers.add_parser(
-        "report",
-        help="generate a Phase 8 report with dashboard view payloads",
-    )
+    report = subparsers.add_parser("report", help="render Phase 8 report bundle")
     report.add_argument(
         "--experiments-json",
         type=Path,
         default=Path("artifacts/eval/phase8_experiments.json"),
     )
-    report.add_argument("--eval-json", type=Path, default=None)
-    report.add_argument("--decision-log", type=Path, default=Path("state/decision_log.jsonl"))
-    report.add_argument("--skills-json", type=Path, default=Path("state/skills.md"))
     report.add_argument("--output-dir", type=Path, default=Path("artifacts/eval"))
     report.add_argument("--run-id", default="phase8_report")
-
-    audit = subparsers.add_parser(
-        "audit-export",
-        help="export decisions, actions, and verifier results as an audit trail",
+    report.add_argument("--decision-log", type=Path, default=Path("state/decision_log.jsonl"))
+    report.add_argument(
+        "--skills-json",
+        type=Path,
+        default=Path("state/global_knowledge/skills.md"),
     )
-    audit.add_argument("--decision-log", type=Path, default=Path("state/decision_log.jsonl"))
-    audit.add_argument("--event-log", type=Path, default=Path("state/events.jsonl"))
-    audit.add_argument("--output-dir", type=Path, default=Path("artifacts/eval"))
-    audit.add_argument("--run-id", default="phase8_audit_trail")
+    report.add_argument("--eval-json", type=Path)
+
+    audit_export = subparsers.add_parser(
+        "audit-export",
+        help="export audit trail from runtime logs",
+    )
+    audit_export.add_argument("--decision-log", type=Path, default=Path("state/decision_log.jsonl"))
+    audit_export.add_argument("--event-log", type=Path, default=Path("state/events.jsonl"))
+    audit_export.add_argument("--output-dir", type=Path, default=Path("artifacts/eval"))
+    audit_export.add_argument("--run-id", default="audit_trail")
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    argv_items = list(argv) if argv is not None else sys.argv[1:]
+    argv_items = argv or sys.argv[1:]
     args = parser.parse_args(argv_items)
 
     if args.command == "smoke":
-        if not args.replay:
-            print("smoke requires --replay in CI gate mode", file=sys.stderr)
-            return 2
-        print("mi-eval smoke --replay: PASS")
+        if not args.live:
+            print("mi-eval smoke: PASS (offline)")
+            return 0
+        settings = MISettings()
+        client = OpenAILLMClient(settings)
+        preflight = run_live_preflight(client)
+        print(
+            "mi-eval smoke: PASS "
+            f"model={preflight['model']} "
+            f"host={preflight['endpoint_host']} "
+            f"status={preflight['status']}"
+        )
         return 0
 
     if args.command == "run":
-        if not args.replay:
-            print("run requires --replay for offline evaluation", file=sys.stderr)
-            return 2
-
-        client = ReplayLLMClient(args.replay_file)
+        settings = MISettings()
         config = EvalRunConfig(
             seeds=args.seeds,
             curriculum=args.curriculum,
@@ -176,16 +173,15 @@ def main(argv: list[str] | None = None) -> int:
             drift=args.drift,
             shuffle_seed=args.shuffle_seed,
             base_seed=args.base_seed,
+            execute_live=bool(args.live),
         )
-        summary = run_replay_eval(config, client)
+        summary = run_live_eval_sync(config, settings)
         report_json, report_md = write_eval_reports(summary, args.output_dir, run_id=args.run_id)
-        split_counts = summary["split_counts"]
         print(
             "mi-eval run: "
-            f"episodes={summary['episodes']} "
-            f"success_rate={summary['success_rate']:.3f} "
-            f"drift={summary['drift_episodes']} "
-            f"split_counts={split_counts} "
+            f"live={summary.get('live_run_executed')} "
+            f"episodes={summary.get('episodes')} "
+            f"success_rate={summary.get('success_rate')} "
             f"report_json={report_json} "
             f"report_md={report_md}"
         )
@@ -255,19 +251,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if bool(decision["promote"]) else 1
 
     if args.command == "learning-smoke":
-        if not args.replay:
-            print("learning-smoke requires --replay for offline evaluation", file=sys.stderr)
-            return 2
         summary = run_learning_curve_smoke(episodes=args.episodes, seed=args.seed)
         print(json.dumps(summary, sort_keys=True))
         return 0
 
     if args.command == "experiments":
-        if not args.replay:
-            print("experiments requires --replay for offline evaluation", file=sys.stderr)
-            return 2
-
-        client = ReplayLLMClient(args.replay_file)
+        settings = MISettings()
         suite_config = ExperimentSuiteConfig(
             seeds=args.seeds,
             curriculum="shuffled",
@@ -276,9 +265,9 @@ def main(argv: list[str] | None = None) -> int:
             drift=bool(args.drift),
             shuffle_seed=args.shuffle_seed,
             base_seed=args.base_seed,
-            confidence=args.confidence,
+            execute_live=bool(args.live),
         )
-        summary = run_replay_experiments(suite_config, client)
+        summary = run_experiments(suite_config, settings)
         report_json, report_md = write_experiment_reports(
             summary,
             args.output_dir,
@@ -287,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(
             "mi-eval experiments: "
-            f"seeds={args.seeds} "
+            f"live={summary.get('live_run_executed')} "
             f"report_json={report_json} "
             f"report_md={report_md}"
         )
@@ -372,6 +361,12 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
+
+
+def run_live_preflight(client: OpenAILLMClient) -> dict[str, str]:
+    import asyncio
+
+    return asyncio.run(client.preflight())
 
 
 if __name__ == "__main__":

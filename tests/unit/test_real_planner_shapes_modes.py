@@ -51,11 +51,11 @@ def test_real_planner_shapes_rescore_uses_configurable_acceptable_set(tmp_path: 
                         "plan_shapes": [
                             {
                                 "plan_name": "b",
-                                "action_keys": ["read_app_log", "escalate_to_operator"],
+                                "action_keys": ["read_app_log", "restart_service"],
                                 "plan_class": "read_then_mutate",
-                                "first_executable_action": "escalate_to_operator",
+                                "first_executable_action": "restart_service",
                                 "read_action_keys": ["read_app_log"],
-                                "mutating_action_keys": ["escalate_to_operator"],
+                                "mutating_action_keys": ["restart_service"],
                                 "mutating_steps_with_read_output_refs": [],
                             }
                         ],
@@ -79,7 +79,7 @@ def test_real_planner_shapes_rescore_uses_configurable_acceptable_set(tmp_path: 
         ],
     }
     acceptable = {
-        "Delete DB file": ["request_backup_restore", "escalate_to_operator"],
+        "Delete DB file": ["request_backup_restore", "restart_service"],
     }
 
     input_path = tmp_path / "input.json"
@@ -249,8 +249,8 @@ def test_real_planner_shapes_analyze_top_rank_reports_first_acceptable_rank(
                         "plan_shapes": [
                             {
                                 "plan_name": "p1",
-                                "action_keys": ["read_app_log", "escalate_to_operator"],
-                                "first_executable_action": "escalate_to_operator",
+                                "action_keys": ["read_app_log", "restart_service"],
+                                "first_executable_action": "restart_service",
                             },
                             {
                                 "plan_name": "p2",
@@ -300,6 +300,6 @@ def test_real_planner_shapes_analyze_top_rank_reports_first_acceptable_rank(
     run = payload["runs"][0]
     assert run["first_acceptable_rank"] == 2
     assert [item["first_executable_action"] for item in run["plan_order"]] == [
-        "escalate_to_operator",
+        "restart_service",
         "request_backup_restore",
     ]

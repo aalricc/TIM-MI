@@ -76,8 +76,7 @@ async def test_candidate_builder_applies_shield_intersection(test_settings) -> N
 async def test_candidate_builder_rejects_non_executable_first_step_even_when_flag_enabled(
     test_settings,
 ) -> None:
-    settings = test_settings.model_copy(update={"readonly_replan_enabled": True})
-    agent, context = build_agent(settings, FakeLLMClient())
+    agent, context = build_agent(test_settings, FakeLLMClient())
 
     plans = [
         CandidatePlan.model_validate(
@@ -119,8 +118,7 @@ async def test_candidate_builder_rejects_non_executable_first_step_even_when_fla
 async def test_candidate_builder_rejects_first_step_not_executable_when_flag_disabled(
     test_settings,
 ) -> None:
-    settings = test_settings.model_copy(update={"readonly_replan_enabled": False})
-    agent, context = build_agent(settings, FakeLLMClient())
+    agent, context = build_agent(test_settings, FakeLLMClient())
 
     plans = [
         CandidatePlan.model_validate(

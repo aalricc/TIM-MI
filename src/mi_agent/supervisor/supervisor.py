@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from shutil import copy2
 from uuid import uuid4
@@ -12,7 +12,6 @@ from mi_agent.config import MISettings
 from mi_agent.errors import IncidentLockError, ToolParameterValidationError
 from mi_agent.events.bus import EventBus
 from mi_agent.events.models import Event
-from mi_agent.supervisor.last_resort import LastResortClient
 
 
 @dataclass(slots=True)
@@ -25,7 +24,6 @@ class IncidentLock:
 
 @dataclass(frozen=True, slots=True)
 class AttemptGate:
-    cap_reached: bool
     attempts: int
     elapsed_seconds: float
     backoff_seconds: float
@@ -36,13 +34,10 @@ class Supervisor:
         self,
         settings: MISettings,
         event_bus: EventBus,
-        restorer: LastResortClient,
     ) -> None:
         self._settings = settings
         self._event_bus = event_bus
-        self._restorer = restorer
         self._lock: IncidentLock | None = None
-        self._attempt_timestamps: list[datetime] = []
 
     @property
     def lock(self) -> IncidentLock | None:
@@ -77,37 +72,16 @@ class Supervisor:
         self._lock = None
 
     async def gate_attempt(self, incident: IncidentLock) -> AttemptGate:
-        now = self._utc_now()
-        elapsed = (now - incident.started_at).total_seconds()
-        self._prune_hourly_attempts(now)
-
-        if (
-            self._settings.max_attempts_per_hour > 0
-            and len(self._attempt_timestamps) >= self._settings.max_attempts_per_hour
-        ):
-            return AttemptGate(True, incident.attempts, elapsed, 0.0)
-
-        if (
-            self._settings.max_attempts_per_incident > 0
-            and incident.attempts >= self._settings.max_attempts_per_incident
-        ):
-            return AttemptGate(True, incident.attempts, elapsed, 0.0)
-        if (
-            self._settings.max_incident_seconds > 0
-            and elapsed >= self._settings.max_incident_seconds
-        ):
-            return AttemptGate(True, incident.attempts, elapsed, 0.0)
-
         backoff = 0.0
         if incident.attempts > 0:
+            exponent = min(incident.attempts - 1, 16)
             backoff = min(
                 self._settings.supervisor_backoff_max_seconds,
-                self._settings.supervisor_backoff_initial_seconds * (2 ** (incident.attempts - 1)),
+                self._settings.supervisor_backoff_initial_seconds * (2**exponent),
             )
             await asyncio.sleep(backoff)
         incident.attempts += 1
         now_after = self._utc_now()
-        self._attempt_timestamps.append(now_after)
         elapsed_after = (now_after - incident.started_at).total_seconds()
         await self._event_bus.publish(
             Event(
@@ -117,33 +91,14 @@ class Supervisor:
                     "attempt": incident.attempts,
                     "elapsed_seconds": elapsed_after,
                     "backoff_seconds": backoff,
-                    "hourly_attempts": len(self._attempt_timestamps),
-                    "hourly_budget": self._settings.max_attempts_per_hour,
                 },
             )
         )
-        return AttemptGate(False, incident.attempts, elapsed_after, backoff)
+        return AttemptGate(incident.attempts, elapsed_after, backoff)
 
     @staticmethod
     def _utc_now() -> datetime:
         return datetime.now(tz=UTC)
-
-    def _prune_hourly_attempts(self, now: datetime) -> None:
-        cutoff = now - timedelta(hours=1)
-        self._attempt_timestamps = [stamp for stamp in self._attempt_timestamps if stamp >= cutoff]
-
-    async def run_last_resort(self, incident: IncidentLock) -> str:
-        backup_path = await self._restorer.restore_latest()
-        await self._event_bus.publish(
-            Event(
-                event_type="supervisor.last_resort_restored",
-                payload={
-                    "incident_id": incident.incident_id,
-                    "backup_path": str(backup_path),
-                },
-            )
-        )
-        return str(backup_path)
 
     async def request_backup_restore(self, backup_id: str) -> dict[str, object]:
         if backup_id.strip() == "":

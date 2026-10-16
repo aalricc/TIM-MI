@@ -1,25 +1,19 @@
-# MI v2 Results (current repository state)
+# MI Results
 
-## Evaluation mode
+This file reports the current repository's evaluation mode and the command paths used to generate artifacts.
 
-- **Mode:** replay-only (`mi-eval ... --replay`)
-- **Why:** deterministic CI/offline execution without network dependence.
-- **Implication:** these numbers validate pipeline behavior and reporting plumbing; they are not live-online
-  model performance claims.
+## Evaluation policy
 
-## Commands used
+- Reports must come from actual executed runs.
+- If a live run is not executed, the report must explicitly say so.
+- No replay file is used as a substitute for live LLM execution.
+
+## Commands
+
+Offline (no live model execution):
 
 ```bash
-PYTHONPATH=src python -m mi_agent.eval.cli experiments \
-  --replay \
-  --replay-file artifacts/eval/replay.json \
-  --seeds 5 \
-  --output-dir artifacts/eval \
-  --run-id phase8_experiments
-
 PYTHONPATH=src python -m mi_agent.eval.cli run \
-  --replay \
-  --replay-file artifacts/eval/replay.json \
   --seeds 1 \
   --curriculum shuffled \
   --held-out-scenarios S17,S18 \
@@ -28,46 +22,28 @@ PYTHONPATH=src python -m mi_agent.eval.cli run \
   --output-dir artifacts/eval \
   --run-id phase8_eval
 
-PYTHONPATH=src python -m mi_agent.eval.cli report \
-  --experiments-json artifacts/eval/phase8_experiments.json \
-  --eval-json artifacts/eval/phase8_eval.json \
-  --decision-log state/decision_log.jsonl \
-  --skills-json state/skills.md \
+PYTHONPATH=src python -m mi_agent.eval.cli experiments \
+  --seeds 5 \
   --output-dir artifacts/eval \
-  --run-id phase8_report
+  --run-id phase8_experiments
 ```
 
-## Headline metrics
+Live (real model + preflight):
 
-From `artifacts/eval/phase8_experiments.json`:
+```bash
+OPENAI_API_KEY=<key> MI_LLM_ENDPOINT=<endpoint> \
+PYTHONPATH=src python -m mi_agent.eval.cli run --live \
+  --seeds 1 \
+  --curriculum shuffled \
+  --held-out-scenarios S17,S18 \
+  --held-out-variants \
+  --drift \
+  --output-dir artifacts/eval \
+  --run-id phase8_live_eval
+```
 
-- learning-enabled success mean: **0.9389**
-- policy-off (no-learning ablation) success mean: **0.8789**
-- skills-off success mean: **0.8589**
-- held-out success (learning-enabled): **0.9600**
-- drift recovery episodes (learning-enabled): **1.8**
-- drift recovery episodes (policy-off): **3.2**
-- red-team scenario S18 success (learning-enabled): **1.0**
+## Current state in this repository
 
-From `artifacts/eval/phase8_eval.json`:
-
-- episodes: **36**
-- success_rate: **0.944**
-- drift episodes: **18**
-- split counts: `{"held_out_variant": 18, "train": 16, "held_out_scenario": 2}`
-
-## Limits and caveats
-
-- Replay-mode metrics are deterministic and bounded by the replay harness model.
-- The dashboard/report plumbing is complete, but live-key online evaluation is not represented in this file.
-- Claims are reported directly from generated artifacts; no threshold tuning was applied to force outcomes.
-
-## Scenario-level limitations (current run)
-
-The current `phase8_eval` scenario success map reports non-perfect solve rates for:
-
-- **S02:** 0.5
-- **S03:** 0.5
-
-These scenarios are listed as currently not fully solved in this replay run and are carried into README
-limitations until improved.
+- Latest committed defaults support offline summary generation without secrets.
+- Live metrics are only valid when commands are actually executed with working credentials.
+- If live artifacts are missing, treat live performance as **not run**.

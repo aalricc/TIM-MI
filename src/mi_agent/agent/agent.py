@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import random
 from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from mi_agent.config import MISettings
 from mi_agent.errors import (
     IncidentLockError,
     LLMOutputValidationError,
+    LLMPermanentError,
     LLMUnavailableError,
     ToolError,
 )
@@ -34,7 +36,6 @@ from mi_agent.skills.distiller import SkillDistiller
 from mi_agent.skills.library import SkillLibrary
 from mi_agent.skills.matcher import SkillMatcher
 from mi_agent.skills.model import SkillRecord
-from mi_agent.supervisor.last_resort import LastResortError
 from mi_agent.supervisor.supervisor import IncidentLock, Supervisor
 from mi_agent.tools.executor import ToolExecutor
 from mi_agent.tools.schemas import CandidatePlan
@@ -153,7 +154,6 @@ class MIAgent:
             return
 
         llm_usage_start = self._snapshot_llm_usage()
-
         episode_actions: list[tuple[str, dict[str, Any], bool]] = []
         credited_actions: list[EpisodeAction] = []
         visits = 0
@@ -162,98 +162,104 @@ class MIAgent:
         state_fingerprint = ""
         permitted_primitives = self._context.tools.primitive_ids
         blocked_skill_names: set[str] = set()
-        recent_rejections: deque[CandidateRejection] = deque(
-            maxlen=self._context.settings.readonly_replan_recent_rejection_limit
-        )
         latest_planner_trace = PlannerTrace(
             planner_input_fields=(),
             latency_ms=0.0,
             token_estimate=0,
         )
+        last_attempt = 0
 
         try:
-            while True:
+            try:
+                preflight = await self._context.llm.preflight()
+                await self._context.events.publish(
+                    Event(
+                        event_type="llm.preflight_ok",
+                        payload={
+                            "incident_id": incident.incident_id,
+                            "model": preflight.get("model"),
+                            "endpoint_host": preflight.get("endpoint_host"),
+                            "status": preflight.get("status"),
+                            "summary": preflight.get("summary"),
+                        },
+                    )
+                )
+            except LLMPermanentError as exc:
+                terminal_outcome = "llm_permanent_error"
+                await self._context.events.publish(
+                    Event(
+                        event_type="llm.preflight_failed",
+                        payload={"incident_id": incident.incident_id, "error": str(exc)},
+                    )
+                )
+
+            while terminal_outcome is None and not resolved:
                 gate = await self._context.supervisor.gate_attempt(incident)
-                if gate.cap_reached:
-                    try:
-                        await self._on_cap_reached(
-                            incident,
-                            incident_failure_type,
-                            credited_actions,
-                        )
-                        terminal_outcome = "supervisor_rescued"
-                    except LastResortError as exc:
-                        await self._context.events.publish(
-                            Event(
-                                event_type="supervisor.last_resort_failed",
-                                payload={
-                                    "incident_id": incident.incident_id,
-                                    "error": str(exc),
-                                },
-                            )
-                        )
-                        terminal_outcome = "unresolved_autonomous"
-                    break
+                last_attempt = gate.attempts
 
                 observe_started = perf_counter()
                 recent_logs = await self._diagnoser.collect_logs()
                 probes = await self._diagnoser.collect_probes()
-                has_recent_read_observation = True
                 fingerprint = probe_fingerprint(probes, recent_logs)
                 state_fingerprint = fingerprint["probes"]
+                failed_keys = self._executor.failed_action_keys(state_fingerprint)
+                has_recent_read_observation = True
                 await self._emit_span(
                     "loop.observe",
                     observe_started,
                     attributes={"incident_id": incident.incident_id},
                 )
 
-                matched_skill = self._match_skill_without_llm(incident_failure_type, fingerprint)
-                if matched_skill is None:
-                    matched_skill = await self._safe_match_with_llm(
+                try:
+                    matched_skill = self._match_skill_without_llm(
                         incident_failure_type,
                         fingerprint,
                     )
-                if matched_skill is not None and matched_skill.name in blocked_skill_names:
-                    matched_skill = None
-                if matched_skill is not None and incident_failure_type == _UNCLASSIFIED_FAILURE:
-                    incident_failure_type = self._canonical_failure_type(matched_skill.failure_type)
-                    incident.failure_type = incident_failure_type
-
-                action_selected: SelectableAction | None = None
-                skill_used = False
-                candidate_action_keys: list[str] = []
-                propensities: dict[str, float] = {}
-
-                if matched_skill is not None:
-                    action_key = f"skill:{matched_skill.name}:v{matched_skill.version}"
-                    score = self._context.policy.score(incident_failure_type, action_key)
-                    action_selected = SelectableAction(
-                        action_key=action_key,
-                        action_id=matched_skill.name,
-                        parameters={},
-                        value_score=score,
-                    )
-                    skill_used = True
-                    candidate_action_keys = [action_key]
-                    propensities = {action_key: 1.0}
-                else:
-                    diagnosis_payload = await self._safe_diagnose(
-                        incident_failure_type,
-                        recent_logs,
-                        probes,
-                    )
-                    if diagnosis_payload is None:
-                        terminal_outcome = "unresolved_autonomous"
-                        break
-                    else:
-                        diagnosis, _, _ = diagnosis_payload
-                        inferred_failure_type = self._canonical_failure_type(
-                            diagnosis.failure_type
+                    if matched_skill is None:
+                        matched_skill = await self._safe_match_with_llm(
+                            incident_failure_type,
+                            fingerprint,
                         )
+                    if matched_skill is not None:
+                        skill_action_key = f"skill:{matched_skill.name}:v{matched_skill.version}"
                         if (
-                            inferred_failure_type != _UNCLASSIFIED_FAILURE
-                            and inferred_failure_type != incident_failure_type
+                            matched_skill.name in blocked_skill_names
+                            or skill_action_key in failed_keys
                         ):
+                            matched_skill = None
+
+                    action_selected: SelectableAction | None = None
+                    skill_used = False
+                    candidate_action_keys: list[str] = []
+                    propensities: dict[str, float] = {}
+
+                    if matched_skill is not None:
+                        action_key = f"skill:{matched_skill.name}:v{matched_skill.version}"
+                        action_selected = SelectableAction(
+                            action_key=action_key,
+                            action_id=matched_skill.name,
+                            parameters={},
+                            value_score=self._context.policy.score(
+                                incident_failure_type,
+                                action_key,
+                            ),
+                        )
+                        skill_used = True
+                        candidate_action_keys = [action_key]
+                        propensities = {action_key: 1.0}
+                    else:
+                        diagnosis_payload = await self._safe_diagnose(
+                            incident_failure_type,
+                            recent_logs,
+                            probes,
+                        )
+                        if diagnosis_payload is None:
+                            visits += 1
+                            continue
+
+                        diagnosis, _, _ = diagnosis_payload
+                        inferred_failure_type = self._canonical_failure_type(diagnosis.failure_type)
+                        if inferred_failure_type != _UNCLASSIFIED_FAILURE:
                             incident_failure_type = inferred_failure_type
                             incident.failure_type = incident_failure_type
 
@@ -266,43 +272,36 @@ class MIAgent:
                                 incident_failure_type,
                                 fingerprint,
                             )
-                        if matched_skill is not None and matched_skill.name in blocked_skill_names:
-                            matched_skill = None
+                        if matched_skill is not None:
+                            skill_action_key = (
+                                f"skill:{matched_skill.name}:v{matched_skill.version}"
+                            )
+                            if (
+                                matched_skill.name in blocked_skill_names
+                                or skill_action_key in failed_keys
+                            ):
+                                matched_skill = None
                         if matched_skill is not None:
                             action_key = f"skill:{matched_skill.name}:v{matched_skill.version}"
-                            score = self._context.policy.score(incident_failure_type, action_key)
                             action_selected = SelectableAction(
                                 action_key=action_key,
                                 action_id=matched_skill.name,
                                 parameters={},
-                                value_score=score,
+                                value_score=self._context.policy.score(
+                                    incident_failure_type,
+                                    action_key,
+                                ),
                             )
                             skill_used = True
                             candidate_action_keys = [action_key]
                             propensities = {action_key: 1.0}
-                        else:
-                            failed_keys = {
-                                action.action_key
-                                for action in credited_actions
-                                if not action.success
-                            }
-                            planner_constraints = self._planner_constraints_payload(
-                                state_fingerprint=state_fingerprint,
-                                recent_rejections=recent_rejections,
-                                readonly_round=0,
-                                max_rounds=self._context.settings.max_readonly_rounds_per_incident,
-                                force_executable=False,
-                                state_snapshot=probes,
-                                state_version=hashlib.sha256(
-                                    state_fingerprint.encode("utf-8")
-                                ).hexdigest()[:16],
-                            )
 
+                        if matched_skill is None:
                             plans = self._get_cached_plans(
                                 failure_type=incident_failure_type,
                                 state_fingerprint=state_fingerprint,
                             )
-                            plans_from_cache = plans is not None
+                            cache_hit = plans is not None
                             if plans is None:
                                 plans, latest_planner_trace = await self._safe_propose_plans(
                                     diagnosis=diagnosis,
@@ -310,28 +309,25 @@ class MIAgent:
                                     failure_type=incident_failure_type,
                                     permitted_primitives=permitted_primitives,
                                     failed_action_keys=failed_keys,
-                                    constraints=planner_constraints,
-                                )
-                                self._store_cached_plans(
-                                    failure_type=incident_failure_type,
-                                    state_fingerprint=state_fingerprint,
-                                    plans=plans,
+                                    constraints={
+                                        "must_return_executable_action": False,
+                                        "read_observations": {
+                                            "recent_logs": recent_logs[-5:],
+                                            "probes": probes,
+                                        },
+                                    },
                                 )
                             else:
-                                latest_planner_trace = PlannerTrace(
-                                    planner_input_fields=("cache_hit",),
-                                    latency_ms=0.0,
-                                    token_estimate=0,
-                                )
                                 await self._context.events.publish(
                                     Event(
                                         event_type="agent.plan_cache_hit",
                                         payload={
+                                            "incident_id": incident.incident_id,
                                             "failure_type": incident_failure_type,
-                                            "state_fingerprint": state_fingerprint,
                                         },
                                     )
                                 )
+
                             build_result = await self._build_candidates_from_plans(
                                 failure_type=incident_failure_type,
                                 permitted_primitives=permitted_primitives,
@@ -340,72 +336,42 @@ class MIAgent:
                                 attempt_number=gate.attempts,
                                 has_recent_read_observation=has_recent_read_observation,
                             )
-                            recent_rejections.extend(build_result.rejections)
-                            candidates = build_result.candidates
-                            if not candidates:
-                                await self._emit_no_viable_summary(
-                                    incident_id=incident.incident_id,
-                                    failure_type=incident_failure_type,
-                                    state_fingerprint=state_fingerprint,
-                                    attempt_number=gate.attempts,
-                                    replan_attempt=0,
-                                    cache_hit=plans_from_cache,
-                                    plans=plans,
-                                    rejections=build_result.rejections,
-                                    planner_trace=latest_planner_trace,
-                                )
-                                terminal_outcome = "unresolved_autonomous"
-                                break
-
-                            if failed_keys:
-                                filtered = [
-                                    candidate
-                                    for candidate in candidates
-                                    if candidate.action_key not in failed_keys
-                                ]
-                                filtered_out = [
-                                    candidate
-                                    for candidate in candidates
-                                    if candidate.action_key in failed_keys
-                                ]
-                                filtered_rejections = [
-                                    CandidateRejection(
-                                        plan_id="candidate-filter",
-                                        step_index=0,
-                                        action_key=candidate.action_key,
-                                        reason="failed_action_key",
-                                        detail=(
-                                            "Candidate removed because action key failed in"
-                                            " unchanged state"
-                                        ),
-                                    )
-                                    for candidate in filtered_out
-                                ]
-                                candidates = filtered
-                                if filtered_rejections:
-                                    build_result = CandidateBuildResult(
-                                        candidates=build_result.candidates,
-                                        rejections=[*build_result.rejections, *filtered_rejections],
-                                        needs_diagnosis=build_result.needs_diagnosis,
-                                    )
-                                    recent_rejections.extend(filtered_rejections)
-
-                            replan_attempt = 0
-                            final_cache_hit = plans_from_cache
-                            if not candidates and plans_from_cache and failed_keys:
-                                replan_attempt = 1
-                                plans, latest_planner_trace = await self._safe_propose_plans(
+                            candidates = [
+                                candidate
+                                for candidate in build_result.candidates
+                                if candidate.action_key not in failed_keys
+                            ]
+                            if not candidates and cache_hit:
+                                kept_count = len(plans)
+                                extra_plans, latest_planner_trace = await self._safe_propose_plans(
                                     diagnosis=diagnosis,
                                     incident_id=incident.incident_id,
                                     failure_type=incident_failure_type,
                                     permitted_primitives=permitted_primitives,
                                     failed_action_keys=failed_keys,
-                                    constraints=planner_constraints,
+                                    constraints={
+                                        "must_return_executable_action": False,
+                                        "read_observations": {
+                                            "recent_logs": recent_logs[-5:],
+                                            "probes": probes,
+                                        },
+                                    },
                                 )
-                                self._store_cached_plans(
+                                plans = self._extend_cached_plans(
                                     failure_type=incident_failure_type,
                                     state_fingerprint=state_fingerprint,
-                                    plans=plans,
+                                    extra_plans=extra_plans,
+                                )
+                                await self._context.events.publish(
+                                    Event(
+                                        event_type="agent.plan_cache_extended",
+                                        payload={
+                                            "incident_id": incident.incident_id,
+                                            "failure_type": incident_failure_type,
+                                            "kept_plans": kept_count,
+                                            "menu_plans": len(plans),
+                                        },
+                                    )
                                 )
                                 build_result = await self._build_candidates_from_plans(
                                     failure_type=incident_failure_type,
@@ -415,44 +381,11 @@ class MIAgent:
                                     attempt_number=gate.attempts,
                                     has_recent_read_observation=has_recent_read_observation,
                                 )
-                                candidates = build_result.candidates
-                                if failed_keys:
-                                    filtered = [
-                                        candidate
-                                        for candidate in candidates
-                                        if candidate.action_key not in failed_keys
-                                    ]
-                                    filtered_out = [
-                                        candidate
-                                        for candidate in candidates
-                                        if candidate.action_key in failed_keys
-                                    ]
-                                    filtered_rejections = [
-                                        CandidateRejection(
-                                            plan_id="candidate-filter",
-                                            step_index=0,
-                                            action_key=candidate.action_key,
-                                            reason="failed_action_key",
-                                            detail=(
-                                                "Candidate removed because action key failed in"
-                                                " unchanged state"
-                                            ),
-                                        )
-                                        for candidate in filtered_out
-                                    ]
-                                    candidates = filtered
-                                    if filtered_rejections:
-                                        build_result = CandidateBuildResult(
-                                            candidates=build_result.candidates,
-                                            rejections=[
-                                                *build_result.rejections,
-                                                *filtered_rejections,
-                                            ],
-                                            needs_diagnosis=build_result.needs_diagnosis,
-                                        )
-                                        recent_rejections.extend(filtered_rejections)
-                                final_cache_hit = False
-                                recent_rejections.extend(build_result.rejections)
+                                candidates = [
+                                    candidate
+                                    for candidate in build_result.candidates
+                                    if candidate.action_key not in failed_keys
+                                ]
 
                             if not candidates:
                                 await self._emit_no_viable_summary(
@@ -460,14 +393,21 @@ class MIAgent:
                                     failure_type=incident_failure_type,
                                     state_fingerprint=state_fingerprint,
                                     attempt_number=gate.attempts,
-                                    replan_attempt=replan_attempt,
-                                    cache_hit=final_cache_hit,
+                                    replan_attempt=0,
+                                    cache_hit=cache_hit,
                                     plans=plans,
                                     rejections=build_result.rejections,
                                     planner_trace=latest_planner_trace,
                                 )
-                                terminal_outcome = "unresolved_autonomous"
-                                break
+                                visits += 1
+                                continue
+
+                            if not cache_hit:
+                                self._store_cached_plans(
+                                    failure_type=incident_failure_type,
+                                    state_fingerprint=state_fingerprint,
+                                    plans=plans,
+                                )
 
                             candidate_action_keys = [
                                 candidate.action_key for candidate in candidates
@@ -481,7 +421,6 @@ class MIAgent:
                                 failed_action_keys=failed_keys,
                                 state_changed_since_failure=False,
                             )
-
                             action_selected, epsilon, mode = self._context.selector.select(
                                 candidates=candidates,
                                 visits=visits,
@@ -497,238 +436,120 @@ class MIAgent:
                                     payload={
                                         "epsilon": epsilon,
                                         "mode": mode,
-                                        "action": action_selected.action_key,
+                                        "candidate_count": len(candidates),
+                                        "selected_action": action_selected.action_key,
                                     },
                                 )
                             )
 
-                if skill_used and matched_skill is not None:
-                    preconditions_ok, precondition_failures = (
-                        await self._recheck_skill_preconditions(
-                            skill=matched_skill,
-                            recent_logs=recent_logs,
-                        )
-                    )
-                    if not preconditions_ok:
-                        blocked_skill_names.add(matched_skill.name)
-                        await self._context.events.publish(
-                            Event(
-                                event_type="agent.skill_precondition_failed",
-                                payload={
-                                    "incident_id": incident.incident_id,
-                                    "skill": matched_skill.name,
-                                    "reasons": precondition_failures,
-                                },
-                            )
-                        )
-                        skill_used = False
-                        matched_skill = None
-                        action_selected = None
-                        candidate_action_keys = []
-                        propensities = {}
+                    if action_selected is None:
                         visits += 1
                         continue
 
-                if (
-                    action_selected is not None
-                    and not skill_used
-                    and action_selected.shield_state is not None
-                ):
-                    shield_postcheck = self._shield.postcheck_candidate(
-                        action_id=action_selected.action_id,
-                        parameters=action_selected.parameters,
-                        parameter_state=action_selected.shield_state,
-                    )
-                    if not shield_postcheck.allowed:
-                        blocked_reason = shield_postcheck.reason or "unknown"
-                        await self._context.events.publish(
-                            Event(
-                                event_type="agent.shield_post_blocked",
-                                payload={
-                                    "failure_type": incident_failure_type,
-                                    "action": action_selected.action_key,
-                                    "reason": blocked_reason,
-                                },
+                    if skill_used and matched_skill is not None:
+                        preconditions_ok, precondition_errors = (
+                            await self._recheck_skill_preconditions(
+                                skill=matched_skill,
+                                recent_logs=recent_logs,
                             )
                         )
-                        recent_rejections.append(
-                            CandidateRejection(
-                                plan_id="runtime-postcheck",
-                                step_index=0,
-                                action_key=action_selected.action_key,
-                                reason=f"shield_post_blocked:{blocked_reason}",
-                                detail="Candidate blocked by post-check before execution",
+                        if not preconditions_ok:
+                            blocked_skill_names.add(matched_skill.name)
+                            await self._context.events.publish(
+                                Event(
+                                    event_type="skills.precondition_failed",
+                                    payload={
+                                        "name": matched_skill.name,
+                                        "reasons": precondition_errors,
+                                    },
+                                )
                             )
-                        )
-                        self._executor.mark_failed(action_selected.action_key, state_fingerprint)
-                        risk_tier = self._context.tools.risk_tier(action_selected.action_id)
-                        reward_components = score_outcome(
-                            verifier_healthy=False,
-                            duration_seconds=0.0,
-                            attempts=gate.attempts,
-                            risk_tier=risk_tier,
-                            rolled_back=False,
-                            used_last_resort=False,
-                            data_loss_ratio=0.0,
-                        )
-                        reward = reward_components.net_reward
-                        credited_actions.append(
-                            EpisodeAction(
-                                action_key=action_selected.action_key,
-                                reward=reward,
-                                duration_seconds=0.0,
-                                success=False,
-                            )
-                        )
-                        self._observe_selector_reward(
-                            action_key=action_selected.action_key,
-                            reward=reward,
-                            skill_used=skill_used,
-                        )
-                        self._log_decision(
-                            incident_id=incident.incident_id,
-                            failure_type=incident_failure_type,
-                            state_features={
-                                "probe_fingerprint": state_fingerprint,
-                                "attempt": str(gate.attempts),
-                            },
-                            candidate_set=candidate_action_keys or [action_selected.action_key],
-                            chosen_action=action_selected.action_key,
-                            propensities=propensities or {action_selected.action_key: 1.0},
-                            verifier_healthy=None,
-                            reward_components=reward_components,
-                            planner_trace=latest_planner_trace,
-                            shield_outcome="post_blocked",
-                            step_cost_ms=0.0,
-                        )
-                        visits += 1
-                        continue
+                            visits += 1
+                            continue
 
-                started = datetime.now(tz=UTC)
-                execute_started = perf_counter()
-                try:
-                    if skill_used and matched_skill is not None and action_selected is not None:
-                        execution = await self._executor.execute_skill(
-                            skill=matched_skill,
-                            allowed_primitives=permitted_primitives,
-                            state_fingerprint=state_fingerprint,
-                        )
-                    elif action_selected is not None:
-                        execution = await self._executor.execute_primitive(
+                    if not skill_used:
+                        precheck = self._shield.precheck_candidate(
                             action_id=action_selected.action_id,
                             parameters=action_selected.parameters,
-                            allowed_primitives=permitted_primitives,
-                            state_fingerprint=state_fingerprint,
+                            attempt_number=gate.attempts,
+                            has_recent_read_observation=has_recent_read_observation,
                         )
-                    else:
-                        visits += 1
-                        continue
-                    await self._emit_span(
-                        "loop.execute",
-                        execute_started,
-                        attributes={"incident_id": incident.incident_id, "status": "ok"},
-                    )
-                except ToolError as exc:
-                    await self._emit_span(
-                        "loop.execute",
-                        execute_started,
-                        attributes={"incident_id": incident.incident_id, "status": "error"},
-                    )
-                    await self._context.events.publish(
-                        Event(
-                            event_type="agent.action_failed",
-                            payload={
-                                "failure_type": incident_failure_type,
-                                "error": str(exc),
-                                "skill_used": skill_used,
-                                "action": (
-                                    action_selected.action_key
-                                    if action_selected is not None
-                                    else None
-                                ),
-                            },
+                        if not precheck.allowed:
+                            visits += 1
+                            continue
+
+                        postcheck = self._shield.postcheck_candidate(
+                            action_id=action_selected.action_id,
+                            parameters=action_selected.parameters,
+                            parameter_state=precheck.parameter_state,
                         )
-                    )
-                    if action_selected is not None:
+                        if not postcheck.allowed:
+                            visits += 1
+                            continue
+
+                    started = datetime.now(tz=UTC)
+                    execute_started = perf_counter()
+                    try:
+                        if skill_used and matched_skill is not None:
+                            execution = await self._executor.execute_skill(
+                                skill=matched_skill,
+                                allowed_primitives=permitted_primitives,
+                                state_fingerprint=state_fingerprint,
+                            )
+                        else:
+                            execution = await self._executor.execute_primitive(
+                                action_id=action_selected.action_id,
+                                parameters=action_selected.parameters,
+                                allowed_primitives=permitted_primitives,
+                                state_fingerprint=state_fingerprint,
+                            )
+                        await self._emit_span(
+                            "loop.execute",
+                            execute_started,
+                            attributes={"incident_id": incident.incident_id, "status": "ok"},
+                        )
+                    except ToolError as exc:
+                        await self._emit_span(
+                            "loop.execute",
+                            execute_started,
+                            attributes={"incident_id": incident.incident_id, "status": "error"},
+                        )
                         self._executor.mark_failed(action_selected.action_key, state_fingerprint)
-                        episode_actions.append(
-                            (action_selected.action_id, action_selected.parameters, False)
-                        )
-                        risk_tier = self._context.tools.risk_tier(action_selected.action_id)
-                        reward_components = score_outcome(
-                            verifier_healthy=False,
-                            duration_seconds=0.0,
-                            attempts=gate.attempts,
-                            risk_tier=risk_tier,
-                            rolled_back=False,
-                            used_last_resort=False,
-                            data_loss_ratio=0.0,
-                        )
-                        reward = reward_components.net_reward
-                        credited_actions.append(
-                            EpisodeAction(
-                                action_key=action_selected.action_key,
-                                reward=reward,
-                                duration_seconds=0.0,
-                                success=False,
+                        await self._context.events.publish(
+                            Event(
+                                event_type="agent.action_failed",
+                                payload={
+                                    "failure_type": incident_failure_type,
+                                    "error": str(exc),
+                                    "skill_used": skill_used,
+                                    "action": action_selected.action_key,
+                                },
                             )
                         )
-                        self._observe_selector_reward(
-                            action_key=action_selected.action_key,
-                            reward=reward,
-                            skill_used=skill_used,
-                        )
-                        self._log_decision(
-                            incident_id=incident.incident_id,
-                            failure_type=incident_failure_type,
-                            state_features={
-                                "probe_fingerprint": state_fingerprint,
-                                "attempt": str(gate.attempts),
-                            },
-                            candidate_set=candidate_action_keys or [action_selected.action_key],
-                            chosen_action=action_selected.action_key,
-                            propensities=propensities or {action_selected.action_key: 1.0},
-                            verifier_healthy=None,
-                            reward_components=reward_components,
-                            planner_trace=latest_planner_trace,
-                            shield_outcome="execution_error",
-                            step_cost_ms=0.0,
-                        )
-                    visits += 1
-                    continue
+                        visits += 1
+                        continue
 
-                terminal_steps = [
-                    step_result.primitive_id
-                    for step_result in execution.step_results
-                    if self._context.tools.risk_tier(step_result.primitive_id) == "terminal"
-                ]
-                if terminal_steps:
-                    if skill_used and matched_skill is not None:
-                        for step in matched_skill.steps:
-                            episode_actions.append((step.primitive_id, step.parameters, False))
-                    elif action_selected is not None:
-                        episode_actions.append(
-                            (action_selected.action_id, action_selected.parameters, False)
-                        )
-                    credited_actions.append(
-                        EpisodeAction(
-                            action_key=execution.action_key,
-                            reward=0.0,
-                            duration_seconds=0.0,
-                            success=False,
-                            metadata={"terminal": ",".join(terminal_steps)},
-                        )
+                    verify_started = perf_counter()
+                    verify_result = await self._context.verifier.verify(
+                        failure_type=incident_failure_type
                     )
+                    await self._emit_span(
+                        "loop.verify",
+                        verify_started,
+                        attributes={"incident_id": incident.incident_id},
+                    )
+                    duration = (datetime.now(tz=UTC) - started).total_seconds()
+
+                    risk_tier = self._execution_risk_tier(execution)
                     reward_components = score_outcome(
-                        verifier_healthy=False,
-                        duration_seconds=0.0,
+                        verifier_healthy=verify_result.healthy,
+                        duration_seconds=duration,
                         attempts=gate.attempts,
-                        risk_tier="terminal",
-                        rolled_back=False,
+                        risk_tier=risk_tier,
+                        rolled_back=not verify_result.healthy,
                         used_last_resort=False,
-                        data_loss_ratio=0.0,
+                        data_loss_ratio=self._data_loss_ratio(verify_result.details),
                     )
-                    credited_actions[-1].reward = reward_components.net_reward
                     self._observe_selector_reward(
                         action_key=execution.action_key,
                         reward=reward_components.net_reward,
@@ -744,158 +565,67 @@ class MIAgent:
                         candidate_set=candidate_action_keys or [execution.action_key],
                         chosen_action=execution.action_key,
                         propensities=propensities or {execution.action_key: 1.0},
-                        verifier_healthy=None,
-                        reward_components=reward_components,
-                        planner_trace=latest_planner_trace,
-                        shield_outcome="allowed",
-                        step_cost_ms=0.0,
-                        recovery_result="unresolved_autonomous",
-                    )
-                    terminal_outcome = "unresolved_autonomous"
-                    break
-
-                verify_started = perf_counter()
-                verify_result = await self._context.verifier.verify(
-                    failure_type=incident_failure_type,
-                )
-                await self._emit_span(
-                    "loop.verify",
-                    verify_started,
-                    attributes={"incident_id": incident.incident_id},
-                )
-                ended = datetime.now(tz=UTC)
-                duration = (ended - started).total_seconds()
-
-                if verify_result.healthy:
-                    risk_tier = self._execution_risk_tier(execution)
-                    data_loss_ratio = self._data_loss_ratio(verify_result.details)
-                    credit_success = self._continuity_credit_ok(verify_result.details)
-                    reward_components = score_outcome(
-                        verifier_healthy=credit_success,
-                        duration_seconds=duration,
-                        attempts=gate.attempts,
-                        risk_tier=risk_tier,
-                        rolled_back=False,
-                        used_last_resort=False,
-                        data_loss_ratio=data_loss_ratio,
-                    )
-                    reward = reward_components.net_reward
-                    if skill_used and matched_skill is not None:
-                        for step in matched_skill.steps:
-                            episode_actions.append(
-                                (step.primitive_id, step.parameters, credit_success)
-                            )
-                    elif action_selected is not None:
-                        episode_actions.append(
-                            (action_selected.action_id, action_selected.parameters, credit_success)
-                        )
-                    credited_actions.append(
-                        EpisodeAction(
-                            action_key=execution.action_key,
-                            reward=reward,
-                            duration_seconds=duration,
-                            success=credit_success,
-                        )
-                    )
-                    self._observe_selector_reward(
-                        action_key=execution.action_key,
-                        reward=reward,
-                        skill_used=skill_used,
-                    )
-                    self._log_decision(
-                        incident_id=incident.incident_id,
-                        failure_type=incident_failure_type,
-                        state_features={
-                            "probe_fingerprint": state_fingerprint,
-                            "attempt": str(gate.attempts),
-                        },
-                        candidate_set=candidate_action_keys or [execution.action_key],
-                        chosen_action=execution.action_key,
-                        propensities=propensities or {execution.action_key: 1.0},
-                        verifier_healthy=credit_success,
+                        verifier_healthy=verify_result.healthy,
                         reward_components=reward_components,
                         planner_trace=latest_planner_trace,
                         shield_outcome="allowed",
                         step_cost_ms=duration * 1000.0,
-                        recovery_result=(
-                            "recovered" if credit_success else "recovered_without_continuity_credit"
-                        ),
+                        recovery_result="recovered" if verify_result.healthy else "not_recovered",
                     )
-                    if skill_used and matched_skill is not None:
-                        self._context.skill_library.record_result(
-                            matched_skill.name,
-                            success=True,
-                            recovery_seconds=duration,
-                        )
-                    await self._on_resolved(
-                        incident=incident,
-                        failure_type=incident_failure_type,
-                        fingerprint=fingerprint,
-                        episode_actions=episode_actions,
-                        credited_actions=credited_actions,
-                    )
-                    resolved = True
-                    break
 
-                await self._executor.rollback_if_needed(execution.snapshot)
-                self._executor.mark_failed(execution.action_key, state_fingerprint)
-                risk_tier = self._execution_risk_tier(execution)
-                data_loss_ratio = self._data_loss_ratio(verify_result.details)
-                reward_components = score_outcome(
-                    verifier_healthy=False,
-                    duration_seconds=duration,
-                    attempts=gate.attempts,
-                    risk_tier=risk_tier,
-                    rolled_back=True,
-                    used_last_resort=False,
-                    data_loss_ratio=data_loss_ratio,
-                )
-                reward = reward_components.net_reward
-                if skill_used and matched_skill is not None:
-                    for step in matched_skill.steps:
-                        episode_actions.append((step.primitive_id, step.parameters, False))
-                elif action_selected is not None:
-                    episode_actions.append(
-                        (action_selected.action_id, action_selected.parameters, False)
+                    if verify_result.healthy:
+                        if skill_used and matched_skill is not None:
+                            for step in matched_skill.steps:
+                                episode_actions.append((step.primitive_id, step.parameters, True))
+                        else:
+                            episode_actions.append(
+                                (
+                                    action_selected.action_id,
+                                    action_selected.parameters,
+                                    True,
+                                )
+                            )
+                        credited_actions.append(
+                            EpisodeAction(
+                                action_key=execution.action_key,
+                                reward=reward_components.net_reward,
+                                duration_seconds=duration,
+                                success=self._continuity_credit_ok(verify_result.details),
+                            )
+                        )
+                        await self._context.events.publish(
+                            Event(
+                                event_type="agent.recovered",
+                                payload={
+                                    "incident": incident.incident_id,
+                                    "failure_type": incident_failure_type,
+                                    "attempts": gate.attempts,
+                                    "duration_seconds": duration,
+                                },
+                            )
+                        )
+                        await self._on_resolved(
+                            incident=incident,
+                            failure_type=incident_failure_type,
+                            fingerprint=fingerprint,
+                            episode_actions=episode_actions,
+                            credited_actions=credited_actions,
+                        )
+                        resolved = True
+                        break
+
+                    await self._executor.rollback_if_needed(execution.snapshot)
+                    self._executor.mark_failed(execution.action_key, state_fingerprint)
+                    visits += 1
+
+                except LLMPermanentError as exc:
+                    terminal_outcome = "llm_permanent_error"
+                    await self._context.events.publish(
+                        Event(
+                            event_type="llm.permanent_error",
+                            payload={"incident_id": incident.incident_id, "error": str(exc)},
+                        )
                     )
-                credited_actions.append(
-                    EpisodeAction(
-                        action_key=execution.action_key,
-                        reward=reward,
-                        duration_seconds=duration,
-                        success=False,
-                    )
-                )
-                self._observe_selector_reward(
-                    action_key=execution.action_key,
-                    reward=reward,
-                    skill_used=skill_used,
-                )
-                self._log_decision(
-                    incident_id=incident.incident_id,
-                    failure_type=incident_failure_type,
-                    state_features={
-                        "probe_fingerprint": state_fingerprint,
-                        "attempt": str(gate.attempts),
-                    },
-                    candidate_set=candidate_action_keys or [execution.action_key],
-                    chosen_action=execution.action_key,
-                    propensities=propensities or {execution.action_key: 1.0},
-                    verifier_healthy=False,
-                    reward_components=reward_components,
-                    planner_trace=latest_planner_trace,
-                    shield_outcome="allowed",
-                    step_cost_ms=duration * 1000.0,
-                    recovery_result="not_recovered",
-                )
-                if skill_used and matched_skill is not None:
-                    self._context.skill_library.record_result(
-                        matched_skill.name,
-                        success=False,
-                        recovery_seconds=duration,
-                    )
-                    self._context.skill_library.retire_if_repeated_failures(matched_skill.name)
-                visits += 1
 
             if not resolved:
                 outcome = terminal_outcome or "unresolved_autonomous"
@@ -908,41 +638,40 @@ class MIAgent:
                         },
                     )
                 )
-                if outcome != "supervisor_rescued":
-                    outcome_attempt = max(1, gate.attempts)
-                    reward_components = score_outcome(
-                        verifier_healthy=False,
-                        duration_seconds=0.0,
-                        attempts=outcome_attempt,
-                        risk_tier="terminal",
-                        rolled_back=False,
-                        used_last_resort=False,
-                        data_loss_ratio=0.0,
-                    )
-                    outcome_key = f"outcome:{outcome}"
-                    self._context.policy.update_action(
-                        failure_type=incident_failure_type,
-                        action_key=outcome_key,
-                        reward=reward_components.net_reward,
-                        success=False,
-                    )
-                    self._log_decision(
-                        incident_id=incident.incident_id,
-                        failure_type=incident_failure_type,
-                        state_features={
-                            "probe_fingerprint": state_fingerprint,
-                            "attempt": str(outcome_attempt),
-                        },
-                        candidate_set=[outcome_key],
-                        chosen_action=outcome_key,
-                        propensities={outcome_key: 1.0},
-                        verifier_healthy=False,
-                        reward_components=reward_components,
-                        planner_trace=latest_planner_trace,
-                        shield_outcome="not_checked",
-                        step_cost_ms=0.0,
-                        recovery_result=outcome,
-                    )
+                outcome_attempt = max(1, last_attempt)
+                reward_components = score_outcome(
+                    verifier_healthy=False,
+                    duration_seconds=0.0,
+                    attempts=outcome_attempt,
+                    risk_tier="terminal",
+                    rolled_back=False,
+                    used_last_resort=False,
+                    data_loss_ratio=0.0,
+                )
+                outcome_key = f"outcome:{outcome}"
+                self._context.policy.update_action(
+                    failure_type=incident_failure_type,
+                    action_key=outcome_key,
+                    reward=reward_components.net_reward,
+                    success=False,
+                )
+                self._log_decision(
+                    incident_id=incident.incident_id,
+                    failure_type=incident_failure_type,
+                    state_features={
+                        "probe_fingerprint": state_fingerprint,
+                        "attempt": str(outcome_attempt),
+                    },
+                    candidate_set=[outcome_key],
+                    chosen_action=outcome_key,
+                    propensities={outcome_key: 1.0},
+                    verifier_healthy=False,
+                    reward_components=reward_components,
+                    planner_trace=latest_planner_trace,
+                    shield_outcome="not_checked",
+                    step_cost_ms=0.0,
+                    recovery_result=outcome,
+                )
         finally:
             llm_usage_end = self._snapshot_llm_usage()
             await self._context.events.publish(
@@ -1017,68 +746,6 @@ class MIAgent:
                     },
                 )
             )
-
-    async def _on_cap_reached(
-        self,
-        incident: IncidentLock,
-        failure_type: str,
-        credited_actions: list[EpisodeAction],
-    ) -> None:
-        failure_type = self._canonical_failure_type(failure_type)
-        backup_path = await self._context.supervisor.run_last_resort(incident)
-        verify = await self._context.verifier.verify(failure_type=failure_type)
-        await self._context.alerts.send(
-            title="MI cap reached",
-            message=(
-                f"incident={incident.incident_id} backup={backup_path} healthy={verify.healthy}"
-            ),
-        )
-        for action in credited_actions:
-            action.reward -= 2.0
-            action.success = False
-        if credited_actions:
-            self._context.policy.update_episode(failure_type, credited_actions)
-        outcome_key = "outcome:supervisor_rescued"
-        reward_components = score_outcome(
-            verifier_healthy=False,
-            duration_seconds=0.0,
-            attempts=max(1, incident.attempts),
-            risk_tier="terminal",
-            rolled_back=False,
-            used_last_resort=True,
-            data_loss_ratio=self._data_loss_ratio(verify.details),
-        )
-        self._context.policy.update_action(
-            failure_type=failure_type,
-            action_key=outcome_key,
-            reward=reward_components.net_reward,
-            success=False,
-        )
-        self._log_decision(
-            incident_id=incident.incident_id,
-            failure_type=failure_type,
-            state_features={
-                "probe_fingerprint": "cap_reached",
-                "attempt": str(max(1, incident.attempts)),
-            },
-            candidate_set=[outcome_key],
-            chosen_action=outcome_key,
-            propensities={outcome_key: 1.0},
-            verifier_healthy=False,
-            reward_components=reward_components,
-            planner_trace=None,
-            shield_outcome="not_checked",
-            step_cost_ms=0.0,
-            recovery_result="supervisor_rescued",
-        )
-        lesson = await self._safe_write_lesson(
-            failure_type,
-            summary=(
-                f"Cap reached for incident {incident.incident_id}; last-resort restore triggered"
-            ),
-        )
-        if lesson is not None:
-            self._context.policy.record_lesson(failure_type, lesson)
 
     def _match_skill_without_llm(
         self,
@@ -1217,6 +884,9 @@ class MIAgent:
             )
             await self._emit_span("loop.match_skill", span_started)
             return matched
+        except LLMPermanentError:
+            await self._emit_span("loop.match_skill", span_started, attributes={"status": "error"})
+            raise
         except (LLMUnavailableError, LLMOutputValidationError) as exc:
             await self._emit_span("loop.match_skill", span_started, attributes={"status": "error"})
             await self._context.events.publish(
@@ -1235,7 +905,8 @@ class MIAgent:
     ) -> tuple[Diagnosis, dict[str, Any], dict[str, str]] | None:
         span_started = perf_counter()
         hint = None if failure_type == _UNCLASSIFIED_FAILURE else failure_type
-        for attempt in range(self._llm_task_attempts()):
+        attempt = 0
+        while True:
             try:
                 diagnosis = await self._diagnoser.diagnose(
                     failure_type_hint=hint,
@@ -1244,21 +915,24 @@ class MIAgent:
                 )
                 await self._emit_span("loop.diagnose", span_started)
                 return diagnosis
+            except LLMPermanentError:
+                await self._emit_span("loop.diagnose", span_started, attributes={"status": "error"})
+                raise
             except (LLMUnavailableError, LLMOutputValidationError) as exc:
+                attempt += 1
+                delay = self._retry_delay(attempt)
                 await self._context.events.publish(
                     Event(
                         event_type="llm.diagnose_retry",
                         payload={
                             "failure_type": failure_type,
-                            "attempt": attempt + 1,
+                            "attempt": attempt,
+                            "retry_in_seconds": round(delay, 3),
                             "error": str(exc),
                         },
                     )
                 )
-                await asyncio.sleep(0.2)
-                continue
-        await self._emit_span("loop.diagnose", span_started, attributes={"status": "error"})
-        return None
+                await asyncio.sleep(delay)
 
     async def _safe_propose_plans(
         self,
@@ -1280,7 +954,8 @@ class MIAgent:
             "constraints",
         )
         usage_before = self._snapshot_llm_usage()
-        for attempt in range(self._llm_task_attempts()):
+        attempt = 0
+        while True:
             try:
                 plans = await self._context.llm.propose_plans(
                     diagnosis=diagnosis,
@@ -1314,27 +989,31 @@ class MIAgent:
                     )
                 )
                 return plans, trace
+            except LLMPermanentError:
+                await self._emit_span("loop.plan", span_started, attributes={"status": "error"})
+                raise
             except (LLMUnavailableError, LLMOutputValidationError) as exc:
+                attempt += 1
+                delay = self._retry_delay(attempt)
                 await self._context.events.publish(
                     Event(
                         event_type="llm.plan_retry",
                         payload={
                             "failure_type": failure_type,
-                            "attempt": attempt + 1,
+                            "attempt": attempt,
+                            "retry_in_seconds": round(delay, 3),
                             "error": str(exc),
                         },
                     )
                 )
-                await asyncio.sleep(0.2)
-        await self._emit_span("loop.plan", span_started, attributes={"status": "error"})
-        return (
-            [],
-            PlannerTrace(
-                planner_input_fields=planner_fields,
-                latency_ms=max(0.0, (perf_counter() - span_started) * 1000.0),
-                token_estimate=0,
-            ),
-        )
+                await asyncio.sleep(delay)
+
+    def _retry_delay(self, attempt: int) -> float:
+        bounded_attempt = min(max(0, attempt - 1), 8)
+        base = min(self._context.settings.llm_retry_max_delay_seconds, 2**bounded_attempt)
+        jitter_span = base * self._context.settings.llm_retry_jitter_ratio
+        jitter = float(random.uniform(-jitter_span, jitter_span))
+        return float(max(0.05, base + jitter))
 
     def _plan_cache_key(self, failure_type: str, state_fingerprint: str) -> tuple[str, str]:
         return (self._canonical_failure_type(failure_type), state_fingerprint)
@@ -1363,8 +1042,37 @@ class MIAgent:
         key = self._plan_cache_key(failure_type, state_fingerprint)
         self._plan_cache[key] = [plan.model_copy(deep=True) for plan in plans]
 
-    def _llm_task_attempts(self) -> int:
-        return max(2, self._context.settings.llm_retries + 1)
+    def _extend_cached_plans(
+        self,
+        *,
+        failure_type: str,
+        state_fingerprint: str,
+        extra_plans: list[CandidatePlan],
+    ) -> list[CandidatePlan]:
+        existing = self._get_cached_plans(
+            failure_type=failure_type,
+            state_fingerprint=state_fingerprint,
+        ) or []
+        seen = {self._plan_menu_signature(plan) for plan in existing}
+        merged = list(existing)
+        for plan in extra_plans:
+            signature = self._plan_menu_signature(plan)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            merged.append(plan.model_copy(deep=True))
+        self._store_cached_plans(
+            failure_type=failure_type,
+            state_fingerprint=state_fingerprint,
+            plans=merged,
+        )
+        return merged
+
+    @staticmethod
+    def _plan_menu_signature(plan: CandidatePlan) -> tuple[str, tuple[tuple[str, str], ...]]:
+        step = plan.steps[0]
+        parameters = tuple(sorted((key, repr(value)) for key, value in step.parameters.items()))
+        return (step.action_id, parameters)
 
     async def _safe_write_lesson(self, failure_type: str, summary: str) -> str | None:
         try:
@@ -1559,6 +1267,8 @@ class MIAgent:
         readonly_round: int,
         max_rounds: int,
         force_executable: bool,
+        attempt_number: int,
+        incident_elapsed_seconds: float,
         read_observations: list[dict[str, Any]] | None = None,
         state_snapshot: dict[str, Any] | None = None,
         state_version: str | None = None,
@@ -1571,6 +1281,16 @@ class MIAgent:
             "readonly_round": readonly_round,
             "readonly_round_cap": max_rounds,
             "must_return_executable_action": force_executable,
+            "attempt_context": {
+                "attempt_number": attempt_number,
+                "incident_elapsed_seconds": round(max(0.0, incident_elapsed_seconds), 3),
+            },
+            "objective": {
+                "autonomous_mode": True,
+                "human_in_loop": False,
+                "primary_goal": "restore_verifier_health_fast",
+                "secondary_goal": "preserve_data_minimize_irreversible_risk",
+            },
         }
         if read_observations:
             constraints["read_observations"] = read_observations

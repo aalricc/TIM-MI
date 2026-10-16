@@ -1,0 +1,24 @@
+---
+description: After a code fix or feature, append a work log entry and a commit message. Never commit.
+alwaysApply: true
+---
+
+# Work log before the user commits
+
+When a change fixes or implements behavior in this repo, append one entry to `docs/WORKLOG.md` in the same turn, before the final reply. Do not commit, push, or stage.
+
+Skip the log when the turn only answers a question or does not change project files.
+
+Each entry:
+
+```
+## YYYY-MM-DD — Short title
+
+**Problem.** What was wrong or missing.
+**Approach.** The technical choice, including what was deliberately left in place.
+**Files.** Paths that changed.
+**Check.** Commands run and what passed or could not be verified.
+**Commit message.** A subject line plus one sentence on why, in a fenced block the user can paste.
+```
+
+Newest entry goes directly under the intro. Do not put secrets, API keys, or tokens in the log.

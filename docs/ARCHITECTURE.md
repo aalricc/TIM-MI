@@ -1,59 +1,54 @@
-# MI v2 Architecture
-
-This document describes the current MI v2 runtime and evaluation architecture implemented in this repository.
+# MI Architecture
 
 ## Runtime pipeline
 
-1. **Monitor loop (`src/mi_agent/agent/monitor.py`)**
-   - Pings the target service and triggers incident handling on unhealthy signals.
-2. **Incident supervisor (`src/mi_agent/supervisor/supervisor.py`)**
-   - Owns incident lock, configurable attempt/hour/time caps, backoff, brokered restore, and last-resort restore.
-   - Any cap can be disabled by setting the corresponding limit to `0`.
-3. **Observation and diagnosis (`src/mi_agent/agent/diagnose.py`)**
-   - Collects logs and probes, computes fingerprints, asks the LLM for diagnosis (or degrades safely).
-4. **Planning and selection (`src/mi_agent/agent/agent.py`)**
-   - Typed plan validation, plan cache keyed by canonical failure type + state fingerprint, policy ranking,
-     shield checks, and execution.
-5. **Tool execution (`src/mi_agent/tools/executor.py`)**
-   - Allowlisted primitives only, schema validation, snapshot-before-mutate, rollback support by tier.
-6. **Verification (`src/mi_agent/verifier/verifier.py`)**
-   - Independent multi-layer verifier gates success (connectivity, integrity, schema, RW probe,
-     continuity, delayed re-verify).
-7. **Learning (`src/mi_agent/policy`, `src/mi_agent/skills`)**
-   - Decision logging with propensities, reward updates, skill distillation/retrieval/lifecycle,
-     checkpoint import/export.
+1. **Monitor** (`src/mi_agent/agent/monitor.py`)
+   - Detects target-health failures and opens recovery handling.
+2. **Supervisor** (`src/mi_agent/supervisor/supervisor.py`)
+   - Owns incident lock and attempt pacing backoff.
+3. **Observation + diagnosis** (`src/mi_agent/agent/diagnose.py`)
+   - Collects logs/probes and requests structured diagnosis from LLM.
+4. **Planning + selection** (`src/mi_agent/agent/agent.py`)
+   - Requests plans from LLM, validates candidates, and selects next action.
+5. **Execution** (`src/mi_agent/tools/executor.py`, `src/mi_agent/agent/executor.py`)
+   - Executes only registered guarded primitives with rollback support.
+6. **Verification** (`src/mi_agent/verifier/verifier.py`)
+   - Independently verifies health/integrity/schema and gates success.
+7. **Learning** (`src/mi_agent/policy`, `src/mi_agent/skills`)
+   - Updates policy values and persists distilled skills.
 
-## Data and state
+## LLM architecture
+
+- Mandatory live model: `gpt-5.3-codex`.
+- Endpoint source: `MI_LLM_ENDPOINT`.
+- Preflight call required before live scenario/test execution.
+- Retries for transient failures use exponential backoff + jitter with max delay.
+- Permanent configuration/auth/permission errors stop the incident.
+
+## Tooling and safety boundaries
+
+- One primitive registry in `src/mi_agent/tools/executor.py`.
+- Strict allowlist + typed validation + least-privilege path guard.
+- Unknown actions are rejected and replanned.
+- LLM output is never executed as shell/code.
+
+## State and persistence
 
 - `state/policy_store.json`: policy values and lessons.
-- `state/skills.md`: learned skills knowledge base and lifecycle metadata.
-- `state/decision_log.jsonl`: per-decision records (features, candidates, chosen action, propensities, rewards).
-- `state/events.jsonl`: persisted runtime event stream used by audit export.
-- `state/failure_taxonomy.json`: vocabulary-only failure taxonomy and review queue.
+- `state/global_knowledge/skills.md`: distilled skill knowledge base.
+- `state/decision_log.jsonl`: decision telemetry.
+- `state/events.jsonl`: incident/execution events.
+- `state/failure_taxonomy.json`: failure taxonomy and review state.
 
 ## API and observability
 
+- FastAPI app: `src/mi_agent/api/server.py`.
 - Core endpoints: `/state`, `/policy`, `/skills`, `/incidents`, `/events/stream`.
-- Phase 7 observability: `/metrics`, `/decisions`, `/eval/runs`, versioned SSE event payloads.
-- Phase 8 dashboard views: `/dashboard/views` returns
-  - `learning_curve`
-  - `per_scenario_results`
-  - `skill_lifecycle`
-  - `exploration_rate`
-  - `last_resort_rate`
+- Dashboard payload endpoint: `/dashboard/views` with `learning_curve`, `per_scenario_results`, `skill_lifecycle`, `exploration_rate`, and `last_resort_rate`.
 
-## Evaluation and reporting stack
+## Evaluation stack
 
-- Harness and scenario model: `src/mi_agent/eval/scenarios.py`, `injectors.py`, `oracles.py`.
-- Replay runner: `src/mi_agent/eval/runner.py`.
-- CLI entrypoint: `src/mi_agent/eval/cli.py` (`mi-eval ...`).
-- Phase 8 experiment suite: `src/mi_agent/eval/experiments.py`.
-- Report generator/dashboard payload builder: `src/mi_agent/eval/reporting.py`.
-- Audit exporter: `src/mi_agent/eval/audit.py`.
-
-## Security boundaries
-
-- Runtime never imports solvability references.
-- Runtime does not read under `docs/`.
-- Primitive descriptions remain neutral/mechanical; no scenario instructions.
-- Verifier is failure-type agnostic and remains the only success gate.
+- Scenario harness: `src/mi_agent/eval/scenarios.py`, `injectors.py`, `oracles.py`.
+- Live evaluator: `src/mi_agent/eval/runner.py`.
+- CLI: `src/mi_agent/eval/cli.py` (`mi-eval`).
+- Experiment/report pipeline: `src/mi_agent/eval/experiments.py`, `reporting.py`, `reports.py`.

@@ -39,6 +39,21 @@ def _apply_schema_plan() -> dict[str, object]:
     }
 
 
+def _restart_service_plan() -> dict[str, object]:
+    return {
+        "name": "restart",
+        "rationale": "restart after schema apply failed verification",
+        "steps": [
+            {
+                "action_id": "restart_service",
+                "parameters": {"service_name": "target-app"},
+                "preconditions": ["probe:service.up=false"],
+                "expected_postconditions": ["probe:service.up=true"],
+            }
+        ],
+    }
+
+
 async def _async_true() -> bool:
     return True
 
@@ -100,3 +115,42 @@ async def test_plan_cache_key_includes_state_fingerprint(test_settings) -> None:
     assert llm.calls["propose_plans"] == 2
     events = [event.event_type for event in context.events.events]
     assert events.count("agent.plan_cache_hit") == 0
+
+
+async def test_exhausted_plan_cache_keeps_prior_actions_and_appends_new_ones(
+    test_settings,
+) -> None:
+    llm = FakeLLMClient()
+    llm.queue_response("diagnose", _diagnosis())
+    llm.queue_response("propose_plans", [_apply_schema_plan()])
+    llm.queue_response("diagnose", _diagnosis())
+    llm.queue_response("propose_plans", [_restart_service_plan()])
+
+    agent, context = build_agent(test_settings, llm)
+    original_verify = context.verifier.verify
+    verify_calls = 0
+
+    async def _fail_once_then_pass(*, failure_type: str):
+        nonlocal verify_calls
+        verify_calls += 1
+        result = await original_verify(failure_type=failure_type)
+        if verify_calls == 1:
+            return result.model_copy(update={"healthy": False})
+        return result.model_copy(update={"healthy": True})
+
+    context.verifier.verify = _fail_once_then_pass  # type: ignore[method-assign]
+
+    test_settings.db_file.unlink()
+    _write_missing_db_log(test_settings)
+    await agent._recover_loop()
+
+    cached_action_ids = [
+        plan.steps[0].action_id
+        for cached_plans in agent._plan_cache.values()
+        for plan in cached_plans
+    ]
+    assert cached_action_ids == ["apply_schema", "restart_service"]
+    assert llm.calls["propose_plans"] == 2
+    events = [event.event_type for event in context.events.events]
+    assert "agent.plan_cache_extended" in events
+    assert "agent.plan_cache_hit" in events

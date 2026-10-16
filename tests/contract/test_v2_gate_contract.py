@@ -25,7 +25,7 @@ def test_gate_script_includes_required_checks_in_order() -> None:
         'run_check "pytest -q -m integrity" pytest -q -m integrity',
         'run_check "pytest -q -m ${phase_marker}" pytest -q -m "$phase_marker"',
         'run_check "pytest -q" pytest -q',
-        'run_check "mi-eval smoke --replay" mi-eval smoke --replay',
+        'run_check "mi-eval smoke" mi-eval smoke',
     ]
 
     index = -1

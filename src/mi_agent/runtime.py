@@ -13,7 +13,6 @@ from mi_agent.skills.distiller import SkillDistiller
 from mi_agent.skills.embedding import DeterministicEmbedder
 from mi_agent.skills.library import SkillLibrary
 from mi_agent.skills.matcher import SkillMatcher
-from mi_agent.supervisor.last_resort import HTTPLastResortClient, LocalLastResortClient
 from mi_agent.supervisor.supervisor import Supervisor
 from mi_agent.tools.executor import ToolExecutor
 from mi_agent.verifier.verifier import Verifier
@@ -41,12 +40,7 @@ def build_agent(
         trusted_regression_failures=settings.skill_trusted_regression_failures,
     )
     llm = llm_client or OpenAILLMClient(settings)
-    restorer = (
-        HTTPLastResortClient(settings.last_resort_url)
-        if settings.last_resort_url
-        else LocalLastResortClient(settings.backups_root, settings.db_file)
-    )
-    supervisor = Supervisor(settings, event_bus, restorer)
+    supervisor = Supervisor(settings, event_bus)
     tools = ToolExecutor(
         settings,
         event_bus,

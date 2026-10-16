@@ -83,8 +83,6 @@ def create_api(context: MIContext, agent: MIAgent) -> FastAPI:
                 "failure_type": lock.failure_type,
                 "attempts": lock.attempts,
                 "elapsed_seconds": elapsed,
-                "cap_attempts": context.settings.max_attempts_per_incident,
-                "cap_seconds": context.settings.max_incident_seconds,
             }
 
         return {
@@ -120,7 +118,6 @@ def create_api(context: MIContext, agent: MIAgent) -> FastAPI:
             if event.event_type in {
                 "supervisor.incident_opened",
                 "supervisor.incident_released",
-                "supervisor.last_resort_restored",
                 "skills.learned",
             }:
                 incidents.append(event.model_dump(mode="json"))

@@ -140,7 +140,7 @@ else
 fi
 
 if (( phase >= 2 )); then
-  run_check "mi-eval smoke --replay" mi-eval smoke --replay
+  run_check "mi-eval smoke" mi-eval smoke
 fi
 
 if [[ "$mode" == "exit" ]]; then

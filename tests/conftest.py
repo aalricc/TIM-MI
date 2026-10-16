@@ -31,8 +31,6 @@ def test_settings(tmp_path: Path) -> MISettings:
 
     return MISettings(
         monitor_interval_seconds=0.05,
-        max_attempts_per_incident=4,
-        max_incident_seconds=20,
         supervisor_backoff_initial_seconds=0.01,
         supervisor_backoff_max_seconds=0.05,
         app_root=app_root,

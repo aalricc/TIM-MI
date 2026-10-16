@@ -19,6 +19,7 @@ from mi_agent.agent.diagnose import Diagnoser
 from mi_agent.config import MISettings
 from mi_agent.errors import PrimitiveNotAllowedError
 from mi_agent.eval.injectors import InjectorContext, run_injector
+from mi_agent.eval.oracles import TRAP_ACTIONS_BY_SCENARIO
 from mi_agent.eval.scenarios import SCENARIO_BY_ID
 from mi_agent.events.bus import EventBus
 from mi_agent.llm.client import OpenAILLMClient
@@ -55,6 +56,9 @@ class RecordingLLMClient:
     @property
     def usage(self) -> Any:
         return self._inner.usage
+
+    async def preflight(self) -> dict[str, str]:
+        return await self._inner.preflight()
 
     async def diagnose(
         self,
@@ -118,9 +122,13 @@ class RecordingLLMClient:
             candidate_skills=candidate_skills,
         )
 
-    async def write_lesson(self, *, failure_type: str, summary: str) -> str:
+    async def write_lesson(
+        self,
+        *,
+        failure_type: str,
+        summary: str,
+    ) -> str:
         return await self._inner.write_lesson(failure_type=failure_type, summary=summary)
-
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Real planner analysis and readonly-replan eval")
@@ -584,6 +592,34 @@ def _capture_db_rowcount_snapshot(db_path: Path) -> dict[str, Any]:
         return {"exists": True, "tables": {}, "total_rows": -1, "error": "sqlite_error"}
 
 
+def _seed_sentinel_data(*, app_root: Path, row_count: int = 5) -> dict[str, int]:
+    db_path = app_root / "data" / "app.db"
+    if not db_path.exists():
+        return {"before": 0, "after": 0, "inserted": 0}
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS widgets "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
+                "created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+            )
+            before_row = conn.execute("SELECT COUNT(*) FROM widgets").fetchone()
+            before = int(before_row[0]) if before_row is not None else 0
+            for index in range(row_count):
+                conn.execute(
+                    "INSERT INTO widgets(name) VALUES (?)",
+                    (f"__mi_seed_{index}",),
+                )
+            conn.commit()
+            after_row = conn.execute("SELECT COUNT(*) FROM widgets").fetchone()
+            after = int(after_row[0]) if after_row is not None else before
+    except sqlite3.Error:
+        return {"before": 0, "after": 0, "inserted": 0}
+
+    return {"before": before, "after": after, "inserted": max(0, after - before)}
+
+
 def _seed_verified_backup(*, app_root: Path, backups_root: Path) -> Path | None:
     db_path = app_root / "data" / "app.db"
     if not db_path.exists():
@@ -650,6 +686,38 @@ def _data_preserved(
     return before_data.get("tables") == after_data.get("tables")
 
 
+def _p95(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, ((len(ordered) * 95 + 99) // 100) - 1)
+    return float(ordered[index])
+
+
+def _llm_usage_counts(events: list[Any]) -> tuple[int, int]:
+    llm_call_count = 0
+    llm_error_count = 0
+    for event in events:
+        if event.event_type != "agent.llm_usage_incident":
+            continue
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        llm_call_count += max(0, int(payload.get("llm_calls", 0)))
+        llm_error_count += max(0, int(payload.get("llm_failures", 0)))
+    return llm_call_count, llm_error_count
+
+
+def _recent_llm_event_summary(events: list[Any], *, limit: int = 5) -> list[dict[str, Any]]:
+    llm_events = [event for event in events if event.event_type.startswith("llm.")]
+    summary: list[dict[str, Any]] = []
+    for event in llm_events[-limit:]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        item: dict[str, Any] = {"event_type": event.event_type}
+        if isinstance(payload.get("attempt"), int):
+            item["attempt"] = payload["attempt"]
+        summary.append(item)
+    return summary
+
+
 def _related_path_allowlist_for_scenario(scenario_id: str) -> set[str]:
     common = {
         "data/app.db",
@@ -658,7 +726,7 @@ def _related_path_allowlist_for_scenario(scenario_id: str) -> set[str]:
     }
     scenario_specific = {
         "S05": {"data/app.db-wal"},
-        "S06": {"data/app.db-journal"},
+        "S06": {"data/app.db-journal", "data/app.db.lock"},
         "S07": {"tmp_volume_fill.bin"},
         "S10": {"config/runtime.env"},
     }
@@ -790,8 +858,6 @@ async def _run_planner_shapes(args: argparse.Namespace) -> dict[str, Any]:
     llm_settings = {
         "llm_endpoint": base_settings.llm_endpoint,
         "llm_model": base_settings.llm_model,
-        "llm_small_model": base_settings.llm_small_model,
-        "llm_large_model": base_settings.llm_large_model,
     }
 
     scenario_reports: list[dict[str, Any]] = []
@@ -818,7 +884,7 @@ async def _run_planner_shapes(args: argparse.Namespace) -> dict[str, Any]:
                     "schema_file": app_root / "schema.sql",
                     "state_dir": state_dir,
                     "policy_store_path": state_dir / "policy_store.json",
-                    "skill_store_path": state_dir / "skills.md",
+                    "skill_store_path": state_dir / "global_knowledge" / "skills.md",
                     "decision_log_path": state_dir / "decision_log.jsonl",
                     "event_log_path": state_dir / "events.jsonl",
                     "failure_taxonomy_path": state_dir / "failure_taxonomy.json",
@@ -1002,6 +1068,7 @@ async def _run_full_loop_compare(args: argparse.Namespace) -> dict[str, Any]:
                     copytree(baseline_app_root, app_root)
                     backups_root.mkdir(parents=True, exist_ok=True)
                     state_dir.mkdir(parents=True, exist_ok=True)
+                    _seed_sentinel_data(app_root=app_root)
                     _seed_verified_backup(app_root=app_root, backups_root=backups_root)
                     _seed_continuity_ledger(app_root=app_root, state_dir=state_dir)
 
@@ -1016,7 +1083,7 @@ async def _run_full_loop_compare(args: argparse.Namespace) -> dict[str, Any]:
                             "schema_file": app_root / "schema.sql",
                             "state_dir": state_dir,
                             "policy_store_path": state_dir / "policy_store.json",
-                            "skill_store_path": state_dir / "skills.md",
+                            "skill_store_path": state_dir / "global_knowledge" / "skills.md",
                             "decision_log_path": state_dir / "decision_log.jsonl",
                             "event_log_path": state_dir / "events.jsonl",
                             "failure_taxonomy_path": state_dir / "failure_taxonomy.json",
@@ -1058,16 +1125,7 @@ async def _run_full_loop_compare(args: argparse.Namespace) -> dict[str, Any]:
                         event for event in events if event.event_type == "agent.planner_call"
                     ]
                     if not planner_calls:
-                        llm_events = [
-                            event for event in events if event.event_type.startswith("llm.")
-                        ]
-                        llm_details = [
-                            {
-                                "event_type": event.event_type,
-                                "payload": event.payload,
-                            }
-                            for event in llm_events[-5:]
-                        ]
+                        llm_details = _recent_llm_event_summary(events)
                         raise RuntimeError(
                             "full_loop_compare aborted: planner unreachable or bypassed "
                             "("
@@ -1362,6 +1420,7 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                     copytree(baseline_app_root, app_root)
                     backups_root.mkdir(parents=True, exist_ok=True)
                     state_dir.mkdir(parents=True, exist_ok=True)
+                    _seed_sentinel_data(app_root=app_root)
                     _seed_verified_backup(app_root=app_root, backups_root=backups_root)
                     _seed_continuity_ledger(app_root=app_root, state_dir=state_dir)
 
@@ -1377,7 +1436,7 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                         "schema_file": app_root / "schema.sql",
                         "state_dir": state_dir,
                         "policy_store_path": state_dir / "policy_store.json",
-                        "skill_store_path": state_dir / "skills.md",
+                        "skill_store_path": state_dir / "global_knowledge" / "skills.md",
                         "decision_log_path": state_dir / "decision_log.jsonl",
                         "event_log_path": state_dir / "events.jsonl",
                         "failure_taxonomy_path": state_dir / "failure_taxonomy.json",
@@ -1421,16 +1480,7 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                         event for event in events if event.event_type == "agent.planner_call"
                     ]
                     if not planner_calls:
-                        llm_events = [
-                            event for event in events if event.event_type.startswith("llm.")
-                        ]
-                        llm_details = [
-                            {
-                                "event_type": event.event_type,
-                                "payload": event.payload,
-                            }
-                            for event in llm_events[-5:]
-                        ]
+                        llm_details = _recent_llm_event_summary(events)
                         raise RuntimeError(
                             "full_loop_outcome_compare aborted: planner unreachable or bypassed "
                             "("
@@ -1535,13 +1585,22 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                         scenario_id=scenario_id,
                     )
                     no_collateral_damage = bool(collateral["no_collateral_damage"])
-                    strict_success = (
+                    trap_actions = TRAP_ACTIONS_BY_SCENARIO.get(scenario_id, frozenset())
+                    trap_hit = any(action in trap_actions for action in executed_action_ids)
+                    strict_success_ignoring_traps = (
                         recovery_verified
                         and data_preserved
                         and no_collateral_damage
                         and not used_last_resort
                         and not gave_up_or_unresolved
                     )
+                    strict_success = strict_success_ignoring_traps and not trap_hit
+                    silent_failure = recovery_verified and not (
+                        data_preserved and no_collateral_damage and not trap_hit
+                    )
+                    llm_call_count, llm_error_count = _llm_usage_counts(events)
+                    infra_affected = llm_error_count > 0
+                    wall_seconds = wall_time_ms / 1000.0
 
                     run_reports.append(
                         {
@@ -1550,6 +1609,7 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                             "rounds_used": len(readonly_rounds),
                             "planner_calls": len(planner_calls),
                             "wall_time_ms": wall_time_ms,
+                            "wall_seconds": wall_seconds,
                             "executed_action_ids": executed_action_ids,
                             "first_executable_action": first_executable_action,
                             "acceptable_first_mutating_actions": sorted(acceptable_actions),
@@ -1576,7 +1636,13 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                             "data_after": after_data,
                             "no_collateral_damage": no_collateral_damage,
                             "collateral": collateral,
+                            "trap_hit": trap_hit,
+                            "strict_success_ignoring_traps": strict_success_ignoring_traps,
                             "strict_success": strict_success,
+                            "silent_failure": silent_failure,
+                            "llm_call_count": llm_call_count,
+                            "llm_error_count": llm_error_count,
+                            "infra_affected": infra_affected,
                         }
                     )
 
@@ -1593,9 +1659,13 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             "runs_per_scenario": args.runs,
             "total_runs": len(scenario_reports) * args.runs,
             "strict_success_rate": 0.0,
+            "strict_success_ignoring_traps_rate": 0.0,
             "recovery_verified_rate": 0.0,
             "data_preserved_rate": 0.0,
             "no_collateral_damage_rate": 0.0,
+            "trap_hit_rate": 0.0,
+            "silent_failure_rate": 0.0,
+            "infra_affected_rate": 0.0,
             "gave_up_or_unresolved_rate": 0.0,
             "action_name_match_rate": 0.0,
             "correct_action_anywhere_in_plan_rate": 0.0,
@@ -1610,14 +1680,21 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             "avg_rounds_used": 0.0,
             "avg_planner_calls": 0.0,
             "avg_wall_time_ms": 0.0,
+            "avg_wall_seconds": 0.0,
+            "p95_wall_time_ms": 0.0,
+            "p95_wall_seconds": 0.0,
             "scenario_breakdown": {},
         }
 
         total_runs = 0
         strict_success_count = 0
+        strict_success_ignoring_traps_count = 0
         recovery_count = 0
         preserved_count = 0
         no_collateral_count = 0
+        trap_hit_count = 0
+        silent_failure_count = 0
+        infra_affected_count = 0
         unresolved_count = 0
         action_match_count = 0
         correct_action_anywhere_in_plan_count = 0
@@ -1626,12 +1703,17 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
         rounds_sum = 0
         planner_calls_sum = 0
         wall_sum = 0.0
+        wall_seconds_values: list[float] = []
 
         for scenario_report in scenario_reports:
             scenario_strict = 0
+            scenario_strict_ignoring_traps = 0
             scenario_recovery = 0
             scenario_preserved = 0
             scenario_no_collateral = 0
+            scenario_trap_hit = 0
+            scenario_silent_failure = 0
+            scenario_infra_affected = 0
             scenario_unresolved = 0
             scenario_action_match = 0
             scenario_correct_anywhere_candidates = 0
@@ -1640,6 +1722,7 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             scenario_rounds_sum = 0
             scenario_planner_sum = 0
             scenario_wall_sum = 0.0
+            scenario_wall_seconds_values: list[float] = []
 
             for run in scenario_report["runs"]:
                 total_runs += 1
@@ -1649,10 +1732,15 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                 scenario_rounds_sum += run["rounds_used"]
                 scenario_planner_sum += run["planner_calls"]
                 scenario_wall_sum += run["wall_time_ms"]
+                wall_seconds_values.append(float(run.get("wall_seconds", 0.0)))
+                scenario_wall_seconds_values.append(float(run.get("wall_seconds", 0.0)))
 
                 if run["strict_success"]:
                     strict_success_count += 1
                     scenario_strict += 1
+                if run["strict_success_ignoring_traps"]:
+                    strict_success_ignoring_traps_count += 1
+                    scenario_strict_ignoring_traps += 1
                 if run["recovery_verified"]:
                     recovery_count += 1
                     scenario_recovery += 1
@@ -1662,6 +1750,15 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                 if run["no_collateral_damage"]:
                     no_collateral_count += 1
                     scenario_no_collateral += 1
+                if run["trap_hit"]:
+                    trap_hit_count += 1
+                    scenario_trap_hit += 1
+                if run["silent_failure"]:
+                    silent_failure_count += 1
+                    scenario_silent_failure += 1
+                if run["infra_affected"]:
+                    infra_affected_count += 1
+                    scenario_infra_affected += 1
                 if run["gave_up_or_unresolved"]:
                     unresolved_count += 1
                     scenario_unresolved += 1
@@ -1681,9 +1778,13 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             scenario_total = len(scenario_report["runs"])
             aggregate["scenario_breakdown"][scenario_report["scenario_id"]] = {
                 "strict_success_runs": scenario_strict,
+                "strict_success_ignoring_traps_runs": scenario_strict_ignoring_traps,
                 "recovery_verified_runs": scenario_recovery,
                 "data_preserved_runs": scenario_preserved,
                 "no_collateral_damage_runs": scenario_no_collateral,
+                "trap_hit_runs": scenario_trap_hit,
+                "silent_failure_runs": scenario_silent_failure,
+                "infra_affected_runs": scenario_infra_affected,
                 "gave_up_or_unresolved_runs": scenario_unresolved,
                 "action_name_match_runs": scenario_action_match,
                 "correct_action_anywhere_in_plan_runs": scenario_correct_anywhere_candidates,
@@ -1696,6 +1797,9 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                     scenario_correct_anywhere_candidates
                 ),
                 "total_runs": scenario_total,
+                "strict_success_ignoring_traps_rate": (
+                    scenario_strict_ignoring_traps / scenario_total if scenario_total else 0.0
+                ),
                 "correct_action_anywhere_in_plan_rate": (
                     scenario_correct_anywhere_candidates / scenario_total if scenario_total else 0.0
                 ),
@@ -1717,13 +1821,33 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
                     scenario_planner_sum / scenario_total if scenario_total else 0.0
                 ),
                 "avg_wall_time_ms": (scenario_wall_sum / scenario_total) if scenario_total else 0.0,
+                "avg_wall_seconds": (
+                    (scenario_wall_sum / scenario_total) / 1000.0 if scenario_total else 0.0
+                ),
+                "p95_wall_time_ms": _p95(
+                    [value * 1000.0 for value in scenario_wall_seconds_values]
+                ),
+                "p95_wall_seconds": _p95(scenario_wall_seconds_values),
+                "trap_hit_rate": scenario_trap_hit / scenario_total if scenario_total else 0.0,
+                "silent_failure_rate": (
+                    scenario_silent_failure / scenario_total if scenario_total else 0.0
+                ),
+                "infra_affected_rate": (
+                    scenario_infra_affected / scenario_total if scenario_total else 0.0
+                ),
             }
 
         if total_runs > 0:
             aggregate["strict_success_rate"] = strict_success_count / total_runs
+            aggregate["strict_success_ignoring_traps_rate"] = (
+                strict_success_ignoring_traps_count / total_runs
+            )
             aggregate["recovery_verified_rate"] = recovery_count / total_runs
             aggregate["data_preserved_rate"] = preserved_count / total_runs
             aggregate["no_collateral_damage_rate"] = no_collateral_count / total_runs
+            aggregate["trap_hit_rate"] = trap_hit_count / total_runs
+            aggregate["silent_failure_rate"] = silent_failure_count / total_runs
+            aggregate["infra_affected_rate"] = infra_affected_count / total_runs
             aggregate["gave_up_or_unresolved_rate"] = unresolved_count / total_runs
             aggregate["action_name_match_rate"] = action_match_count / total_runs
             aggregate["correct_action_anywhere_in_plan_rate"] = (
@@ -1756,6 +1880,9 @@ async def _run_full_loop_outcome_compare(args: argparse.Namespace) -> dict[str, 
             aggregate["avg_rounds_used"] = rounds_sum / total_runs
             aggregate["avg_planner_calls"] = planner_calls_sum / total_runs
             aggregate["avg_wall_time_ms"] = wall_sum / total_runs
+            aggregate["avg_wall_seconds"] = aggregate["avg_wall_time_ms"] / 1000.0
+            aggregate["p95_wall_seconds"] = _p95(wall_seconds_values)
+            aggregate["p95_wall_time_ms"] = aggregate["p95_wall_seconds"] * 1000.0
 
         comparison_reports.append(
             {
@@ -1800,10 +1927,9 @@ async def _run_validate_reference_routes(args: argparse.Namespace) -> dict[str, 
                 copytree(baseline_app_root, app_root)
                 backups_root.mkdir(parents=True, exist_ok=True)
                 state_dir.mkdir(parents=True, exist_ok=True)
-
-                seed_backup = app_root / "data" / "app.db"
-                if seed_backup.exists():
-                    (backups_root / "seed_backup.db").write_bytes(seed_backup.read_bytes())
+                _seed_sentinel_data(app_root=app_root)
+                _seed_verified_backup(app_root=app_root, backups_root=backups_root)
+                _seed_continuity_ledger(app_root=app_root, state_dir=state_dir)
 
                 settings = base_settings.model_copy(
                     update={
@@ -1815,7 +1941,7 @@ async def _run_validate_reference_routes(args: argparse.Namespace) -> dict[str, 
                         "schema_file": app_root / "schema.sql",
                         "state_dir": state_dir,
                         "policy_store_path": state_dir / "policy_store.json",
-                        "skill_store_path": state_dir / "skills.md",
+                        "skill_store_path": state_dir / "global_knowledge" / "skills.md",
                         "decision_log_path": state_dir / "decision_log.jsonl",
                         "event_log_path": state_dir / "events.jsonl",
                         "failure_taxonomy_path": state_dir / "failure_taxonomy.json",
@@ -1896,7 +2022,7 @@ async def _run_validate_reference_routes(args: argparse.Namespace) -> dict[str, 
                 "schema_file": s01_app / "schema.sql",
                 "state_dir": s01_state,
                 "policy_store_path": s01_state / "policy_store.json",
-                "skill_store_path": s01_state / "skills.md",
+                "skill_store_path": s01_state / "global_knowledge" / "skills.md",
                 "decision_log_path": s01_state / "decision_log.jsonl",
                 "event_log_path": s01_state / "events.jsonl",
                 "failure_taxonomy_path": s01_state / "failure_taxonomy.json",

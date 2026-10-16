@@ -159,7 +159,7 @@ async def test_rollback_restores_db_backup_when_db_file_is_unwritable(test_setti
 
 
 @pytest.mark.asyncio()
-async def test_snapshot_allows_mutating_action_when_db_is_unreadable(test_settings) -> None:
+async def test_snapshot_blocks_non_permission_mutation_when_db_is_unreadable(test_settings) -> None:
     tools = ToolExecutor(test_settings, EventBus())
     db_file = test_settings.db_file
     target_file = test_settings.app_root / "config_snapshot_guard.txt"
@@ -167,15 +167,28 @@ async def test_snapshot_allows_mutating_action_when_db_is_unreadable(test_settin
     db_file.chmod(0)
     assert S_IMODE(db_file.stat().st_mode) == 0
 
+    with pytest.raises(ToolExecutionError, match="DB snapshot failed"):
+        await tools.execute(
+            "write_app_file",
+            {"path": target_file.name, "content": "ok"},
+        )
+    assert not target_file.exists()
+
+
+@pytest.mark.asyncio()
+async def test_set_permissions_can_proceed_when_db_is_unreadable(test_settings) -> None:
+    tools = ToolExecutor(test_settings, EventBus())
+    db_file = test_settings.db_file
+
+    db_file.chmod(0)
+    assert S_IMODE(db_file.stat().st_mode) == 0
+
     result = await tools.execute(
-        "write_app_file",
-        {"path": target_file.name, "content": "ok"},
+        "set_permissions",
+        {"path": "data/app.db", "mode": 0o660},
     )
     assert result.snapshot is not None
-    assert target_file.read_text(encoding="utf-8") == "ok"
-
-    await tools.rollback(result.snapshot)
-    assert not target_file.exists()
+    assert S_IMODE(db_file.stat().st_mode) == 0o660
 
 
 @pytest.mark.asyncio()

@@ -11,9 +11,6 @@ class MISettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MI_", env_file=".env", extra="forbid")
 
     monitor_interval_seconds: float = Field(default=5.0, ge=0.01)
-    max_attempts_per_incident: int = Field(default=25, ge=0)
-    max_attempts_per_hour: int = Field(default=250, ge=0)
-    max_incident_seconds: int = Field(default=1800, ge=0)
     supervisor_backoff_initial_seconds: float = Field(default=1.0, ge=0.0)
     supervisor_backoff_max_seconds: float = Field(default=30.0, ge=0.0)
     verifier_delayed_reverify_seconds: float = Field(default=0.05, ge=0.0, le=10.0)
@@ -35,14 +32,12 @@ class MISettings(BaseSettings):
 
     target_service_url: str = "http://target-app:8080"
     llm_model: str = "gpt-5.3-codex"
-    llm_small_model: str | None = None
-    llm_large_model: str | None = None
-    llm_escalate_on_validation_failure: bool = True
     llm_endpoint: str = "https://api.openai.com/v1/responses"
     llm_auth_mode: Literal["bearer", "api_key"] = "bearer"
     llm_api_key_header: str = "api-key"
     llm_timeout_seconds: float = Field(default=10.0, gt=0.0)
-    llm_retries: int = Field(default=2, ge=0)
+    llm_retry_max_delay_seconds: float = Field(default=30.0, ge=0.1, le=300.0)
+    llm_retry_jitter_ratio: float = Field(default=0.2, ge=0.0, le=1.0)
     openai_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("OPENAI_API_KEY", "MI_OPENAI_API_KEY"),
@@ -50,7 +45,7 @@ class MISettings(BaseSettings):
     last_resort_url: str | None = None
 
     policy_store_path: Path = Path("./state/policy_store.json")
-    skill_store_path: Path = Path("./state/skills.md")
+    skill_store_path: Path = Path("./state/global_knowledge/skills.md")
     decision_log_path: Path = Path("./state/decision_log.jsonl")
     event_log_path: Path = Path("./state/events.jsonl")
     failure_taxonomy_path: Path = Path("./state/failure_taxonomy.json")
@@ -65,13 +60,7 @@ class MISettings(BaseSettings):
     candidate_rejection_summary_enabled: bool = True
     candidate_rejection_summary_sample_limit: int = Field(default=5, ge=1, le=25)
     candidate_rejection_log_decision_enabled: bool = True
-    readonly_replan_enabled: bool = False
-    max_readonly_rounds_per_incident: int = Field(default=2, ge=0, le=10)
-    max_readonly_steps_per_round: int = Field(default=5, ge=1, le=20)
-    readonly_replan_max_incident_seconds: float = Field(default=120.0, ge=1.0, le=3600.0)
     readonly_replan_recent_rejection_limit: int = Field(default=5, ge=1, le=25)
-    readonly_replan_max_chars_per_read: int = Field(default=1000, ge=200, le=10000)
-    readonly_replan_max_chars_per_round: int = Field(default=3000, ge=500, le=20000)
 
     @field_validator("epsilon_min")
     @classmethod

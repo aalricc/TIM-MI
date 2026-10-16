@@ -31,10 +31,11 @@ mi-eval = "mi_agent.eval.cli:main"
 packages = ["src/mi_agent"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-q -m 'not live'"
 pythonpath = ["src"]
 asyncio_mode = "auto"
 markers = [
+  "live: tests that require real LLM connectivity",
   "integrity: learning-integrity and anti-gaming enforcement tests",
   "phase0: Phase 0 baseline, gate, and enforcement",
   "phase1: Phase 1 primitives, restore broker, verifier",

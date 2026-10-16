@@ -109,6 +109,22 @@ class AgentActionExecutor:
             recorded_at=self._now(),
         )
 
+    def failed_action_keys(self, state_fingerprint: str) -> set[str]:
+        now = self._now()
+        stale_keys: list[str] = []
+        matching: set[str] = set()
+        for action_key, attempt in self._failed_attempts.items():
+            age = now - attempt.recorded_at
+            if age > self._failed_action_ttl_seconds:
+                stale_keys.append(action_key)
+                continue
+            if attempt.state_fingerprint == state_fingerprint:
+                matching.add(action_key)
+
+        for action_key in stale_keys:
+            self._failed_attempts.pop(action_key, None)
+        return matching
+
     async def rollback_if_needed(self, snapshot: ToolSnapshot | None) -> None:
         if snapshot is None:
             return

@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
-from mi_agent.eval.replay import ReplayLLMClient
-from mi_agent.eval.runner import EpisodePlanItem, EvalRunConfig, build_episode_plan, run_replay_eval
+from mi_agent.eval.runner import EvalRunConfig, build_episode_plan, run_live_eval_sync
 from mi_agent.eval.scenarios import DEFAULT_SCENARIOS
 
 pytestmark = pytest.mark.phase2
@@ -76,34 +72,12 @@ def test_episode_plan_marks_held_out_and_drift_items() -> None:
         base_seed=9,
     )
 
-    has_held_out_scenario = any(item.split == "held_out_scenario" for item in plan)
-    has_held_out_variant = any(item.split == "held_out_variant" for item in plan)
-    has_drift = any(item.drift_injected for item in plan)
-
-    assert has_held_out_scenario
-    assert has_held_out_variant
-    assert has_drift
+    assert any(item.split == "held_out_scenario" for item in plan)
+    assert any(item.split == "held_out_variant" for item in plan)
+    assert any(item.drift_injected for item in plan)
 
 
-def test_replay_client_returns_recorded_outputs(tmp_path: Path) -> None:
-    replay_file = tmp_path / "replay.json"
-    replay_file.write_text(
-        json.dumps([{"response": "ok-1"}, {"response": "ok-2"}]),
-        encoding="utf-8",
-    )
-    client = ReplayLLMClient(replay_file)
-
-    assert client.complete("prompt-1") == "ok-1"
-    assert client.complete("prompt-2") == "ok-2"
-
-
-def test_run_replay_eval_returns_summary(tmp_path: Path) -> None:
-    replay_file = tmp_path / "replay.json"
-    replay_file.write_text(
-        json.dumps([{"response": "plan"}] * 100),
-        encoding="utf-8",
-    )
-    client = ReplayLLMClient(replay_file)
+def test_run_live_eval_not_requested_returns_not_run_summary(test_settings) -> None:
     config = EvalRunConfig(
         seeds=1,
         curriculum="ordered",
@@ -112,11 +86,12 @@ def test_run_replay_eval_returns_summary(tmp_path: Path) -> None:
         drift=True,
         shuffle_seed=3,
         base_seed=5,
+        execute_live=False,
     )
 
-    summary = run_replay_eval(config, client)
+    summary = run_live_eval_sync(config, test_settings)
 
-    assert summary["episodes"] > 0
-    assert "success_rate" in summary
-    assert "split_counts" in summary
-    assert isinstance(summary["sample_episode"], EpisodePlanItem)
+    assert summary["live_run_executed"] is False
+    assert summary["episodes"] == 0
+    assert summary["episodes_planned"] > 0
+    assert summary["failure_categories"]["live_run_not_requested"] > 0

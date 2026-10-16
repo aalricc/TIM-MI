@@ -546,14 +546,27 @@ class ToolExecutor:
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 copy2(db_path, backup_path)
-            except PermissionError:
-                self._ensure_db_snapshot_readable(db_path)
-                copy2(db_path, backup_path)
+            except PermissionError as exc:
+                if primitive_id == "set_permissions":
+                    backup_path = None
+                else:
+                    raise ToolExecutionError(
+                        "DB snapshot failed: database file is unreadable; "
+                        "only set_permissions may proceed"
+                    ) from exc
         else:
             snapshot_id = str(uuid4())
 
         if spec.reversible:
-            path_snapshots = self._collect_reversible_path_snapshots(primitive_id, params)
+            try:
+                path_snapshots = self._collect_reversible_path_snapshots(primitive_id, params)
+            except PermissionError as exc:
+                if primitive_id == "set_permissions":
+                    path_snapshots = []
+                else:
+                    raise ToolExecutionError(
+                        "Path snapshot failed: target path is unreadable"
+                    ) from exc
 
         return ToolSnapshot(
             snapshot_id=snapshot_id,
@@ -561,14 +574,6 @@ class ToolExecutor:
             db_backup_path=backup_path,
             path_snapshots=tuple(path_snapshots),
         )
-
-    @staticmethod
-    def _ensure_db_snapshot_readable(db_path: Path) -> None:
-        try:
-            current = S_IMODE(db_path.stat().st_mode)
-            db_path.chmod(current | 0o600)
-        except OSError:
-            return
 
     def _collect_reversible_path_snapshots(
         self,
@@ -878,14 +883,13 @@ class ToolExecutor:
         return {
             "config": {
                 "monitor_interval_seconds": settings.monitor_interval_seconds,
-                "max_attempts_per_incident": settings.max_attempts_per_incident,
-                "max_incident_seconds": settings.max_incident_seconds,
                 "supervisor_backoff_initial_seconds": settings.supervisor_backoff_initial_seconds,
                 "supervisor_backoff_max_seconds": settings.supervisor_backoff_max_seconds,
                 "target_service_url": settings.target_service_url,
                 "llm_model": settings.llm_model,
                 "llm_timeout_seconds": settings.llm_timeout_seconds,
-                "llm_retries": settings.llm_retries,
+                "llm_retry_max_delay_seconds": settings.llm_retry_max_delay_seconds,
+                "llm_retry_jitter_ratio": settings.llm_retry_jitter_ratio,
                 "paths": {
                     "app_root": settings.app_root.as_posix(),
                     "sandbox_root": settings.sandbox_root.as_posix(),
