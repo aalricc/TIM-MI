@@ -1,65 +1,305 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>MI Dashboard</title>
-  <style>
-    body { font-family: sans-serif; margin: 1rem; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    pre { background: #111; color: #0f0; padding: 0.5rem; height: 280px; overflow: auto; }
-  </style>
-</head>
-<body>
-  <h1>Maintenance Intelligence</h1>
-  <div class="grid">
-    <div>
-      <h3>Current State</h3>
-      <pre id="state"></pre>
-      <h3>Policy Values</h3>
-      <pre id="policy"></pre>
-    </div>
-    <div>
-      <h3>Skills</h3>
-      <pre id="skills"></pre>
-      <h3>Skill Lifecycle</h3>
-      <pre id="skill-lifecycle"></pre>
-      <h3>Exploration Rate</h3>
-      <pre id="exploration-rate"></pre>
-      <h3>Last-Resort Rate</h3>
-      <pre id="last-resort-rate"></pre>
-      <h3>Live Events</h3>
-      <pre id="events"></pre>
-    </div>
-  </div>
-  <h3>Learning Curve</h3>
-  <pre id="learning-curve"></pre>
-  <h3>Per-Scenario Results</h3>
-  <pre id="per-scenario-results"></pre>
-  <script>
-    async function refresh() {
-      const [state, policy, skills, views] = await Promise.all([
-        fetch('/state').then(r => r.json()),
-        fetch('/policy').then(r => r.json()),
-        fetch('/skills').then(r => r.json()),
-        fetch('/dashboard/views').then(r => r.json()),
-      ]);
-      document.getElementById('state').textContent = JSON.stringify(state, null, 2);
-      document.getElementById('policy').textContent = JSON.stringify(policy, null, 2);
-      document.getElementById('skills').textContent = JSON.stringify(skills, null, 2);
-      document.getElementById('learning-curve').textContent = JSON.stringify(views.learning_curve, null, 2);
-      document.getElementById('per-scenario-results').textContent = JSON.stringify(views.per_scenario_results, null, 2);
-      document.getElementById('skill-lifecycle').textContent = JSON.stringify(views.skill_lifecycle, null, 2);
-      document.getElementById('exploration-rate').textContent = JSON.stringify(views.exploration_rate, null, 2);
-      document.getElementById('last-resort-rate').textContent = JSON.stringify(views.last_resort_rate, null, 2);
-    }
-    refresh();
-    setInterval(refresh, 2000);
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MI Dashboard</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f1115;
+        --panel: #171a21;
+        --text: #e8ebf2;
+        --muted: #9aa3b2;
+        --ok: #52d273;
+        --warn: #ffd166;
+        --bad: #ff6b6b;
+        --line: #2a2f3a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+        color: var(--text);
+        background: var(--bg);
+      }
+      header {
+        position: sticky;
+        top: 0;
+        background: #11141b;
+        border-bottom: 1px solid var(--line);
+        padding: 12px 16px;
+        z-index: 1;
+      }
+      header h1 { margin: 0; font-size: 18px; }
+      header p { margin: 4px 0 0; color: var(--muted); }
+      main {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 12px;
+        padding: 12px;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px;
+        min-height: 120px;
+      }
+      h2 { margin: 0 0 8px; font-size: 14px; color: #dce3f2; }
+      .pill {
+        display: inline-block;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 2px 8px;
+        margin-right: 6px;
+        margin-bottom: 4px;
+        color: var(--muted);
+      }
+      .ok { color: var(--ok); }
+      .warn { color: var(--warn); }
+      .bad { color: var(--bad); }
+      table { width: 100%; border-collapse: collapse; }
+      th, td {
+        text-align: left;
+        border-bottom: 1px solid var(--line);
+        padding: 6px 4px;
+        vertical-align: top;
+      }
+      th { color: var(--muted); font-weight: 600; }
+      ul { margin: 0; padding-left: 18px; }
+      li { margin: 4px 0; }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 260px;
+        overflow: auto;
+      }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .small { font-size: 12px; color: var(--muted); }
+      details > summary { cursor: pointer; color: #d7def0; }
+      .badge {
+        font-size: 11px;
+        border: 1px solid #3d6ad6;
+        color: #8fb0ff;
+        border-radius: 999px;
+        padding: 1px 8px;
+        margin-left: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>MI Dashboard</h1>
+      <p id="meta" class="small">Loading…</p>
+    </header>
+    <main>
+      <section>
+        <h2>Agent State</h2>
+        <div id="agent-state"></div>
+      </section>
 
-    const events = document.getElementById('events');
-    const source = new EventSource('/events/stream');
-    source.onmessage = (evt) => {
-      events.textContent = evt.data + "\n" + events.textContent;
-    };
-  </script>
-</body>
+      <section>
+        <h2>WHY Diagnosis</h2>
+        <div id="why"></div>
+      </section>
+
+      <section>
+        <h2>HOW Proposals</h2>
+        <div id="how"></div>
+      </section>
+
+      <section>
+        <h2>RL Live</h2>
+        <div id="rl"></div>
+      </section>
+
+      <section>
+        <h2>Dynamic Tool Catalog</h2>
+        <div id="catalog"></div>
+      </section>
+
+      <section>
+        <h2>Recovery Timeline</h2>
+        <div id="timeline"></div>
+      </section>
+
+      <section style="grid-column: 1 / -1;">
+        <h2>Raw LLM Trace</h2>
+        <div id="raw-trace"></div>
+      </section>
+    </main>
+
+    <script>
+      const byId = (id) => document.getElementById(id);
+
+      function esc(value) {
+        return String(value)
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;');
+      }
+
+      function asJson(value) {
+        return `<pre class="mono">${esc(JSON.stringify(value, null, 2))}</pre>`;
+      }
+
+      function renderAgentState(data) {
+        const state = data.agent_state || {};
+        const incident = state.active_incident;
+        const lastMonitor = state.last_monitor || {};
+        const cls = state.workflow_state === 'healthy' ? 'ok' : (state.workflow_state === 'incident_active' ? 'bad' : 'warn');
+        byId('agent-state').innerHTML = `
+          <div class="pill ${cls}">workflow: ${esc(state.workflow_state || 'unknown')}</div>
+          <div class="pill">monitor: ${esc(lastMonitor.detail || 'n/a')}</div>
+          <div class="small">incident: ${esc(incident ? incident.incident_id : 'none')}</div>
+          <div class="small">attempts: ${esc(incident ? incident.attempts : 0)}</div>
+          <div class="small">last_error: ${esc(incident ? (incident.last_error || 'none') : 'none')}</div>
+        `;
+      }
+
+      function renderWhy(data) {
+        const why = data.latest_why;
+        if (!why) {
+          byId('why').innerHTML = '<div class="small">No diagnosis yet.</div>';
+          return;
+        }
+        byId('why').innerHTML = `
+          <div><b>failure_type:</b> <span class="mono">${esc(why.failure_type || 'unknown')}</span></div>
+          <div class="small"><b>hypotheses</b></div>
+          <ul>${(why.hypotheses || []).map((item) => `<li>${esc(item)}</li>`).join('')}</ul>
+          <div class="small"><b>evidence</b></div>
+          <ul>${(why.evidence || []).map((item) => `<li>${esc(item)}</li>`).join('')}</ul>
+        `;
+      }
+
+      function renderHow(data) {
+        const how = data.latest_how;
+        if (!how) {
+          byId('how').innerHTML = '<div class="small">No HOW proposal yet.</div>';
+          return;
+        }
+        const primary = how.primary || {};
+        const alternatives = Array.isArray(how.alternatives) ? how.alternatives : [];
+        byId('how').innerHTML = `
+          <div>
+            <b>Primary</b>
+            <span class="badge">EXECUTED</span>
+            <div class="small mono">${esc(primary.name || 'unnamed')} • ${esc(primary.operation || 'n/a')}</div>
+            <div>${esc(primary.rationale || '')}</div>
+          </div>
+          <div class="small" style="margin-top:8px;"><b>Alternatives (observability only)</b></div>
+          <ol>
+            ${alternatives.map((item) => `
+              <li>
+                <div class="mono">${esc(item.name || 'unnamed')} • ${esc(item.operation || 'n/a')}</div>
+                <div>${esc(item.rationale || '')}</div>
+              </li>
+            `).join('')}
+          </ol>
+        `;
+      }
+
+      function renderRl(data) {
+        const summary = data.rl_summary || {};
+        const rows = Array.isArray(summary.actions) ? summary.actions : [];
+        byId('rl').innerHTML = `
+          <div class="small">total_attempts: ${esc(summary.total_attempts || 0)} • reward_total: ${esc(summary.reward_total || 0)}</div>
+          <table>
+            <thead>
+              <tr><th>action</th><th>attempts</th><th>reward_total</th><th>avg_reward</th></tr>
+            </thead>
+            <tbody>
+              ${rows.map((row) => `
+                <tr>
+                  <td class="mono">${esc(row.action)}</td>
+                  <td>${esc(row.attempts)}</td>
+                  <td>${esc(row.reward_total)}</td>
+                  <td>${esc(Number(row.avg_reward || 0).toFixed(3))}</td>
+                </tr>
+              `).join('') || '<tr><td colspan="4" class="small">No RL stats yet.</td></tr>'}
+            </tbody>
+          </table>
+        `;
+      }
+
+      function renderCatalog(data) {
+        const catalog = data.tool_catalog || {};
+        const items = Object.entries(catalog);
+        if (!items.length) {
+          byId('catalog').innerHTML = '<div class="small">No persisted dynamic tools yet.</div>';
+          return;
+        }
+        byId('catalog').innerHTML = `
+          <ul>
+            ${items.map(([name, value]) => `<li><span class="mono">${esc(name)}</span> — ${esc((value && value.operation) || 'n/a')}</li>`).join('')}
+          </ul>
+        `;
+      }
+
+      function renderTimeline(data) {
+        const timeline = Array.isArray(data.timeline) ? data.timeline.slice(0, 30) : [];
+        if (!timeline.length) {
+          byId('timeline').innerHTML = '<div class="small">No events yet.</div>';
+          return;
+        }
+        byId('timeline').innerHTML = `
+          <ul>
+            ${timeline.map((row) => {
+              const ts = new Date((row.ts || 0) * 1000).toLocaleTimeString();
+              const incident = row.payload && row.payload.incident_id ? ` • ${row.payload.incident_id}` : '';
+              return `<li><span class="mono">${esc(ts)}</span> ${esc(row.event_type || 'event')}${esc(incident)}</li>`;
+            }).join('')}
+          </ul>
+        `;
+      }
+
+      function renderRawTrace(traceData) {
+        const trace = traceData.trace;
+        if (!trace) {
+          byId('raw-trace').innerHTML = '<div class="small">No raw trace data yet.</div>';
+          return;
+        }
+        byId('raw-trace').innerHTML = `
+          <details open>
+            <summary>Latest trace (${esc(trace.incident_id || 'unknown')})</summary>
+            ${asJson(trace)}
+          </details>
+          <div class="small">available incidents: ${esc((traceData.available_incident_ids || []).join(', ') || 'none')}</div>
+        `;
+      }
+
+      async function tick() {
+        try {
+          const [dashboardResp, traceResp] = await Promise.all([
+            fetch('/agent/dashboard', { cache: 'no-store' }),
+            fetch('/agent/llm-trace', { cache: 'no-store' }),
+          ]);
+          if (!dashboardResp.ok) {
+            throw new Error(`/agent/dashboard ${dashboardResp.status}`);
+          }
+          if (!traceResp.ok) {
+            throw new Error(`/agent/llm-trace ${traceResp.status}`);
+          }
+
+          const dashboard = await dashboardResp.json();
+          const trace = await traceResp.json();
+          renderAgentState(dashboard);
+          renderWhy(dashboard);
+          renderHow(dashboard);
+          renderRl(dashboard);
+          renderCatalog(dashboard);
+          renderTimeline(dashboard);
+          renderRawTrace(trace);
+          byId('meta').textContent = `Updated ${new Date().toLocaleTimeString()} • polling every 1s`;
+        } catch (error) {
+          byId('meta').textContent = `Dashboard error: ${error}`;
+        }
+      }
+
+      tick();
+      setInterval(tick, 1000);
+    </script>
+  </body>
 </html>

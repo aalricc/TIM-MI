@@ -1,34 +1,54 @@
-# MI (Maintenance Intelligence)
+# MI Recovery Agent
 
-MI is a Python 3.12 autonomous recovery agent for a sandboxed SQLite-backed target app.
+MI is a diagnostics-first autonomous recovery agent for a SQLite-backed target service.
 
-## What MI does
+The runtime enforces a strict loop:
 
-- Continuously monitors the target service.
-- Diagnoses failures via live LLM calls.
-- Plans next actions using only registered guarded tools.
-- Executes one validated action at a time.
-- Verifies recovery with an independent verifier.
-- Learns reusable skills and persists them in `state/global_knowledge/skills.md`.
+1. Monitor target health + new error logs (`GET /health/deep` + `GET /ops/logs`).
+2. Collect runtime evidence using built-in diagnostics.
+3. Run RAG symptom grounding (`search_sqlite_docs`).
+4. LLM call #1: diagnose **WHY**.
+5. Run RAG repair guidance with diagnosis context.
+6. LLM call #2: propose **HOW** as a temporary dynamic tool.
+7. Register the dynamic tool for the active incident.
+8. Security-only safety gate (schema/path/sandbox checks).
+9. Execute exactly one dynamic action.
+10. Verify recovery independently.
+11. On failure, feed back latest tool/verifier/fingerprint context and loop.
+12. Persist only the winning dynamic tool to `state/tool_catalog.json`.
+13. Update RL policy rewards in `state/policy_store.json`.
+14. Append learned successful recovery skill to `state/skills.md`.
+
+## Architecture Diagram
+![MI Architecture Diagram](docs/images/tim_mi_architecture.png)
 
 ## Runtime guarantees
 
-- No operator escalation path.
-- No attempt/hour/wall-clock recovery caps.
-- Recovery keeps retrying until verifier success, task cancellation, shutdown, or a permanent LLM error.
-- Live model is fixed to `gpt-5.3-codex`.
-- Live endpoint is configured by `MI_LLM_ENDPOINT`.
-- LLM actions are never executed directly; only registered primitives can run.
+- No hard cap on retries/no-viable loops.
+- Dynamic recovery actions are session-first; built-ins are diagnostics-first.
+- `request_backup_restore` remains available.
+- `restart_service` is optional fallback only.
+- Startup config gate validates Pinecone requirements when `MI_RAG_ENABLED=true`.
 
-## Repository layout
+## Target app surface
 
-- `src/mi_agent/agent`: monitor, diagnosis, planning, selection, execution loop.
-- `src/mi_agent/tools`: primitive registry, schema validation, path guard, rollback snapshots.
-- `src/mi_agent/verifier`: independent recovery verification.
-- `src/mi_agent/supervisor`: incident lock and attempt pacing backoff.
-- `src/mi_agent/skills`: skill distillation, matching, persistence, lifecycle.
-- `src/mi_agent/eval`: scenario harness, run summaries, experiments, reporting.
-- `src/mi_agent/api`: FastAPI state/telemetry endpoints.
+- `GET /health/live`
+- `GET /health/deep`
+- `GET /ops/logs?lines=N`
+- `GET /ops/db/status`
+- `POST /widgets`
+- `GET /widgets`
+- `POST /ops/fault/{delete_db|corrupt_db|drop_widgets_table}` (fault injection for recovery testing)
+
+## Project layout
+
+- `src/mi_agent/agent/engine.py` – end-to-end recovery loop orchestrator.
+- `src/mi_agent/tools/executor.py` – diagnostics + dynamic tool lifecycle + security gate.
+- `src/mi_agent/llm/client.py` – OpenAI-backed WHY/HOW LLM client.
+- `src/mi_agent/verifier/verifier.py` – independent recovery verifier.
+- `src/mi_agent/api/server.py` – observability API (`/agent/status`, `/agent/events`, `/agent/tool-catalog`).
+- `dashboard/index.html` – live operator dashboard (served by `/dashboard`).
+- `target/app` – demo target service.
 
 ## Setup
 
@@ -36,66 +56,88 @@ MI is a Python 3.12 autonomous recovery agent for a sandboxed SQLite-backed targ
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
+
+# Optional: include Jev decision layer support
+pip install -e .[dev,jev]
 ```
 
-## Environment variables
+## Configuration
 
-Use `.env.example` as canonical names.
+Copy `.env.example` and set values as needed.
 
-Core LLM settings:
+OpenAI-backed LLM calls are mandatory:
 
-- `MI_LLM_MODEL` (must be `gpt-5.3-codex`)
-- `MI_LLM_ENDPOINT`
-- `MI_LLM_AUTH_MODE`
-- `MI_LLM_API_KEY_HEADER`
-- `OPENAI_API_KEY` or `MI_OPENAI_API_KEY`
-- `MI_LLM_TIMEOUT_SECONDS`
-- `MI_LLM_RETRY_MAX_DELAY_SECONDS`
-- `MI_LLM_RETRY_JITTER_RATIO`
+- `OPENAI_API_KEY=<key>`
 
-## Local checks
+Optional Jev decision layer (inserted after HOW proposal to choose one candidate action):
+
+- `MI_JEV_ENABLED=true`
+- `JEV_API_KEY=<key>`
+- `MI_JEV_MODEL=jev-latest`
+- `MI_JEV_USABLE_THRESHOLD=0.65`
+
+For Pinecone RAG:
+
+- `MI_RAG_ENABLED=true`
+- `PINECONE_API_KEY=<key>`
+- `PINECONE_INDEX_HOST=<host>`
+
+## Run
 
 ```bash
-pytest -q
+python -m mi_agent.main
+```
+
+The API listens on `:8090`.
+
+Dashboard:
+
+- `http://localhost:8090/dashboard`
+- Polls every 1s (v1, HTTP polling).
+- Shows live workflow state, incident timeline, RL stats, tool catalog, WHY diagnosis,
+  HOW primary+alternatives, and sanitized raw LLM traces.
+
+On startup, the agent performs an LLM preflight request and refuses to start the
+recovery loop if the LLM endpoint or credentials are invalid.
+
+## Validation
+
+```bash
 ruff check .
+pytest -q
 mypy --strict src
 ```
 
-## Live tests (real model)
-
-Default `pytest -q` excludes `live` tests. To run real-model checks:
+By default, `pytest -q` excludes `live` tests. To run real OpenAI integration tests:
 
 ```bash
-OPENAI_API_KEY=<key> MI_LLM_ENDPOINT=<endpoint> pytest -q -m live
+OPENAI_API_KEY=<key> pytest -q -m live
 ```
 
-Live tests run a real preflight request first and fail closed on bad credentials/config.
+## Dashboard + LLM trace endpoints
 
-## Evaluation commands
+- `GET /dashboard`
+  - Serves `dashboard/index.html`.
+- `GET /agent/dashboard`
+  - Aggregated live state for UI panels:
+    - agent state (`workflow_state`, active incident, last monitor)
+    - latest-first timeline
+    - RL summary (`attempts`, `reward_total`, `avg_reward` per action)
+    - persisted dynamic tool catalog
+    - latest WHY diagnosis
+    - latest HOW block (`primary`, `alternatives[]`, executed marker)
+- `GET /agent/llm-trace?incident_id=<id>`
+  - Returns latest trace by default, or a specific incident trace.
+  - Includes sanitized/redacted snippets of LLM request/response payloads.
 
-Offline planning/evaluation summary (no live execution):
+## Quick live recovery test
 
-```bash
-PYTHONPATH=src python -m mi_agent.eval.cli run --seeds 1 --output-dir artifacts/eval --run-id eval_run
-PYTHONPATH=src python -m mi_agent.eval.cli experiments --seeds 5 --output-dir artifacts/eval --run-id experiments
-```
-
-Live evaluation (real LLM calls + preflight):
-
-```bash
-OPENAI_API_KEY=<key> MI_LLM_ENDPOINT=<endpoint> \
-PYTHONPATH=src python -m mi_agent.eval.cli run --live --seeds 1 --output-dir artifacts/eval --run-id live_eval
-```
-
-## Gate script
-
-Run phase gate checks:
-
-```bash
-./scripts/v2_gate.sh <0-8>
-```
-
-## Current limitations
-
-- LLM-dependent outcomes can vary run to run; reports always reflect actual executed runs.
-- CI does not run live-model tests and does not use secrets.
+1. Start stack: `docker compose up --build`
+2. Open dashboard: `http://localhost:8090/dashboard`
+3. Inject fault: `curl -X POST http://localhost:8080/ops/fault/drop_widgets_table`
+4. Observe:
+   - monitor transitions to incident
+   - WHY diagnosis updates
+   - HOW primary + alternatives appears
+   - one dynamic action executes per loop
+   - verification/timeline events continue until recovery

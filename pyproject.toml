@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mi-agent"
-version = "0.1.0"
-description = "Maintenance Intelligence (MI) autonomous self-healing agent"
+version = "0.2.0"
+description = "Diagnostics-first autonomous recovery agent for SQLite services"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -21,11 +21,13 @@ dev = [
   "pytest-asyncio>=0.24,<1",
   "ruff>=0.8,<1",
   "mypy>=1.13,<2",
-  "types-PyYAML>=6.0.12.20240917",
 ]
-
-[project.scripts]
-mi-eval = "mi_agent.eval.cli:main"
+rag = [
+  "pinecone>=6,<7",
+]
+jev = [
+  "langchain-typesafe>=0.1,<1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mi_agent"]
@@ -35,17 +37,7 @@ addopts = "-q -m 'not live'"
 pythonpath = ["src"]
 asyncio_mode = "auto"
 markers = [
-  "live: tests that require real LLM connectivity",
-  "integrity: learning-integrity and anti-gaming enforcement tests",
-  "phase0: Phase 0 baseline, gate, and enforcement",
-  "phase1: Phase 1 primitives, restore broker, verifier",
-  "phase2: Phase 2 scenarios and eval harness",
-  "phase3: Phase 3 decision log and state store",
-  "phase4: Phase 4 safety layer",
-  "phase5: Phase 5 learning v2",
-  "phase6: Phase 6 skills v2",
-  "phase7: Phase 7 typed plans and observability",
-  "phase8: Phase 8 experiments and showcase",
+  "live: requires real OpenAI connectivity and credentials",
 ]
 
 [tool.ruff]

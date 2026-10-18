@@ -1,70 +1,28 @@
-# MI Threat Model
+# Threat Model
 
-## Scope
+## Assets
 
-This document covers runtime control-loop safety for autonomous recovery:
+- Target SQLite data (`MI_DB_FILE`).
+- Schema and runtime files under `MI_APP_ROOT`.
+- Backup snapshots under `MI_BACKUPS_ROOT`.
+- Recovery policy and dynamic tool catalog in `state/`.
 
-- monitoring and incident entry
-- LLM diagnosis/planning
-- guarded tool execution
-- verification and learning persistence
+## Trust boundaries
 
-## Primary threats
-
-- Prompt injection through logs, filenames, probe output, and config values.
-- Unsafe or out-of-policy mutating actions.
-- Sandbox or backup-path escape via path traversal/symlink abuse.
-- Repeated high-risk actions without fresh state evidence.
-- Secret leakage through telemetry.
+- LLM output is untrusted and treated as data.
+- RAG chunks are untrusted external knowledge.
+- Dynamic tool specs are never executed without security validation.
 
 ## Controls
 
-### Tool and action controls
+- Startup config gate enforces Pinecone requirements when RAG is enabled.
+- Security gate checks operation allowlist and parameter schema.
+- Path guard blocks escaping `MI_SANDBOX_ROOT` and `MI_APP_ROOT` for file actions.
+- Verifier independently confirms health after each dynamic action.
+- Only verifier-confirmed winning tool is persisted.
 
-- Single tool catalog from `src/mi_agent/tools/executor.py`.
-- Only registered primitives are executable.
-- Strict parameter schema validation before execution.
-- Each primitive carries a risk tier used during candidate screening.
-- Unknown actions are rejected and replanned.
+## Residual risk
 
-### Guardrails and rollback
-
-- Pre-shield precheck enforces risk-tier policy and evidence requirements.
-- Post-shield validation rechecks parameter-dependent state before execution.
-- Mutating actions snapshot state before execution.
-- Failed verification triggers rollback when supported.
-
-### Recovery pacing budget policy
-
-- MI uses retry pacing backoff with jitter and cancellation support.
-- MI does not enforce hard incident attempt/time budget cutoffs.
-
-### LLM reliability controls
-
-- Live model is fixed to `gpt-5.3-codex`.
-- Endpoint is configured via `MI_LLM_ENDPOINT`.
-- Preflight runs before live scenarios/tests.
-- Retries use exponential backoff + jitter for transient errors.
-- Permanent auth/permission/config errors stop incident handling cleanly.
-
-### Degraded mode behavior
-
-- Degraded mode never escalates to a human operator.
-- When LLM calls are transiently unavailable, the runtime keeps retrying with backoff.
-- When LLM errors are permanent (auth/permission/config), the incident stops with explicit diagnostics.
-
-### Data and secret hygiene
-
-- Runtime treats external text/log output as untrusted data.
-- Event logging excludes API keys/auth headers.
-- Verifier remains the only success gate.
-
-## Residual risks
-
-- Recovery quality depends on available registered primitives.
-- Live LLM latency and provider outages can delay recovery.
-- Scenario coverage in eval harness is finite and does not guarantee production completeness.
-
-## Red-team coverage
-
-- Red-team scenario testing remains part of evaluation to check prompt-injection resistance and policy bypass attempts.
+- `run_sql` can issue destructive SQL if diagnosis/planning is wrong.
+- Default `restart_service` behavior is a no-op unless an integration hook is configured.
+- RAG quality depends on Pinecone index quality and recency.

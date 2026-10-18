@@ -2,48 +2,20 @@ from __future__ import annotations
 
 
 class MIError(Exception):
-    """Base MI exception."""
+    """Base exception for MI agent failures."""
 
 
-class ToolError(MIError):
-    """Base tool exception."""
+class StartupConfigError(MIError):
+    """Raised when required runtime configuration is invalid."""
 
 
-class PrimitiveNotAllowedError(ToolError):
-    """Raised when primitive is outside allowlist."""
+class LLMError(MIError):
+    """Raised when an LLM call cannot be completed."""
 
 
-class ToolParameterValidationError(ToolError):
-    """Raised on invalid tool parameters."""
+class SecurityGateError(MIError):
+    """Raised when a dynamic tool fails a security boundary check."""
 
 
-class ToolExecutionError(ToolError):
-    """Raised when primitive execution fails after parameters were valid."""
-
-
-class PathScopeError(ToolError):
-    """Raised when path escapes the allowed sandbox scope."""
-
-
-class BackupAccessDeniedError(PathScopeError):
-    """Raised when backups path is accessed by the agent."""
-
-
-class IncidentLockError(MIError):
-    """Raised when supervisor lock cannot be acquired."""
-
-
-class LLMUnavailableError(MIError):
-    """Raised when LLM provider is unavailable."""
-
-
-class LLMPermanentError(MIError):
-    """Raised when LLM request has a permanent configuration/auth/permission failure."""
-
-
-class LLMOutputValidationError(MIError):
-    """Raised for malformed LLM structured output."""
-
-
-class CorruptStoreError(MIError):
-    """Raised for corrupted policy / skill storage."""
+class ToolExecutionError(MIError):
+    """Raised when a tool execution path fails."""

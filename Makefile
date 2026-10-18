@@ -1,8 +1,6 @@
-.PHONY: v2-gate
+.PHONY: check
 
-PHASE ?= 0
-ARGS ?=
-
-v2-gate:
-	./scripts/v2_gate.sh $(PHASE) $(ARGS)
-
+check:
+	ruff check .
+	pytest -q
+	mypy --strict src

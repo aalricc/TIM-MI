@@ -6,10 +6,36 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class RAGChunk(BaseModel):
+    source: str
+    text: str
+    score: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class Diagnosis(BaseModel):
     failure_type: str
-    hypotheses: list[str]
-    evidence: list[str]
+    hypotheses: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class DynamicToolSpec(BaseModel):
+    name: str
+    rationale: str
+    operation: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class HowProposal(BaseModel):
+    primary: DynamicToolSpec
+    alternatives: list[DynamicToolSpec] = Field(default_factory=list)
+
+
+class MonitorStatus(BaseModel):
+    healthy: bool
+    status_code: int | None = None
+    detail: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class VerificationResult(BaseModel):
@@ -18,10 +44,20 @@ class VerificationResult(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class AttemptFeedback(BaseModel):
+    tool_name: str
+    operation: str
+    tool_error: str | None = None
+    verifier_details: dict[str, Any] = Field(default_factory=dict)
+
+
 @dataclass(slots=True)
-class EpisodeAction:
-    action_key: str
-    reward: float
-    duration_seconds: float
-    success: bool
-    metadata: dict[str, str] = field(default_factory=dict)
+class IncidentContext:
+    incident_id: str
+    attempts: int = 0
+    last_tool_error: str | None = None
+    state_fingerprint: str | None = None
+    diagnosis: Diagnosis | None = None
+    rag_symptom_chunks: list[RAGChunk] = field(default_factory=list)
+    rag_repair_chunks: list[RAGChunk] = field(default_factory=list)
+    prior_attempts: list[AttemptFeedback] = field(default_factory=list)

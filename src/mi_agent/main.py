@@ -8,7 +8,7 @@ from mi_agent.runtime import build_agent
 
 
 def run() -> None:
-    settings = MISettings()
+    settings = MISettings()  # type: ignore[call-arg]
     agent, context = build_agent(settings)
     app = create_api(context, agent)
     uvicorn.run(app, host="0.0.0.0", port=8090)

@@ -1,9 +1,3 @@
-# Evaluation artifacts / runtime outputs
-artifacts/eval/*.json
-artifacts/eval/*.log
-/state/
-target/
-
 # Secrets and environment files
 .env
 .env.*
@@ -13,6 +7,21 @@ target/
 *.p12
 *.pfx
 *secret*
+
+# Runtime state/output
+state/*.json
+state/*.jsonl
+state/tool_catalog.json
+state/policy_store.json
+state/events.jsonl
+!state/.gitkeep
+
+target/app/app.log
+target/app/data/*.db
+!target/app/data/.gitkeep
+
+artifacts/eval/*.json
+artifacts/eval/*.log
 
 # Python caches and virtualenvs
 __pycache__/
@@ -27,4 +36,3 @@ __pycache__/
 .DS_Store
 
 !.env.example
-/artifacts/eval/
