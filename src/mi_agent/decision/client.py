@@ -4,7 +4,9 @@ import asyncio
 import inspect
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from mi_agent.config import MISettings
 
@@ -85,11 +87,11 @@ class JevDecisionClient:
             ),
             "risk_score": Score(
                 instructions="Overall risk of automatic execution for selected action.",
-                criteria={
-                    "low": "Low blast radius and reversible.",
-                    "medium": "Moderate risk or partial irreversibility.",
-                    "high": "High blast radius or destructive if wrong.",
-                },
+                criteria=[
+                    "Low blast radius and reversible.",
+                    "Moderate risk or partial irreversibility.",
+                    "High blast radius or destructive if wrong.",
+                ],
             ),
         }
 
@@ -170,27 +172,46 @@ class JevDecisionClient:
     def _build_classifier(self, classifier_cls: type[Any]) -> Any:
         kwargs: dict[str, Any] = {}
         signature = inspect.signature(classifier_cls)
+        base_url = self._normalized_base_url(self._settings.jev_base_url)
 
         if "api_key" in signature.parameters and self._settings.jev_api_key is not None:
             kwargs["api_key"] = self._settings.jev_api_key
         if "model" in signature.parameters:
             kwargs["model"] = self._settings.jev_model
-        if "base_url" in signature.parameters and self._settings.jev_base_url is not None:
-            kwargs["base_url"] = self._settings.jev_base_url
+        if "base_url" in signature.parameters and base_url is not None:
+            kwargs["base_url"] = base_url
         if "timeout" in signature.parameters:
             kwargs["timeout"] = self._settings.jev_timeout_seconds
 
-        original_api_key = os.getenv("TYPESAFE_API_KEY")
         if self._settings.jev_api_key is not None:
             os.environ["TYPESAFE_API_KEY"] = self._settings.jev_api_key
-        try:
-            return classifier_cls(**kwargs)
-        finally:
-            if self._settings.jev_api_key is not None:
-                if original_api_key is None:
-                    os.environ.pop("TYPESAFE_API_KEY", None)
-                else:
-                    os.environ["TYPESAFE_API_KEY"] = original_api_key
+        if base_url is not None:
+            os.environ["TYPESAFE_BASE_URL"] = base_url
+        return classifier_cls(**kwargs)
+
+    @staticmethod
+    def _normalized_base_url(base_url: str | None, *, in_docker: bool | None = None) -> str | None:
+        if base_url is None:
+            return None
+        normalized = base_url.strip()
+        if normalized == "":
+            return None
+
+        if in_docker is None:
+            in_docker = Path("/.dockerenv").exists()
+        if not in_docker:
+            return normalized
+
+        parsed = urlparse(normalized)
+        hostname = parsed.hostname or ""
+        if hostname not in {"127.0.0.1", "localhost"}:
+            return normalized
+
+        replacement_host = "host.docker.internal"
+        netloc = replacement_host
+        if parsed.port is not None:
+            netloc = f"{replacement_host}:{parsed.port}"
+        return urlunparse(parsed._replace(netloc=netloc))
 
     @staticmethod
     def _invoke_classifier(classifier: Any, payload: dict[str, Any]) -> Any:

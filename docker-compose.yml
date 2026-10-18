@@ -38,6 +38,8 @@ services:
       - backup-job
     ports:
       - "8090:8090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       MI_TARGET_SERVICE_URL: http://target-app:8080
       MI_MONITOR_HEALTH_PATH: /health/deep
@@ -64,7 +66,7 @@ services:
       MI_JEV_ENABLED: ${MI_JEV_ENABLED:-true}
       JEV_API_KEY: ${JEV_API_KEY:?JEV_API_KEY is required}
       MI_JEV_MODEL: ${MI_JEV_MODEL:-jev-latest}
-      MI_JEV_BASE_URL: ${MI_JEV_BASE_URL:-}
+      MI_JEV_BASE_URL: ${MI_JEV_BASE_URL:-http://host.docker.internal:8017}
       MI_JEV_TIMEOUT_SECONDS: ${MI_JEV_TIMEOUT_SECONDS:-8}
       MI_JEV_USABLE_THRESHOLD: ${MI_JEV_USABLE_THRESHOLD:-0.65}
       MI_RAG_ENABLED: ${MI_RAG_ENABLED:-true}

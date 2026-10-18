@@ -92,7 +92,18 @@ class RecoveryAgent:
 
     async def run_forever(self) -> None:
         while True:
-            await self.run_iteration()
+            try:
+                await self.run_iteration()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self._events.publish(
+                    "agent.loop_error",
+                    {
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
             await asyncio.sleep(self._monitor_interval_seconds)
 
     async def run_iteration(self) -> None:

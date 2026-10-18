@@ -114,38 +114,79 @@ class OpenAILLMClient(LLMClient):
         latest_tool_error: str | None,
         state_fingerprint: str | None,
     ) -> HowProposal:
-        payload = await self._call_json(
-            instruction=(
-                "Propose one primary dynamic recovery action and 2-4 ranked alternatives. "
-                "Any candidate may be selected by Jev. "
-                "Use only allowed operations. "
-                "Do not output strategy text outside JSON."
-            ),
-            user_payload={
-                "task": "propose_how",
-                "diagnosis": diagnosis.model_dump(),
-                "rag_chunks": [chunk.model_dump() for chunk in rag_chunks],
-                "prior_attempts": [attempt.model_dump() for attempt in prior_attempts],
-                "latest_tool_error": latest_tool_error,
-                "state_fingerprint": state_fingerprint,
-                "allowed_operations": [
-                    "request_backup_restore",
-                    "restart_service",
-                    "run_sql",
-                    "replace_file",
-                ],
-                "rules": {
-                    "single_action": True,
-                    "dynamic_tool_only": True,
-                    "restart_service_is_fallback": True,
-                    "candidate_list_for_jev_selection": True,
+        instruction = (
+            "Propose one primary dynamic recovery action and 2-4 ranked alternatives. "
+            "Any candidate may be selected by Jev. "
+            "Use only allowed operations. "
+            "Do not output strategy text outside JSON."
+        )
+        schema = self._how_schema()
+        try:
+            payload = await self._call_json(
+                instruction=instruction,
+                user_payload=self._how_user_payload(
+                    diagnosis=diagnosis,
+                    rag_chunks=rag_chunks,
+                    prior_attempts=prior_attempts,
+                    latest_tool_error=latest_tool_error,
+                    state_fingerprint=state_fingerprint,
+                    compact=False,
+                ),
+                schema_name="how_proposal",
+                schema=schema,
+                strict=True,
+            )
+        except LLMError as exc:
+            if "400 Bad Request" not in str(exc):
+                raise
+            payload = await self._call_json(
+                instruction=instruction,
+                user_payload=self._how_user_payload(
+                    diagnosis=diagnosis,
+                    rag_chunks=rag_chunks,
+                    prior_attempts=prior_attempts,
+                    latest_tool_error=latest_tool_error,
+                    state_fingerprint=state_fingerprint,
+                    compact=True,
+                ),
+                schema_name="how_proposal_compact",
+                schema=schema,
+                strict=False,
+            )
+        proposal = HowProposal.model_validate(payload)
+        if proposal.primary.operation == "restart_service" and not prior_attempts:
+            raise LLMError("restart_service proposed without prior failed attempts")
+        return proposal
+
+    @staticmethod
+    def _how_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "primary": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "rationale": {"type": "string"},
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "request_backup_restore",
+                                "restart_service",
+                                "run_sql",
+                                "replace_file",
+                            ],
+                        },
+                        "params": {"type": "object"},
+                    },
+                    "required": ["name", "rationale", "operation", "params"],
+                    "additionalProperties": False,
                 },
-            },
-            schema_name="how_proposal",
-            schema={
-                "type": "object",
-                "properties": {
-                    "primary": {
+                "alternatives": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 4,
+                    "items": {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
@@ -164,39 +205,64 @@ class OpenAILLMClient(LLMClient):
                         "required": ["name", "rationale", "operation", "params"],
                         "additionalProperties": False,
                     },
-                    "alternatives": {
-                        "type": "array",
-                        "minItems": 2,
-                        "maxItems": 4,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {"type": "string"},
-                                "rationale": {"type": "string"},
-                                "operation": {
-                                    "type": "string",
-                                    "enum": [
-                                        "request_backup_restore",
-                                        "restart_service",
-                                        "run_sql",
-                                        "replace_file",
-                                    ],
-                                },
-                                "params": {"type": "object"},
-                            },
-                            "required": ["name", "rationale", "operation", "params"],
-                            "additionalProperties": False,
-                        },
-                    },
                 },
-                "required": ["primary", "alternatives"],
-                "additionalProperties": False,
             },
-        )
-        proposal = HowProposal.model_validate(payload)
-        if proposal.primary.operation == "restart_service" and not prior_attempts:
-            raise LLMError("restart_service proposed without prior failed attempts")
-        return proposal
+            "required": ["primary", "alternatives"],
+            "additionalProperties": False,
+        }
+
+    def _how_user_payload(
+        self,
+        *,
+        diagnosis: Diagnosis,
+        rag_chunks: Sequence[RAGChunk],
+        prior_attempts: Sequence[AttemptFeedback],
+        latest_tool_error: str | None,
+        state_fingerprint: str | None,
+        compact: bool,
+    ) -> dict[str, Any]:
+        rag_rows = [chunk.model_dump() for chunk in rag_chunks]
+        prior_rows = [attempt.model_dump() for attempt in prior_attempts]
+        latest_error = latest_tool_error
+
+        if compact:
+            rag_rows = [
+                {
+                    **chunk,
+                    "text": str(chunk.get("text", ""))[:1200],
+                }
+                for chunk in rag_rows[:3]
+            ]
+            prior_rows = [
+                {
+                    **attempt,
+                    "verifier_details": {},
+                }
+                for attempt in prior_rows[-4:]
+            ]
+            if latest_error is not None:
+                latest_error = latest_error[:400]
+
+        return {
+            "task": "propose_how",
+            "diagnosis": diagnosis.model_dump(),
+            "rag_chunks": rag_rows,
+            "prior_attempts": prior_rows,
+            "latest_tool_error": latest_error,
+            "state_fingerprint": state_fingerprint,
+            "allowed_operations": [
+                "request_backup_restore",
+                "restart_service",
+                "run_sql",
+                "replace_file",
+            ],
+            "rules": {
+                "single_action": True,
+                "dynamic_tool_only": True,
+                "restart_service_is_fallback": True,
+                "candidate_list_for_jev_selection": True,
+            },
+        }
 
     def consume_trace(self) -> dict[str, Any] | None:
         trace = self._last_trace
@@ -210,6 +276,7 @@ class OpenAILLMClient(LLMClient):
         user_payload: Mapping[str, Any],
         schema_name: str,
         schema: Mapping[str, Any],
+        strict: bool = True,
     ) -> dict[str, Any]:
         body = {
             "model": self._settings.llm_model,
@@ -230,7 +297,7 @@ class OpenAILLMClient(LLMClient):
                     "type": "json_schema",
                     "name": schema_name,
                     "schema": dict(schema),
-                    "strict": True,
+                    "strict": strict,
                 }
             },
         }
