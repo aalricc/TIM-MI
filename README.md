@@ -122,8 +122,10 @@ Dashboard:
 
 - `http://localhost:8090/dashboard`
 - Polls every 1s (v1, HTTP polling).
+- Live tab shows only active-incident recovery signals (healthy heartbeat ping is hidden).
+- History tab stores completed recovery records and allows per-incident trace inspection.
 - Shows live workflow state, incident timeline, RL stats, tool catalog, WHY diagnosis,
-  HOW primary+alternatives, and sanitized raw LLM traces.
+  HOW proposals, and sanitized raw LLM traces.
 
 On startup, the agent performs an LLM preflight request and refuses to start the
 recovery loop if the LLM endpoint or credentials are invalid.

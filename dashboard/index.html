@@ -15,6 +15,7 @@
         --warn: #ffd166;
         --bad: #ff6b6b;
         --line: #2a2f3a;
+        --tab: #1d2330;
       }
       * { box-sizing: border-box; }
       body {
@@ -29,15 +30,41 @@
         background: #11141b;
         border-bottom: 1px solid var(--line);
         padding: 12px 16px;
-        z-index: 1;
+        z-index: 2;
       }
       header h1 { margin: 0; font-size: 18px; }
       header p { margin: 4px 0 0; color: var(--muted); }
-      main {
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .tab {
+        border: 1px solid var(--line);
+        background: var(--tab);
+        color: var(--muted);
+        border-radius: 8px;
+        padding: 6px 12px;
+        cursor: pointer;
+      }
+      .tab.active {
+        color: var(--text);
+        border-color: #3d6ad6;
+      }
+      .view {
+        display: none;
+        padding: 12px;
+      }
+      .view.active {
         display: grid;
+      }
+      #live-view {
         grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
         gap: 12px;
-        padding: 12px;
+      }
+      #history-view {
+        grid-template-columns: 1fr;
+        gap: 12px;
       }
       section {
         background: var(--panel);
@@ -73,7 +100,7 @@
         margin: 0;
         white-space: pre-wrap;
         word-break: break-word;
-        max-height: 260px;
+        max-height: 320px;
         overflow: auto;
       }
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
@@ -87,14 +114,31 @@
         padding: 1px 8px;
         margin-left: 6px;
       }
+      .trace-button {
+        border: 1px solid var(--line);
+        background: transparent;
+        color: var(--text);
+        border-radius: 6px;
+        cursor: pointer;
+        padding: 4px 8px;
+      }
+      .trace-button.selected {
+        border-color: #3d6ad6;
+        color: #8fb0ff;
+      }
     </style>
   </head>
   <body>
     <header>
       <h1>MI Dashboard</h1>
       <p id="meta" class="small">Loading…</p>
+      <div class="tabs">
+        <button id="tab-live" class="tab active" type="button">Live</button>
+        <button id="tab-history" class="tab" type="button">History</button>
+      </div>
     </header>
-    <main>
+
+    <main id="live-view" class="view active">
       <section>
         <h2>Agent State</h2>
         <div id="agent-state"></div>
@@ -131,8 +175,23 @@
       </section>
     </main>
 
+    <main id="history-view" class="view">
+      <section>
+        <h2>Recovery History</h2>
+        <div id="history"></div>
+      </section>
+      <section>
+        <h2>History Trace</h2>
+        <div id="history-trace"></div>
+      </section>
+    </main>
+
     <script>
       const byId = (id) => document.getElementById(id);
+      let activeTab = 'live';
+      let selectedHistoryIncident = null;
+      let latestDashboard = null;
+      let inFlight = false;
 
       function esc(value) {
         return String(value)
@@ -145,11 +204,21 @@
         return `<pre class="mono">${esc(JSON.stringify(value, null, 2))}</pre>`;
       }
 
+      function setActiveTab(tab) {
+        activeTab = tab;
+        byId('tab-live').classList.toggle('active', tab === 'live');
+        byId('tab-history').classList.toggle('active', tab === 'history');
+        byId('live-view').classList.toggle('active', tab === 'live');
+        byId('history-view').classList.toggle('active', tab === 'history');
+      }
+
       function renderAgentState(data) {
         const state = data.agent_state || {};
         const incident = state.active_incident;
         const lastMonitor = state.last_monitor || {};
-        const cls = state.workflow_state === 'healthy' ? 'ok' : (state.workflow_state === 'incident_active' ? 'bad' : 'warn');
+        const cls = state.workflow_state === 'healthy'
+          ? 'ok'
+          : (state.workflow_state === 'incident_active' ? 'bad' : 'warn');
         byId('agent-state').innerHTML = `
           <div class="pill ${cls}">workflow: ${esc(state.workflow_state || 'unknown')}</div>
           <div class="pill">monitor: ${esc(lastMonitor.detail || 'n/a')}</div>
@@ -162,7 +231,7 @@
       function renderWhy(data) {
         const why = data.latest_why;
         if (!why) {
-          byId('why').innerHTML = '<div class="small">No diagnosis yet.</div>';
+          byId('why').innerHTML = '<div class="small">No active diagnosis.</div>';
           return;
         }
         byId('why').innerHTML = `
@@ -177,7 +246,7 @@
       function renderHow(data) {
         const how = data.latest_how;
         if (!how) {
-          byId('how').innerHTML = '<div class="small">No HOW proposal yet.</div>';
+          byId('how').innerHTML = '<div class="small">No active HOW proposal.</div>';
           return;
         }
         const primary = how.primary || {};
@@ -241,7 +310,7 @@
       function renderTimeline(data) {
         const timeline = Array.isArray(data.timeline) ? data.timeline.slice(0, 30) : [];
         if (!timeline.length) {
-          byId('timeline').innerHTML = '<div class="small">No events yet.</div>';
+          byId('timeline').innerHTML = '<div class="small">No active recovery timeline.</div>';
           return;
         }
         byId('timeline').innerHTML = `
@@ -256,47 +325,165 @@
       }
 
       function renderRawTrace(traceData) {
-        const trace = traceData.trace;
+        const trace = traceData ? traceData.trace : null;
         if (!trace) {
-          byId('raw-trace').innerHTML = '<div class="small">No raw trace data yet.</div>';
+          byId('raw-trace').innerHTML = '<div class="small">No active trace data.</div>';
           return;
         }
         byId('raw-trace').innerHTML = `
           <details open>
-            <summary>Latest trace (${esc(trace.incident_id || 'unknown')})</summary>
+            <summary>Active trace (${esc(trace.incident_id || 'unknown')})</summary>
             ${asJson(trace)}
           </details>
           <div class="small">available incidents: ${esc((traceData.available_incident_ids || []).join(', ') || 'none')}</div>
         `;
       }
 
+      function renderHistoryRows(historyRows) {
+        const rows = Array.isArray(historyRows) ? historyRows : [];
+        if (!rows.length) {
+          byId('history').innerHTML = '<div class="small">No completed recovery records yet.</div>';
+          return;
+        }
+        byId('history').innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>incident_id</th>
+                <th>failure_type</th>
+                <th>attempts</th>
+                <th>final_tool</th>
+                <th>recovered_at</th>
+                <th>trace</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((row) => {
+                const recoveredAt = row.recovered_ts
+                  ? new Date(row.recovered_ts * 1000).toLocaleString()
+                  : 'n/a';
+                const isSelected = selectedHistoryIncident === row.incident_id;
+                return `
+                  <tr>
+                    <td class="mono">${esc(row.incident_id || 'unknown')}</td>
+                    <td>${esc(row.failure_type || 'unknown')}</td>
+                    <td>${esc(row.attempts || 0)}</td>
+                    <td class="mono">${esc(row.final_tool_name || 'n/a')}</td>
+                    <td>${esc(recoveredAt)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        class="trace-button ${isSelected ? 'selected' : ''}"
+                        data-history-incident="${esc(row.incident_id || '')}"
+                      >
+                        ${isSelected ? 'Viewing' : 'View Trace'}
+                      </button>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        `;
+      }
+
+      function renderHistoryTrace(traceData, incidentId) {
+        if (!incidentId) {
+          byId('history-trace').innerHTML = '<div class="small">Select a history row to inspect its LLM trace.</div>';
+          return;
+        }
+        const trace = traceData ? traceData.trace : null;
+        if (!trace) {
+          byId('history-trace').innerHTML = `<div class="small">No trace found for ${esc(incidentId)}.</div>`;
+          return;
+        }
+        byId('history-trace').innerHTML = `
+          <details open>
+            <summary>Trace for ${esc(incidentId)}</summary>
+            ${asJson(trace)}
+          </details>
+        `;
+      }
+
+      async function fetchTrace(incidentId) {
+        if (!incidentId) {
+          return null;
+        }
+        const response = await fetch(`/agent/llm-trace?incident_id=${encodeURIComponent(incidentId)}`, {
+          cache: 'no-store',
+        });
+        if (!response.ok) {
+          return null;
+        }
+        return await response.json();
+      }
+
       async function tick() {
+        if (inFlight) {
+          return;
+        }
+        inFlight = true;
         try {
-          const [dashboardResp, traceResp] = await Promise.all([
-            fetch('/agent/dashboard', { cache: 'no-store' }),
-            fetch('/agent/llm-trace', { cache: 'no-store' }),
-          ]);
+          const dashboardResp = await fetch('/agent/dashboard', { cache: 'no-store' });
           if (!dashboardResp.ok) {
             throw new Error(`/agent/dashboard ${dashboardResp.status}`);
           }
-          if (!traceResp.ok) {
-            throw new Error(`/agent/llm-trace ${traceResp.status}`);
-          }
-
           const dashboard = await dashboardResp.json();
-          const trace = await traceResp.json();
+          latestDashboard = dashboard;
+
           renderAgentState(dashboard);
           renderWhy(dashboard);
           renderHow(dashboard);
           renderRl(dashboard);
           renderCatalog(dashboard);
           renderTimeline(dashboard);
-          renderRawTrace(trace);
-          byId('meta').textContent = `Updated ${new Date().toLocaleTimeString()} • polling every 1s`;
+          renderHistoryRows(dashboard.history || []);
+
+          const activeTrace = await fetchTrace(dashboard.latest_trace_incident_id || null);
+          renderRawTrace(activeTrace);
+
+          const historyRows = Array.isArray(dashboard.history) ? dashboard.history : [];
+          if (selectedHistoryIncident && !historyRows.some((row) => row.incident_id === selectedHistoryIncident)) {
+            selectedHistoryIncident = null;
+          }
+
+          const historyTrace = await fetchTrace(selectedHistoryIncident);
+          renderHistoryTrace(historyTrace, selectedHistoryIncident);
+
+          const activeIncident = dashboard.agent_state && dashboard.agent_state.active_incident;
+          const activeLabel = activeIncident ? `active incident ${activeIncident.incident_id}` : 'no active incident';
+          byId('meta').textContent = `Updated ${new Date().toLocaleTimeString()} • polling every 1s • ${activeLabel}`;
         } catch (error) {
           byId('meta').textContent = `Dashboard error: ${error}`;
+        } finally {
+          inFlight = false;
         }
       }
+
+      byId('tab-live').addEventListener('click', () => setActiveTab('live'));
+      byId('tab-history').addEventListener('click', () => setActiveTab('history'));
+
+      document.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+          return;
+        }
+        const button = target.closest('[data-history-incident]');
+        if (!(button instanceof HTMLElement)) {
+          return;
+        }
+        const incidentId = button.getAttribute('data-history-incident');
+        if (!incidentId) {
+          return;
+        }
+        selectedHistoryIncident = incidentId;
+        if (activeTab !== 'history') {
+          setActiveTab('history');
+        }
+        if (latestDashboard) {
+          renderHistoryRows(latestDashboard.history || []);
+        }
+      });
 
       tick();
       setInterval(tick, 1000);

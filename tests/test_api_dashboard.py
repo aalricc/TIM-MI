@@ -85,7 +85,12 @@ class APIFakeLLM:
 
 
 class APIFakeTools:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        execution_ok: bool = False,
+        monitor_health_sequence: list[bool] | None = None,
+    ) -> None:
         self.catalog: dict[str, dict[str, Any]] = {
             "winning_tool": {
                 "name": "winning_tool",
@@ -94,8 +99,16 @@ class APIFakeTools:
                 "params": {"backup_id": "latest"},
             }
         }
+        self._execution_ok = execution_ok
+        self._monitor_health_sequence = monitor_health_sequence or [False]
+        self._monitor_index = 0
 
     async def monitor_health(self) -> MonitorStatus:
+        idx = min(self._monitor_index, len(self._monitor_health_sequence) - 1)
+        healthy = self._monitor_health_sequence[idx]
+        self._monitor_index += 1
+        if healthy:
+            return MonitorStatus(healthy=True, status_code=200, detail="healthy")
         return MonitorStatus(healthy=False, status_code=500, detail="error_log_detected")
 
     async def collect_diagnostics(self) -> dict[str, Any]:
@@ -116,7 +129,11 @@ class APIFakeTools:
 
     async def execute_dynamic_tool(self, incident_id: str, tool_name: str) -> dict[str, Any]:
         del incident_id
-        return {"ok": False, "tool": tool_name, "error": "backup_missing"}
+        return {
+            "ok": self._execution_ok,
+            "tool": tool_name,
+            "error": None if self._execution_ok else "backup_missing",
+        }
 
     def persist_dynamic_tool(self, incident_id: str, tool_name: str) -> None:
         del incident_id, tool_name
@@ -129,7 +146,12 @@ class APIFakeTools:
 
 
 class APIFakeVerifier:
+    def __init__(self, *, healthy: bool = False) -> None:
+        self._healthy = healthy
+
     async def verify(self) -> VerificationResult:
+        if self._healthy:
+            return VerificationResult(healthy=True, details={"ok": True})
         return VerificationResult(
             healthy=False,
             failure_type="schema_invalid",
@@ -154,14 +176,24 @@ class APIFakeJev:
         )
 
 
-def _build_client(tmp_path: Path) -> TestClient:
+def _build_client(
+    tmp_path: Path,
+    *,
+    execution_ok: bool = False,
+    verifier_healthy: bool = False,
+    monitor_health_sequence: list[bool] | None = None,
+) -> tuple[TestClient, EventLog]:
     events = EventLog(tmp_path / "events.jsonl")
     llm = APIFakeLLM()
-    tools = APIFakeTools()
+    tools = APIFakeTools(
+        execution_ok=execution_ok,
+        monitor_health_sequence=monitor_health_sequence,
+    )
+    verifier = APIFakeVerifier(healthy=verifier_healthy)
     agent = RecoveryAgent(
         llm=llm,  # type: ignore[arg-type]
         tools=tools,  # type: ignore[arg-type]
-        verifier=APIFakeVerifier(),  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
         events=events,
         policy_store_path=(tmp_path / "policy.json").as_posix(),
         monitor_interval_seconds=60.0,
@@ -191,15 +223,16 @@ def _build_client(tmp_path: Path) -> TestClient:
         settings=settings,
         events=events,
         tools=tools,  # type: ignore[arg-type]
-        verifier=APIFakeVerifier(),  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
         llm=llm,  # type: ignore[arg-type]
     )
     app = create_api(context, agent)
-    return TestClient(app)
+    return TestClient(app), events
 
 
 def test_dashboard_route_serves_html(tmp_path: Path) -> None:
-    with _build_client(tmp_path) as client:
+    client, _ = _build_client(tmp_path)
+    with client:
         response = client.get("/dashboard")
 
     assert response.status_code == 200
@@ -208,13 +241,15 @@ def test_dashboard_route_serves_html(tmp_path: Path) -> None:
 
 
 def test_agent_dashboard_schema_and_rl_summary(tmp_path: Path) -> None:
-    with _build_client(tmp_path) as client:
+    client, _ = _build_client(tmp_path)
+    with client:
         response = client.get("/agent/dashboard")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["agent_state"]["workflow_state"] in {"incident_active", "healthy", "recovered"}
     assert isinstance(payload["timeline"], list)
+    assert isinstance(payload["history"], list)
     assert payload["rl_summary"]["actions"][0]["avg_reward"] == 0.5
     assert payload["latest_why"]["failure_type"] == "schema_invalid"
     assert payload["latest_how"]["executed_candidate"] == "primary"
@@ -222,7 +257,8 @@ def test_agent_dashboard_schema_and_rl_summary(tmp_path: Path) -> None:
 
 
 def test_agent_llm_trace_redacts_secrets(tmp_path: Path) -> None:
-    with _build_client(tmp_path) as client:
+    client, _ = _build_client(tmp_path)
+    with client:
         response = client.get("/agent/llm-trace")
         assert response.status_code == 200
         payload = response.json()
@@ -237,3 +273,73 @@ def test_agent_llm_trace_redacts_secrets(tmp_path: Path) -> None:
         by_incident = client.get("/agent/llm-trace", params={"incident_id": incident_id})
         assert by_incident.status_code == 200
         assert by_incident.json()["trace"]["incident_id"] == incident_id
+
+
+def test_live_timeline_filters_healthy_monitor_events(tmp_path: Path) -> None:
+    client, events = _build_client(tmp_path)
+    with client:
+        asyncio.run(
+            events.publish(
+                "monitor.health",
+                {"healthy": True, "detail": "healthy", "status_code": 200},
+            )
+        )
+        response = client.get("/agent/dashboard")
+
+    assert response.status_code == 200
+    timeline = response.json()["timeline"]
+    assert isinstance(timeline, list)
+    assert not any(
+        row.get("event_type") == "monitor.health"
+        and isinstance(row.get("payload"), dict)
+        and bool(row["payload"].get("healthy", False))
+        for row in timeline
+    )
+
+
+def test_live_dashboard_clears_after_recovery_and_history_retains_record(tmp_path: Path) -> None:
+    client, _ = _build_client(
+        tmp_path,
+        execution_ok=True,
+        verifier_healthy=True,
+        monitor_health_sequence=[False],
+    )
+    with client:
+        response = client.get("/agent/dashboard")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_state"]["workflow_state"] == "recovered"
+    assert payload["agent_state"]["active_incident"] is None
+    assert payload["timeline"] == []
+    assert payload["latest_why"] is None
+    assert payload["latest_how"] is None
+
+    history = payload["history"]
+    assert isinstance(history, list)
+    assert len(history) >= 1
+    row = history[0]
+    assert row["status"] == "recovered"
+    assert isinstance(row["incident_id"], str)
+
+
+def test_history_trace_lookup_by_incident_id(tmp_path: Path) -> None:
+    client, _ = _build_client(
+        tmp_path,
+        execution_ok=True,
+        verifier_healthy=True,
+        monitor_health_sequence=[False],
+    )
+    with client:
+        dashboard_response = client.get("/agent/dashboard")
+        assert dashboard_response.status_code == 200
+        history = dashboard_response.json()["history"]
+        assert isinstance(history, list)
+        assert len(history) >= 1
+        incident_id = history[0]["incident_id"]
+
+        trace_response = client.get("/agent/llm-trace", params={"incident_id": incident_id})
+        assert trace_response.status_code == 200
+        trace = trace_response.json()["trace"]
+        assert isinstance(trace, dict)
+        assert trace["incident_id"] == incident_id
