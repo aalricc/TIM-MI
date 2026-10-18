@@ -136,6 +136,18 @@ class FakeJev:
         return self.decision
 
 
+def _primary_jev() -> FakeJev:
+    return FakeJev(
+        JevDecision(
+            usable=True,
+            selected_candidate_name="restore",
+            selected_candidate_operation="request_backup_restore",
+            usable_probability=0.9,
+            risk_score=0.2,
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_success_persists_winning_dynamic_tool(tmp_path: Path) -> None:
     tools = FakeTools(unhealthy=True, execution_ok=True)
@@ -147,6 +159,7 @@ async def test_success_persists_winning_dynamic_tool(tmp_path: Path) -> None:
         events=EventLog(tmp_path / "events.jsonl"),
         policy_store_path=(tmp_path / "policy.json").as_posix(),
         monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
     )
 
     await agent.run_iteration()
@@ -181,6 +194,7 @@ async def test_failures_continue_without_no_viable_cap(tmp_path: Path) -> None:
         events=EventLog(tmp_path / "events.jsonl"),
         policy_store_path=(tmp_path / "policy.json").as_posix(),
         monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
     )
 
     for _ in range(4):
@@ -203,6 +217,7 @@ async def test_timeline_links_why_and_how_to_same_incident(tmp_path: Path) -> No
         events=events,
         policy_store_path=(tmp_path / "policy.json").as_posix(),
         monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
     )
 
     await agent.run_iteration()
@@ -224,6 +239,7 @@ async def test_alternatives_recorded_but_one_action_executed(tmp_path: Path) -> 
         events=EventLog(tmp_path / "events.jsonl"),
         policy_store_path=(tmp_path / "policy.json").as_posix(),
         monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
     )
 
     await agent.run_iteration()

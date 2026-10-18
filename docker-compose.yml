@@ -57,10 +57,19 @@ services:
       MI_TOOL_CATALOG_PATH: /state/tool_catalog.json
       MI_LLM_MODEL: ${MI_LLM_MODEL:-gpt-5.3-codex}
       MI_LLM_ENDPOINT: ${MI_LLM_ENDPOINT:-https://api.openai.com/v1/responses}
+      MI_LLM_TIMEOUT_SECONDS: ${MI_LLM_TIMEOUT_SECONDS:-20}
+      MI_LLM_AUTH_MODE: ${MI_LLM_AUTH_MODE:-bearer}
+      MI_LLM_API_KEY_HEADER: ${MI_LLM_API_KEY_HEADER:-api-key}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
-      MI_RAG_ENABLED: ${MI_RAG_ENABLED:-false}
-      PINECONE_API_KEY: ${PINECONE_API_KEY:-}
-      PINECONE_INDEX_HOST: ${PINECONE_INDEX_HOST:-}
+      MI_JEV_ENABLED: ${MI_JEV_ENABLED:-true}
+      JEV_API_KEY: ${JEV_API_KEY:?JEV_API_KEY is required}
+      MI_JEV_MODEL: ${MI_JEV_MODEL:-jev-latest}
+      MI_JEV_BASE_URL: ${MI_JEV_BASE_URL:-}
+      MI_JEV_TIMEOUT_SECONDS: ${MI_JEV_TIMEOUT_SECONDS:-8}
+      MI_JEV_USABLE_THRESHOLD: ${MI_JEV_USABLE_THRESHOLD:-0.65}
+      MI_RAG_ENABLED: ${MI_RAG_ENABLED:-true}
+      PINECONE_API_KEY: ${PINECONE_API_KEY:?PINECONE_API_KEY is required}
+      PINECONE_INDEX_HOST: ${PINECONE_INDEX_HOST:?PINECONE_INDEX_HOST is required}
       PINECONE_NAMESPACE: ${PINECONE_NAMESPACE:-sqlite-docs}
     volumes:
       - ./target/app:/target/app

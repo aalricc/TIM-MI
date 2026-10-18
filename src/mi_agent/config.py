@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class MISettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="MI_", env_file=".env", extra="forbid")
+    model_config = SettingsConfigDict(env_prefix="MI_", env_file=".env", extra="ignore")
 
     monitor_interval_seconds: float = Field(default=1.0, gt=0.0, le=60.0)
     target_service_url: str = "http://target-app:8080"
@@ -39,7 +39,7 @@ class MISettings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_KEY", "MI_OPENAI_API_KEY"),
     )
 
-    jev_enabled: bool = False
+    jev_enabled: bool = True
     jev_model: str = "jev-latest"
     jev_base_url: str | None = None
     jev_timeout_seconds: float = Field(default=8.0, gt=0.0, le=120.0)
@@ -49,7 +49,7 @@ class MISettings(BaseSettings):
         validation_alias=AliasChoices("JEV_API_KEY", "MI_JEV_API_KEY"),
     )
 
-    rag_enabled: bool = False
+    rag_enabled: bool = True
     rag_top_k: int = Field(default=5, ge=1, le=10)
     pinecone_api_key: str | None = Field(
         default=None,
@@ -66,13 +66,16 @@ class MISettings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_runtime_gate(self) -> MISettings:
-        if self.rag_enabled:
-            if self.pinecone_api_key is None or self.pinecone_api_key.strip() == "":
-                raise ValueError("rag_enabled=true requires PINECONE_API_KEY")
-            if self.pinecone_index_host is None or self.pinecone_index_host.strip() == "":
-                raise ValueError("rag_enabled=true requires PINECONE_INDEX_HOST")
+        if not self.rag_enabled:
+            raise ValueError("MI_RAG_ENABLED must remain true")
+        if self.pinecone_api_key is None or self.pinecone_api_key.strip() == "":
+            raise ValueError("rag_enabled=true requires PINECONE_API_KEY")
+        if self.pinecone_index_host is None or self.pinecone_index_host.strip() == "":
+            raise ValueError("rag_enabled=true requires PINECONE_INDEX_HOST")
         if self.openai_api_key.strip() == "":
             raise ValueError("OPENAI_API_KEY or MI_OPENAI_API_KEY must be non-empty")
-        if self.jev_enabled and (self.jev_api_key is None or self.jev_api_key.strip() == ""):
+        if not self.jev_enabled:
+            raise ValueError("MI_JEV_ENABLED must remain true")
+        if self.jev_api_key is None or self.jev_api_key.strip() == "":
             raise ValueError("jev_enabled=true requires JEV_API_KEY")
         return self

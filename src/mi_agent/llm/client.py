@@ -117,6 +117,7 @@ class OpenAILLMClient(LLMClient):
         payload = await self._call_json(
             instruction=(
                 "Propose one primary dynamic recovery action and 2-4 ranked alternatives. "
+                "Any candidate may be selected by Jev. "
                 "Use only allowed operations. "
                 "Do not output strategy text outside JSON."
             ),
@@ -137,7 +138,7 @@ class OpenAILLMClient(LLMClient):
                     "single_action": True,
                     "dynamic_tool_only": True,
                     "restart_service_is_fallback": True,
-                    "alternatives_observability_only": True,
+                    "candidate_list_for_jev_selection": True,
                 },
             },
             schema_name="how_proposal",

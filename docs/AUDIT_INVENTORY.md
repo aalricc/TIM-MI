@@ -1,5 +1,10 @@
 # Repository Audit Inventory
 
+## Workflow Contract Note
+
+This file is an archival inventory and not the authoritative runtime workflow spec.
+The authoritative TIM-MI workflow is defined in `README.md` and `docs/ARCHITECTURE.md`.
+
 Generated from `git ls-files` with per-file action decision.\
 
 `lines_scanned` counts line-by-line content scanned from working tree or `HEAD` for deleted tracked files.

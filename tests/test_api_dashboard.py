@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from mi_agent.agent.engine import RecoveryAgent
 from mi_agent.api.server import create_api
+from mi_agent.decision.client import JevDecision
 from mi_agent.events import EventLog
 from mi_agent.runtime import MIContext
 from mi_agent.workflow.models import (
@@ -136,6 +137,23 @@ class APIFakeVerifier:
         )
 
 
+class APIFakeJev:
+    async def choose_candidate(
+        self,
+        *,
+        state: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> JevDecision:
+        del state, candidates
+        return JevDecision(
+            usable=True,
+            selected_candidate_name="restore_latest",
+            selected_candidate_operation="request_backup_restore",
+            usable_probability=0.91,
+            risk_score=0.2,
+        )
+
+
 def _build_client(tmp_path: Path) -> TestClient:
     events = EventLog(tmp_path / "events.jsonl")
     llm = APIFakeLLM()
@@ -147,6 +165,7 @@ def _build_client(tmp_path: Path) -> TestClient:
         events=events,
         policy_store_path=(tmp_path / "policy.json").as_posix(),
         monitor_interval_seconds=60.0,
+        jev=APIFakeJev(),  # type: ignore[arg-type]
     )
     asyncio.run(agent.run_iteration())
     agent._policy = {
@@ -162,7 +181,12 @@ def _build_client(tmp_path: Path) -> TestClient:
 
     from mi_agent.config import MISettings
 
-    settings = MISettings(openai_api_key="test-key")
+    settings = MISettings(
+        openai_api_key="test-key",
+        jev_api_key="test-jev-key",
+        pinecone_api_key="test-pinecone-key",
+        pinecone_index_host="test-index-host",
+    )
     context = MIContext(
         settings=settings,
         events=events,

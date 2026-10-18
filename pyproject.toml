@@ -26,7 +26,7 @@ rag = [
   "pinecone>=6,<7",
 ]
 jev = [
-  "langchain-typesafe>=0.1,<1",
+  "langchain-typesafe>=0.0.1a3,<1",
 ]
 
 [tool.hatch.build.targets.wheel]

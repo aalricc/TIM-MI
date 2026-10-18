@@ -29,7 +29,7 @@ def build_agent(
     llm = llm_client or OpenAILLMClient(settings)
     tools = ToolExecutor(settings)
     verifier = Verifier(settings)
-    jev = JevDecisionClient(settings) if settings.jev_enabled else None
+    jev = JevDecisionClient(settings)
     agent = RecoveryAgent(
         llm=llm,
         tools=tools,

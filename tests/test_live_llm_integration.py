@@ -19,6 +19,9 @@ async def test_openai_preflight_and_structured_calls() -> None:
 
     settings = MISettings(
         openai_api_key=api_key,
+        jev_api_key=os.getenv("JEV_API_KEY", "test-jev-key"),
+        pinecone_api_key=os.getenv("PINECONE_API_KEY", "test-pinecone-key"),
+        pinecone_index_host=os.getenv("PINECONE_INDEX_HOST", "test-index-host"),
         llm_endpoint=os.getenv("MI_LLM_ENDPOINT", "https://api.openai.com/v1/responses"),
         llm_model=os.getenv("MI_LLM_MODEL", "gpt-5.3-codex"),
         llm_timeout_seconds=30,

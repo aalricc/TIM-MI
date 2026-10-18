@@ -36,3 +36,5 @@ __pycache__/
 .DS_Store
 
 !.env.example
+
+.local/jev/

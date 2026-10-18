@@ -8,7 +8,7 @@ Built-ins are for diagnosis. Recovery strategy is selected and executed as a per
 
 - `agent/engine.py`
   - Owns incident lifecycle.
-  - Enforces monitor → diagnostics → RAG(why) → LLM(why) → RAG(how) → LLM(how) → dynamic execute → verify loop.
+  - Enforces monitor → diagnostics → RAG(why) → LLM(why) → RAG(how) → LLM(how candidates) → JEV select → dynamic execute → verify loop.
 - `tools/executor.py`
   - Runs diagnostic probes.
   - Registers temporary dynamic tools.
@@ -18,7 +18,9 @@ Built-ins are for diagnosis. Recovery strategy is selected and executed as a per
   - OpenAI connectivity is mandatory at runtime.
   - Startup preflight must succeed before monitor loop begins.
   - `diagnose_why`: structured diagnosis (`failure_type`, hypotheses, evidence).
-  - `propose_how`: primary dynamic action + ranked alternatives (observability only).
+- `propose_how`: candidate list (`primary` + `alternatives[]`) for JEV selection.
+- `decision/client.py`
+  - Uses JEV (System One) to select one candidate action or return unusable decision.
 - `verifier/verifier.py`
   - Independent post-action health verification.
 - `api/server.py`
@@ -31,16 +33,16 @@ Built-ins are for diagnosis. Recovery strategy is selected and executed as a per
 3. Build symptom query and retrieve SQLite recovery chunks (RAG #1).
 4. Diagnose WHY.
 5. Build repair query from diagnosis + latest failure and retrieve focused chunks (RAG #2).
-6. Plan HOW as a temporary dynamic tool.
-   - LLM returns `primary` + `alternatives[]`; only `primary` executes.
-7. Register dynamic tool in session namespace.
-8. Security gate validates only security constraints.
-9. Execute one dynamic action.
-10. Verify recovery.
-11. On failure, retain context and retry without hard cap.
-12. Persist only the final successful dynamic tool.
-13. Update RL policy reward ledger.
-14. Persist a learned recovery skill entry in `state/skills.md`.
+6. Plan HOW as candidate actions (`primary` + `alternatives[]`).
+7. JEV selects one candidate action.
+8. Register selected dynamic tool in session namespace.
+9. Security gate validates only security constraints.
+10. Execute one dynamic action.
+11. Verify recovery.
+12. On failure, retain context and retry from step 5 without hard cap.
+13. Persist only the final successful dynamic tool.
+14. Update RL policy reward ledger.
+15. Persist a learned recovery skill entry in `state/skills.md`.
 
 ## Safety model
 

@@ -96,6 +96,14 @@ class RecoveryAgent:
             await asyncio.sleep(self._monitor_interval_seconds)
 
     async def run_iteration(self) -> None:
+        if (
+            self._incident is not None
+            and self._workflow_state == WorkflowState.INCIDENT_ACTIVE
+            and self._incident.attempts > 0
+        ):
+            await self._attempt_recovery(self._incident, retry_from_step5=True)
+            return
+
         monitor = await self._tools.monitor_health()
         self._last_monitor = monitor
         await self._events.publish("monitor.health", monitor.model_dump())
@@ -121,29 +129,37 @@ class RecoveryAgent:
             )
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.UNHEALTHY_DETECTED)
 
-        await self._attempt_recovery(self._incident)
+        await self._attempt_recovery(self._incident, retry_from_step5=False)
 
-    async def _attempt_recovery(self, incident: IncidentContext) -> None:
-        diagnostics = await self._tools.collect_diagnostics()
-        symptom_query = self._build_symptom_query(diagnostics)
-        incident.rag_symptom_chunks = await self._tools.retrieve_rag_chunks(
-            symptom_query,
-            k=5,
-        )
+    async def _attempt_recovery(
+        self,
+        incident: IncidentContext,
+        *,
+        retry_from_step5: bool,
+    ) -> None:
+        if retry_from_step5 and incident.diagnosis is not None:
+            diagnosis = incident.diagnosis
+        else:
+            diagnostics = await self._tools.collect_diagnostics()
+            symptom_query = self._build_symptom_query(diagnostics)
+            incident.rag_symptom_chunks = await self._tools.retrieve_rag_chunks(
+                symptom_query,
+                k=5,
+            )
 
-        diagnosis = await self._llm.diagnose_why(
-            evidence=diagnostics,
-            rag_chunks=incident.rag_symptom_chunks,
-        )
-        incident.diagnosis = diagnosis
-        self._record_diagnosis_trace(incident_id=incident.incident_id, diagnosis=diagnosis)
-        await self._events.publish(
-            "diagnosis.why",
-            {
-                "incident_id": incident.incident_id,
-                **diagnosis.model_dump(),
-            },
-        )
+            diagnosis = await self._llm.diagnose_why(
+                evidence=diagnostics,
+                rag_chunks=incident.rag_symptom_chunks,
+            )
+            incident.diagnosis = diagnosis
+            self._record_diagnosis_trace(incident_id=incident.incident_id, diagnosis=diagnosis)
+            await self._events.publish(
+                "diagnosis.why",
+                {
+                    "incident_id": incident.incident_id,
+                    **diagnosis.model_dump(),
+                },
+            )
 
         repair_query = self._build_repair_query(incident)
         incident.rag_repair_chunks = await self._tools.retrieve_rag_chunks(
@@ -264,7 +280,13 @@ class RecoveryAgent:
         candidate_rows = [candidate.model_dump() for candidate in candidates]
 
         if self._jev is None:
-            return how.primary, "primary", None
+            await self._handle_unusable_decision(
+                incident=incident,
+                reason="jev_not_configured",
+                candidate_rows=candidate_rows,
+                decision_payload={"usable": False, "reason": "jev_not_configured"},
+            )
+            return None, "none", {"usable": False, "reason": "jev_not_configured"}
 
         state = {
             "incident_id": incident.incident_id,

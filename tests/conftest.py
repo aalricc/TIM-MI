@@ -24,6 +24,11 @@ def settings(tmp_path: Path) -> MISettings:
 
     return MISettings(
         openai_api_key="test-key",
+        jev_api_key="test-jev-key",
+        rag_enabled=True,
+        jev_enabled=True,
+        pinecone_api_key="test-pinecone-key",
+        pinecone_index_host="test-index-host",
         target_service_url="http://example.invalid",
         app_root=app_root,
         sandbox_root=tmp_path,

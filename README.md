@@ -9,15 +9,16 @@ The runtime enforces a strict loop:
 3. Run RAG symptom grounding (`search_sqlite_docs`).
 4. LLM call #1: diagnose **WHY**.
 5. Run RAG repair guidance with diagnosis context.
-6. LLM call #2: propose **HOW** as a temporary dynamic tool.
-7. Register the dynamic tool for the active incident.
-8. Security-only safety gate (schema/path/sandbox checks).
-9. Execute exactly one dynamic action.
-10. Verify recovery independently.
-11. On failure, feed back latest tool/verifier/fingerprint context and loop.
-12. Persist only the winning dynamic tool to `state/tool_catalog.json`.
-13. Update RL policy rewards in `state/policy_store.json`.
-14. Append learned successful recovery skill to `state/skills.md`.
+6. LLM call #2: propose **HOW** candidate actions (`primary` + `alternatives[]`).
+7. JEV (System One): choose the best candidate action.
+8. Register the selected dynamic tool for the active incident.
+9. Security-only safety gate (schema/path/sandbox checks).
+10. Execute exactly one dynamic action.
+11. Verify recovery independently.
+12. On failure, retain context and loop back to step 5 (no hard cap).
+13. Persist only the winning dynamic tool to `state/tool_catalog.json`.
+14. Update RL policy rewards in `state/policy_store.json`.
+15. Append learned successful recovery skill to `state/skills.md`.
 
 ## Architecture Diagram
 ![MI Architecture Diagram](docs/images/tim_mi_architecture.png)
@@ -28,7 +29,7 @@ The runtime enforces a strict loop:
 - Dynamic recovery actions are session-first; built-ins are diagnostics-first.
 - `request_backup_restore` remains available.
 - `restart_service` is optional fallback only.
-- Startup config gate validates Pinecone requirements when `MI_RAG_ENABLED=true`.
+- Startup config gate requires OpenAI + JEV + Pinecone credentials.
 
 ## Target app surface
 
@@ -55,34 +56,61 @@ The runtime enforces a strict loop:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev]
+pip install -e '.[dev,jev,rag]'
+```
 
-# Optional: include Jev decision layer support
-pip install -e .[dev,jev]
+## Jev local server (required)
+
+Start Jev in a separate terminal:
+
+```bash
+cd .local/jev/jev
+export JEV_API_KEY='<your-local-jev-secret>'
+./jev serve --host 127.0.0.1 --port 8017
 ```
 
 ## Configuration
 
 Copy `.env.example` and set values as needed.
 
-OpenAI-backed LLM calls are mandatory:
+LLM calls are mandatory. You can use OpenAI or Azure OpenAI.
+
+OpenAI example:
 
 - `OPENAI_API_KEY=<key>`
 
-Optional Jev decision layer (inserted after HOW proposal to choose one candidate action):
+Azure OpenAI example:
+
+- `OPENAI_API_KEY=<azure-key>`
+- `MI_LLM_ENDPOINT=https://<resource>.openai.azure.com/openai/v1/responses`
+- `MI_LLM_AUTH_MODE=api_key`
+- `MI_LLM_API_KEY_HEADER=api-key`
+- `MI_LLM_MODEL=<azure-deployment-name>`
+
+Jev decision layer (mandatory, inserted after HOW proposal to choose one candidate action):
 
 - `MI_JEV_ENABLED=true`
-- `JEV_API_KEY=<key>`
+- `JEV_API_KEY=<same value used to start jev serve>`
 - `MI_JEV_MODEL=jev-latest`
 - `MI_JEV_USABLE_THRESHOLD=0.65`
+- `MI_JEV_BASE_URL=http://host.docker.internal:8017` (when running `mi-agent` in Docker)
+- `MI_JEV_BASE_URL=http://127.0.0.1:8017` (when running `mi-agent` on host)
 
-For Pinecone RAG:
+For Pinecone RAG (mandatory):
 
 - `MI_RAG_ENABLED=true`
 - `PINECONE_API_KEY=<key>`
 - `PINECONE_INDEX_HOST=<host>`
 
 ## Run
+
+Recommended (Docker):
+
+```bash
+docker compose up --build --remove-orphans
+```
+
+Optional (host Python process):
 
 ```bash
 python -m mi_agent.main
