@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from mi_agent.class_memory import (
+    ClassMatch,
+    ClassMemory,
+    FastPathDecision,
+    canonical_action_key,
+    dedupe_candidates_by_action_key,
+)
 from mi_agent.decision.client import JevDecision, JevDecisionClient
 from mi_agent.events import EventLog
 from mi_agent.llm.client import LLMClient
@@ -45,6 +52,10 @@ class RecoveryAgent:
         monitor_interval_seconds: float,
         skills_path: str | None = None,
         jev: JevDecisionClient | None = None,
+        class_memory: ClassMemory | None = None,
+        classmem_enabled: bool = False,
+        classmem_dedupe_enabled: bool = True,
+        classmem_fastpath_enabled: bool = True,
     ) -> None:
         self._llm = llm
         self._tools = tools
@@ -53,6 +64,10 @@ class RecoveryAgent:
         self._policy_store_path = policy_store_path
         self._monitor_interval_seconds = monitor_interval_seconds
         self._jev = jev
+        self._class_memory = class_memory
+        self._classmem_enabled = classmem_enabled and class_memory is not None
+        self._classmem_dedupe_enabled = classmem_dedupe_enabled
+        self._classmem_fastpath_enabled = classmem_fastpath_enabled
         default_skills_path = str(Path(policy_store_path).with_name("skills.md"))
         self._skills_path = skills_path or default_skills_path
 
@@ -148,10 +163,12 @@ class RecoveryAgent:
         *,
         retry_from_step5: bool,
     ) -> None:
-        if retry_from_step5 and incident.diagnosis is not None:
+        diagnostics = incident.latest_diagnostics
+        if retry_from_step5 and incident.diagnosis is not None and diagnostics:
             diagnosis = incident.diagnosis
         else:
             diagnostics = await self._tools.collect_diagnostics()
+            incident.latest_diagnostics = diagnostics
             symptom_query = self._build_symptom_query(diagnostics)
             incident.rag_symptom_chunks = await self._tools.retrieve_rag_chunks(
                 symptom_query,
@@ -172,6 +189,64 @@ class RecoveryAgent:
                 },
             )
 
+        class_match: ClassMatch | None = None
+        fast_path_decision: FastPathDecision | None = None
+        if self._classmem_enabled and self._class_memory is not None:
+            signature = self._class_memory.build_signature(
+                diagnostics=diagnostics,
+                diagnosis=diagnosis,
+                attempts=incident.attempts,
+            )
+            class_match = self._class_memory.assign_class(signature)
+            fast_path_decision = self._class_memory.choose_fast_path(
+                match=class_match,
+                failed_action_keys=incident.failed_action_keys,
+            )
+
+            await self._events.publish(
+                "class_memory.decision",
+                {
+                    "incident_id": incident.incident_id,
+                    "class_id": class_match.class_id,
+                    "s1": class_match.s1,
+                    "s2": class_match.s2,
+                    "margin": class_match.margin,
+                    "fast_path_eligible": fast_path_decision.eligible,
+                    "first_failing_gate_reason": fast_path_decision.gate_reason,
+                    "chosen_action_key": fast_path_decision.action_key,
+                    "source": fast_path_decision.source,
+                    "new_class": class_match.created_new,
+                },
+            )
+
+        if (
+            self._classmem_enabled
+            and self._classmem_fastpath_enabled
+            and fast_path_decision is not None
+            and fast_path_decision.eligible
+            and fast_path_decision.candidate is not None
+        ):
+            fast_how = HowProposal(primary=fast_path_decision.candidate, alternatives=[])
+            selected_how, executed_candidate, jev_decision = await self._select_candidate_with_jev(
+                incident=incident,
+                diagnosis=diagnosis,
+                how=fast_how,
+                source="class_memory",
+                count_unusable_failure=False,
+            )
+            if selected_how is not None:
+                await self._execute_selected_action(
+                    incident=incident,
+                    how=fast_how,
+                    selected_how=selected_how,
+                    executed_candidate=executed_candidate,
+                    jev_decision=jev_decision,
+                    source="class_memory",
+                    class_match=class_match,
+                    selected_action_key=fast_path_decision.action_key,
+                )
+                return
+
         repair_query = self._build_repair_query(incident)
         incident.rag_repair_chunks = await self._tools.retrieve_rag_chunks(
             repair_query,
@@ -191,10 +266,36 @@ class RecoveryAgent:
             incident=incident,
             diagnosis=diagnosis,
             how=how,
+            source="full_loop",
         )
         if selected_how is None:
             return
 
+        await self._execute_selected_action(
+            incident=incident,
+            how=how,
+            selected_how=selected_how,
+            executed_candidate=executed_candidate,
+            jev_decision=jev_decision,
+            source="full_loop",
+            class_match=class_match,
+            selected_action_key=None,
+        )
+
+    async def _execute_selected_action(
+        self,
+        *,
+        incident: IncidentContext,
+        how: HowProposal,
+        selected_how: DynamicToolSpec,
+        executed_candidate: str,
+        jev_decision: dict[str, Any] | None,
+        source: str,
+        class_match: ClassMatch | None,
+        selected_action_key: str | None,
+    ) -> None:
+        started = time.perf_counter()
+        action_key = selected_action_key or canonical_action_key(selected_how)
         tool_name = self._tools.register_temporary_dynamic_tool(incident.incident_id, selected_how)
         self._record_how_trace(
             incident_id=incident.incident_id,
@@ -202,29 +303,64 @@ class RecoveryAgent:
             executed_tool_name=tool_name,
             executed_candidate=executed_candidate,
             jev_decision=jev_decision,
+            source=source,
+            action_key=action_key,
+            class_id=class_match.class_id if class_match is not None else None,
         )
+        planning_payload: dict[str, Any] = {
+            "incident_id": incident.incident_id,
+            "executed_tool_name": tool_name,
+            "primary": how.primary.model_dump(),
+            "alternatives": [item.model_dump() for item in how.alternatives],
+            "executed_candidate": executed_candidate,
+            "jev_decision": jev_decision,
+        }
+        if self._classmem_enabled:
+            planning_payload.update(
+                {
+                    "source": source,
+                    "action_key": action_key,
+                    "class_id": class_match.class_id if class_match is not None else None,
+                }
+            )
         await self._events.publish(
             "planning.how",
-            {
-                "incident_id": incident.incident_id,
-                "executed_tool_name": tool_name,
-                "primary": how.primary.model_dump(),
-                "alternatives": [item.model_dump() for item in how.alternatives],
-                "executed_candidate": executed_candidate,
-                "jev_decision": jev_decision,
-            },
+            planning_payload,
         )
 
         action_result = await self._tools.execute_dynamic_tool(incident.incident_id, tool_name)
+        executed_payload: dict[str, Any] = {
+            "incident_id": incident.incident_id,
+            "tool_name": tool_name,
+            **action_result,
+        }
+        if self._classmem_enabled:
+            executed_payload.update(
+                {
+                    "source": source,
+                    "action_key": action_key,
+                }
+            )
         await self._events.publish(
             "dynamic_tool.executed",
-            {"incident_id": incident.incident_id, "tool_name": tool_name, **action_result},
+            executed_payload,
         )
 
         verification = await self._verifier.verify()
+        verification_payload: dict[str, Any] = {
+            "incident_id": incident.incident_id,
+            **verification.model_dump(),
+        }
+        if self._classmem_enabled:
+            verification_payload.update(
+                {
+                    "source": source,
+                    "action_key": action_key,
+                }
+            )
         await self._events.publish(
             "verification.result",
-            {"incident_id": incident.incident_id, **verification.model_dump()},
+            verification_payload,
         )
 
         incident.attempts += 1
@@ -241,43 +377,88 @@ class RecoveryAgent:
         )
         incident.prior_attempts.append(feedback)
 
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        if self._classmem_enabled and self._class_memory is not None and class_match is not None:
+            self._class_memory.record_outcome(
+                match=class_match,
+                spec=selected_how,
+                latency_ms=latency_ms,
+                success=verification.healthy,
+                source=source,
+            )
+
         if verification.healthy:
             self._tools.persist_dynamic_tool(incident.incident_id, tool_name)
             self._tools.discard_incident_tools(incident.incident_id, keep=tool_name)
             self._update_policy(tool_name, reward=1.0)
-            self._append_skill_entry(
-                incident=incident,
-                tool_name=tool_name,
-                operation=selected_how.operation,
-            )
+            if (
+                self._classmem_enabled
+                and self._class_memory is not None
+                and class_match is not None
+            ):
+                section = self._class_memory.render_skills_section(class_id=class_match.class_id)
+                if section:
+                    self._class_memory.upsert_skills_section(
+                        Path(self._skills_path),
+                        class_id=class_match.class_id,
+                        section_body=section,
+                    )
+            else:
+                self._append_skill_entry(
+                    incident=incident,
+                    tool_name=tool_name,
+                    operation=selected_how.operation,
+                )
             self._workflow_state = transition(
                 self._workflow_state,
                 WorkflowEvent.RECOVERY_SUCCEEDED,
             )
+            recovered_payload: dict[str, Any] = {
+                "incident_id": incident.incident_id,
+                "tool_name": tool_name,
+                "attempts": incident.attempts,
+            }
+            if self._classmem_enabled:
+                recovered_payload.update(
+                    {
+                        "latency_ms": latency_ms,
+                        "source": source,
+                        "action_key": action_key,
+                        "class_id": class_match.class_id if class_match is not None else None,
+                    }
+                )
             await self._events.publish(
                 "incident.recovered",
-                {
-                    "incident_id": incident.incident_id,
-                    "tool_name": tool_name,
-                    "attempts": incident.attempts,
-                },
+                recovered_payload,
             )
             return
 
         incident.last_tool_error = str(
             action_result.get("error") or verification.failure_type or "unknown"
         )
+        if self._classmem_enabled:
+            incident.failed_action_keys.add(action_key)
         self._tools.discard_incident_tools(incident.incident_id)
         self._update_policy(tool_name, reward=-1.0)
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_FAILED)
+        failed_payload: dict[str, Any] = {
+            "incident_id": incident.incident_id,
+            "tool_name": tool_name,
+            "error": incident.last_tool_error,
+            "attempts": incident.attempts,
+        }
+        if self._classmem_enabled:
+            failed_payload.update(
+                {
+                    "latency_ms": latency_ms,
+                    "source": source,
+                    "action_key": action_key,
+                    "class_id": class_match.class_id if class_match is not None else None,
+                }
+            )
         await self._events.publish(
             "incident.recovery_failed",
-            {
-                "incident_id": incident.incident_id,
-                "tool_name": tool_name,
-                "error": incident.last_tool_error,
-                "attempts": incident.attempts,
-            },
+            failed_payload,
         )
 
     async def _select_candidate_with_jev(
@@ -286,17 +467,39 @@ class RecoveryAgent:
         incident: IncidentContext,
         diagnosis: Any,
         how: HowProposal,
+        source: str,
+        count_unusable_failure: bool = True,
     ) -> tuple[DynamicToolSpec | None, str, dict[str, Any] | None]:
         candidates = [how.primary, *how.alternatives]
+        if self._classmem_enabled and self._classmem_dedupe_enabled:
+            candidates = dedupe_candidates_by_action_key(candidates)
+            candidates = [
+                item
+                for item in candidates
+                if canonical_action_key(item) not in incident.failed_action_keys
+            ]
+            if not candidates:
+                if count_unusable_failure:
+                    await self._handle_unusable_decision(
+                        incident=incident,
+                        reason="all_candidates_previously_failed",
+                        candidate_rows=[],
+                        decision_payload={
+                            "usable": False,
+                            "reason": "all_candidates_previously_failed",
+                        },
+                    )
+                return None, "none", {"usable": False, "reason": "all_candidates_previously_failed"}
         candidate_rows = [candidate.model_dump() for candidate in candidates]
 
         if self._jev is None:
-            await self._handle_unusable_decision(
-                incident=incident,
-                reason="jev_not_configured",
-                candidate_rows=candidate_rows,
-                decision_payload={"usable": False, "reason": "jev_not_configured"},
-            )
+            if count_unusable_failure:
+                await self._handle_unusable_decision(
+                    incident=incident,
+                    reason="jev_not_configured",
+                    candidate_rows=candidate_rows,
+                    decision_payload={"usable": False, "reason": "jev_not_configured"},
+                )
             return None, "none", {"usable": False, "reason": "jev_not_configured"}
 
         state = {
@@ -309,25 +512,29 @@ class RecoveryAgent:
             "prior_attempts": [attempt.model_dump() for attempt in incident.prior_attempts],
             "candidate_actions": candidate_rows,
         }
+        if self._classmem_enabled:
+            state["source"] = source
         decision = await self._jev.choose_candidate(state=state, candidates=candidate_rows)
         decision_payload = self._decision_payload(decision)
         if not decision.usable:
-            await self._handle_unusable_decision(
-                incident=incident,
-                reason=decision.reason or "jev_decision_unusable",
-                candidate_rows=candidate_rows,
-                decision_payload=decision_payload,
-            )
+            if count_unusable_failure:
+                await self._handle_unusable_decision(
+                    incident=incident,
+                    reason=decision.reason or "jev_decision_unusable",
+                    candidate_rows=candidate_rows,
+                    decision_payload=decision_payload,
+                )
             return None, "none", decision_payload
 
         selected = self._pick_candidate(candidates, decision)
         if selected is None:
-            await self._handle_unusable_decision(
-                incident=incident,
-                reason="selected_candidate_not_found",
-                candidate_rows=candidate_rows,
-                decision_payload=decision_payload,
-            )
+            if count_unusable_failure:
+                await self._handle_unusable_decision(
+                    incident=incident,
+                    reason="selected_candidate_not_found",
+                    candidate_rows=candidate_rows,
+                    decision_payload=decision_payload,
+                )
             return None, "none", decision_payload
 
         if selected == how.primary:
@@ -588,16 +795,28 @@ class RecoveryAgent:
         executed_tool_name: str,
         executed_candidate: str,
         jev_decision: dict[str, Any] | None,
+        source: str,
+        action_key: str,
+        class_id: str | None,
     ) -> None:
         entry = self._trace_entry(incident_id)
+        how_payload: dict[str, Any] = {
+            "primary": proposal.primary.model_dump(),
+            "alternatives": [item.model_dump() for item in proposal.alternatives],
+            "executed_tool_name": executed_tool_name,
+            "executed_candidate": executed_candidate,
+            "jev_decision": jev_decision,
+        }
+        if self._classmem_enabled:
+            how_payload.update(
+                {
+                    "source": source,
+                    "action_key": action_key,
+                    "class_id": class_id,
+                }
+            )
         entry["how"] = sanitize_payload(
-            {
-                "primary": proposal.primary.model_dump(),
-                "alternatives": [item.model_dump() for item in proposal.alternatives],
-                "executed_tool_name": executed_tool_name,
-                "executed_candidate": executed_candidate,
-                "jev_decision": jev_decision,
-            },
+            how_payload,
             max_string_length=1200,
         )
         raw = self._consume_llm_trace()

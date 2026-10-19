@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from mi_agent.agent.engine import RecoveryAgent
+from mi_agent.class_memory import ClassMatch, ClassMemory, ClassMemoryConfig, canonical_action_key
+from mi_agent.decision.client import JevDecision
+from mi_agent.events import EventLog
+from mi_agent.workflow.models import (
+    Diagnosis,
+    DynamicToolSpec,
+    HowProposal,
+    MonitorStatus,
+    VerificationResult,
+)
+
+
+class EngineLLM:
+    def __init__(self) -> None:
+        self.diagnosis = Diagnosis(
+            failure_type="generic_failure",
+            hypotheses=["h"],
+            evidence=["e"],
+        )
+
+    async def diagnose_why(self, *, evidence: dict[str, Any], rag_chunks: list[Any]) -> Diagnosis:
+        del evidence, rag_chunks
+        return self.diagnosis
+
+    async def propose_how(
+        self,
+        *,
+        diagnosis: Diagnosis,
+        rag_chunks: list[Any],
+        prior_attempts: list[Any],
+        latest_tool_error: str | None,
+        state_fingerprint: str | None,
+    ) -> HowProposal:
+        del diagnosis, rag_chunks, prior_attempts, latest_tool_error, state_fingerprint
+        return HowProposal(
+            primary=DynamicToolSpec(
+                name="full-loop-primary",
+                rationale="r",
+                operation="run_sql",
+                params={
+                    "db_path": "data/app.db",
+                    "sql": "CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY);",
+                },
+            ),
+            alternatives=[
+                DynamicToolSpec(
+                    name="full-loop-fallback",
+                    rationale="r",
+                    operation="request_backup_restore",
+                    params={"backup_id": "latest"},
+                ),
+                DynamicToolSpec(
+                    name="full-loop-other",
+                    rationale="r",
+                    operation="restart_service",
+                    params={"service_name": "svc"},
+                ),
+            ],
+        )
+
+    def consume_trace(self) -> dict[str, Any]:
+        return {"request": {}, "response": {}}
+
+
+class EngineTools:
+    def __init__(self, *, execute_ok_sequence: list[bool]) -> None:
+        self._execute_ok_sequence = list(execute_ok_sequence)
+        self.executed_specs: list[DynamicToolSpec] = []
+        self.catalog: dict[str, dict[str, Any]] = {}
+        self.security_gate_runs = 0
+
+    async def monitor_health(self) -> MonitorStatus:
+        return MonitorStatus(healthy=False, status_code=500, detail="down")
+
+    async def collect_diagnostics(self) -> dict[str, Any]:
+        return {
+            "health_deep": {"ok": False, "error": "generic_failure"},
+            "db_status": {"ok": False, "error": "generic_failure"},
+            "log_tail": ["token 111 path /tmp/a"],
+        }
+
+    async def retrieve_rag_chunks(self, query: str, *, k: int) -> list[Any]:
+        del query, k
+        return []
+
+    def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
+        del incident_id
+        self.catalog[spec.name] = spec.model_dump()
+        self.executed_specs.append(spec)
+        return spec.name
+
+    async def execute_dynamic_tool(self, incident_id: str, tool_name: str) -> dict[str, Any]:
+        del incident_id, tool_name
+        self.security_gate_runs += 1
+        ok = self._execute_ok_sequence.pop(0) if self._execute_ok_sequence else True
+        return {"ok": ok, "error": None if ok else "failed"}
+
+    def discard_incident_tools(self, incident_id: str, *, keep: str | None = None) -> None:
+        del incident_id, keep
+
+    def persist_dynamic_tool(self, incident_id: str, tool_name: str) -> None:
+        del incident_id, tool_name
+
+    def state_fingerprint(self) -> str:
+        return "fp"
+
+
+class EngineVerifier:
+    def __init__(self, *, healthy_sequence: list[bool]) -> None:
+        self._healthy_sequence = list(healthy_sequence)
+
+    async def verify(self) -> VerificationResult:
+        healthy = self._healthy_sequence.pop(0) if self._healthy_sequence else True
+        return VerificationResult(
+            healthy=healthy,
+            failure_type=None if healthy else "still_bad",
+            details={"ok": healthy},
+        )
+
+
+class EngineJev:
+    def __init__(self, *, reject_sources: set[str] | None = None) -> None:
+        self.reject_sources = reject_sources or set()
+
+    async def choose_candidate(
+        self,
+        *,
+        state: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> JevDecision:
+        source = str(state.get("source") or "full_loop")
+        if source in self.reject_sources:
+            return JevDecision(usable=False, reason=f"reject:{source}")
+        selected = candidates[0] if candidates else {}
+        return JevDecision(
+            usable=True,
+            selected_candidate_name=str(selected.get("name") or ""),
+            selected_candidate_operation=str(selected.get("operation") or ""),
+            usable_probability=0.95,
+            risk_score=0.1,
+        )
+
+
+def _class_memory(
+    tmp_path: Path,
+    llm: EngineLLM,
+) -> tuple[ClassMemory, ClassMatch, DynamicToolSpec]:
+    memory = ClassMemory(
+        ClassMemoryConfig(
+            store_path=tmp_path / "class_store.json",
+            join_threshold=0.82,
+            margin_delta=0.08,
+            tau_conf=0.80,
+            n_min=3,
+            cooldown_seconds=2.0,
+            embedding_dim=64,
+            min_similarity_for_id=0.2,
+        )
+    )
+    diagnostics = {
+        "health_deep": {"ok": False, "error": "generic_failure"},
+        "db_status": {"ok": False, "error": "generic_failure"},
+        "log_tail": ["token 111 path /tmp/a"],
+    }
+    signature = memory.build_signature(
+        diagnostics=diagnostics,
+        diagnosis=llm.diagnosis,
+        attempts=0,
+    )
+    match = memory.assign_class(signature)
+    class_spec = DynamicToolSpec(
+        name="class-memory-fast",
+        rationale="r",
+        operation="run_sql",
+        params={
+            "db_path": "data/app.db",
+            "sql": "CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY);",
+        },
+    )
+    for _ in range(8):
+        memory.record_outcome(
+            match=match,
+            spec=class_spec,
+            latency_ms=2.0,
+            success=True,
+            source="full_loop",
+        )
+    return memory, match, class_spec
+
+
+@pytest.mark.asyncio
+async def test_fast_path_failure_falls_back_and_excludes_failed_action(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    memory, _, class_spec = _class_memory(tmp_path, llm)
+
+    tools = EngineTools(execute_ok_sequence=[False, True])
+    verifier = EngineVerifier(healthy_sequence=[False, True])
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=tools,  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=EngineJev(),  # type: ignore[arg-type]
+        class_memory=memory,
+        classmem_enabled=True,
+        classmem_dedupe_enabled=True,
+        classmem_fastpath_enabled=True,
+    )
+
+    await agent.run_iteration()
+    await agent.run_iteration()
+
+    assert tools.security_gate_runs == 2
+    assert len(tools.executed_specs) >= 2
+    first_key = canonical_action_key(tools.executed_specs[0])
+    assert first_key == canonical_action_key(class_spec)
+    second_key = canonical_action_key(tools.executed_specs[1])
+    assert second_key != first_key
+
+    planning = [item for item in events.events if item.event_type == "planning.how"]
+    assert len(planning) >= 2
+    assert planning[0].payload.get("source") == "class_memory"
+    assert planning[1].payload.get("source") == "full_loop"
+
+
+@pytest.mark.asyncio
+async def test_gate_rejected_candidate_is_never_executed(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    memory, _, _ = _class_memory(tmp_path, llm)
+
+    tools = EngineTools(execute_ok_sequence=[True, True])
+    verifier = EngineVerifier(healthy_sequence=[True, True])
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=tools,  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
+        events=EventLog(tmp_path / "events.jsonl"),
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=EngineJev(reject_sources={"class_memory", "full_loop"}),  # type: ignore[arg-type]
+        class_memory=memory,
+        classmem_enabled=True,
+        classmem_dedupe_enabled=True,
+        classmem_fastpath_enabled=True,
+    )
+
+    await agent.run_iteration()
+
+    assert tools.security_gate_runs == 0
+
+
+@pytest.mark.asyncio
+async def test_flag_off_keeps_baseline_event_shape(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    tools = EngineTools(execute_ok_sequence=[True])
+    verifier = EngineVerifier(healthy_sequence=[True])
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=tools,  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=EngineJev(),  # type: ignore[arg-type]
+        class_memory=None,
+        classmem_enabled=False,
+    )
+
+    await agent.run_iteration()
+
+    planning = [item for item in events.events if item.event_type == "planning.how"]
+    assert len(planning) == 1
+    payload_keys = set(planning[0].payload.keys())
+    assert payload_keys == {
+        "incident_id",
+        "executed_tool_name",
+        "primary",
+        "alternatives",
+        "executed_candidate",
+        "jev_decision",
+    }

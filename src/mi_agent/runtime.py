@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mi_agent.agent.engine import RecoveryAgent
+from mi_agent.class_memory import ClassMemory, ClassMemoryConfig
 from mi_agent.config import MISettings
 from mi_agent.decision.client import JevDecisionClient
 from mi_agent.events import EventLog
@@ -30,6 +31,20 @@ def build_agent(
     tools = ToolExecutor(settings)
     verifier = Verifier(settings)
     jev = JevDecisionClient(settings)
+    class_memory = None
+    if settings.classmem_enabled:
+        class_memory = ClassMemory(
+            ClassMemoryConfig(
+                store_path=settings.classmem_store_path,
+                join_threshold=settings.classmem_join_threshold,
+                margin_delta=settings.classmem_margin_delta,
+                tau_conf=settings.classmem_tau_conf,
+                n_min=settings.classmem_n_min,
+                cooldown_seconds=settings.classmem_cooldown_seconds,
+                embedding_dim=settings.classmem_embedding_dim,
+                min_similarity_for_id=0.2,
+            )
+        )
     agent = RecoveryAgent(
         llm=llm,
         tools=tools,
@@ -38,6 +53,10 @@ def build_agent(
         policy_store_path=settings.policy_store_path.as_posix(),
         monitor_interval_seconds=settings.monitor_interval_seconds,
         jev=jev,
+        class_memory=class_memory,
+        classmem_enabled=settings.classmem_enabled,
+        classmem_dedupe_enabled=settings.classmem_dedupe_enabled,
+        classmem_fastpath_enabled=settings.classmem_fastpath_enabled,
     )
     context = MIContext(
         settings=settings,

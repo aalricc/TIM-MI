@@ -28,6 +28,7 @@ class MISettings(BaseSettings):
     event_log_path: Path = Path("./state/events.jsonl")
     policy_store_path: Path = Path("./state/policy_store.json")
     tool_catalog_path: Path = Path("./state/tool_catalog.json")
+    classmem_store_path: Path = Path("./state/class_store.json")
 
     llm_model: str = "gpt-5.3-codex"
     llm_endpoint: str = "https://api.openai.com/v1/responses"
@@ -63,6 +64,16 @@ class MISettings(BaseSettings):
         default="sqlite-docs",
         validation_alias=AliasChoices("PINECONE_NAMESPACE", "MI_PINECONE_NAMESPACE"),
     )
+
+    classmem_enabled: bool = False
+    classmem_dedupe_enabled: bool = True
+    classmem_fastpath_enabled: bool = True
+    classmem_join_threshold: float = Field(default=0.82, ge=0.0, le=1.0)
+    classmem_margin_delta: float = Field(default=0.08, ge=0.0, le=1.0)
+    classmem_tau_conf: float = Field(default=0.80, ge=0.0, le=1.0)
+    classmem_n_min: int = Field(default=3, ge=1, le=50)
+    classmem_cooldown_seconds: float = Field(default=30.0, ge=0.0, le=3600.0)
+    classmem_embedding_dim: int = Field(default=96, ge=8, le=4096)
 
     @model_validator(mode="after")
     def _validate_runtime_gate(self) -> MISettings:
