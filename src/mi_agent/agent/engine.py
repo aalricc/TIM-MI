@@ -891,7 +891,7 @@ class RecoveryAgent:
 
     @staticmethod
     def _decision_payload(decision: JevDecision) -> dict[str, Any]:
-        payload = {
+        payload: dict[str, Any] = {
             "usable": decision.usable,
             "reason": decision.reason,
             "selected_candidate_name": decision.selected_candidate_name,
