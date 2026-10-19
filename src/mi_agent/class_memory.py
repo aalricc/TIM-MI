@@ -26,6 +26,9 @@ _UUID_TOKEN = re.compile(
     re.IGNORECASE,
 )
 _PLACEHOLDER = "<*>"
+_SQL_LINE_COMMENT = re.compile(r"--[^\n]*")
+_SQL_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_SQL_WORD = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -72,10 +75,11 @@ class ClassMemoryConfig:
 
 
 def canonical_action_key(spec: DynamicToolSpec) -> str:
+    params = spec.params if isinstance(spec.params, dict) else {}
     payload = {
         "effect_type": spec.operation,
-        "target_kind": _target_kind(spec.operation, spec.params),
-        "normalized_arg_schema": _normalize_arg_schema(spec.params),
+        "target_kind": _target_kind(spec.operation, params),
+        "normalized_arg_schema": _canonical_params_for_action(spec.operation, params),
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:24]
@@ -88,6 +92,196 @@ def dedupe_candidates_by_action_key(candidates: list[DynamicToolSpec]) -> list[D
         if key not in by_key:
             by_key[key] = candidate
     return [by_key[key] for key in sorted(by_key)]
+
+
+def _canonical_params_for_action(operation: str, params: dict[str, Any]) -> Any:
+    op = operation.strip().lower()
+
+    if op == "run_sql":
+        sql_text = _extract_sql_text(params)
+        return {
+            "db_target": _canonical_target_value(
+                params.get("db_path") or params.get("database_path")
+            ),
+            "sql_signature": _sql_signature(sql_text),
+        }
+
+    if op == "replace_file":
+        source = params.get("source_path")
+        if not isinstance(source, str):
+            source = params.get("source")
+        destination = params.get("destination_path")
+        if not isinstance(destination, str):
+            destination = params.get("target_path")
+        return {
+            "source": _canonical_target_value(source),
+            "destination": _canonical_target_value(destination),
+            "backup_current": bool(params.get("backup_current", False)),
+        }
+
+    if op == "request_backup_restore":
+        backup_id = params.get("backup_id")
+        if not isinstance(backup_id, str) or backup_id.strip() == "":
+            backup_id = params.get("selection") or params.get("restore_point")
+        return {
+            "backup": _normalize_arg_schema(backup_id),
+            "scope": _normalize_arg_schema(params.get("scope") or params.get("restore_scope")),
+        }
+
+    if op == "restart_service":
+        return {"service_name": _normalize_arg_schema(params.get("service_name"))}
+
+    return _normalize_arg_schema(params)
+
+
+def _extract_sql_text(params: dict[str, Any]) -> str:
+    sql = params.get("sql")
+    if isinstance(sql, str) and sql.strip() != "":
+        return sql
+    statements = params.get("statements")
+    if isinstance(statements, list):
+        chunks = [str(item).strip() for item in statements if str(item).strip()]
+        if chunks:
+            return "; ".join(chunks)
+    return ""
+
+
+def _sql_signature(sql_text: str) -> list[str]:
+    if not sql_text.strip():
+        return ["<empty_sql>"]
+
+    lowered = _SQL_BLOCK_COMMENT.sub(" ", sql_text)
+    lowered = _SQL_LINE_COMMENT.sub(" ", lowered)
+    statements = [" ".join(part.strip().lower().split()) for part in lowered.split(";")]
+
+    signatures: list[str] = []
+    for stmt in statements:
+        if not stmt:
+            continue
+        if stmt in {"begin", "begin transaction", "commit", "rollback", "end"}:
+            continue
+        signatures.append(_sql_statement_signature(stmt))
+
+    return signatures or ["<empty_sql>"]
+
+
+def _sql_statement_signature(statement: str) -> str:
+    tokens = _SQL_WORD.findall(statement)
+    if not tokens:
+        return "sql:other"
+
+    words = [token.lower() for token in tokens]
+    if len(words) >= 2 and words[0] == "create" and words[1] == "table":
+        name = _sql_object_name(words, 2)
+        shape = _sql_table_shape(statement)
+        if shape is not None:
+            return f"create_table:{name}:{shape}"
+        return f"create_table:{name}"
+    if len(words) >= 2 and words[0] == "drop" and words[1] == "table":
+        name = _sql_object_name(words, 2)
+        return f"drop_table:{name}"
+    if len(words) >= 2 and words[0] == "alter" and words[1] == "table":
+        name = _sql_object_name(words, 2)
+        return f"alter_table:{name}"
+    if words[0] in {"insert", "update", "delete"}:
+        name = _sql_object_name(words, 1)
+        return f"{words[0]}:{name}"
+    if words[0] == "pragma":
+        pragma = words[1] if len(words) > 1 else "unknown"
+        return f"pragma:{pragma}"
+    if len(words) > 1:
+        return f"{words[0]}:{words[1]}"
+    return f"{words[0]}:stmt"
+
+
+def _sql_object_name(words: list[str], start_index: int) -> str:
+    skip = {"if", "not", "exists", "temporary", "temp", "table", "into", "from", "set", "where"}
+    for token in words[start_index:]:
+        if token in skip:
+            continue
+        return token
+    return "unknown"
+
+
+def _sql_parenthesized_shape(statement: str) -> str | None:
+    start = statement.find("(")
+    end = statement.rfind(")")
+    if start < 0 or end <= start:
+        return None
+    inner = statement[start + 1 : end]
+    compact = " ".join(inner.split())
+    compact = compact.replace(" ,", ",").replace(", ", ",")
+    compact = compact.replace(" (", "(").replace(" )", ")")
+    return compact
+
+
+def _sql_table_shape(statement: str) -> str | None:
+    start = statement.find("(")
+    end = statement.rfind(")")
+    if start < 0 or end <= start:
+        return None
+
+    inner = statement[start + 1 : end]
+    parts = _split_top_level_csv(inner)
+    columns: list[str] = []
+    for part in parts:
+        tokens = _SQL_WORD.findall(part)
+        if not tokens:
+            continue
+        lowered = [item.lower() for item in tokens]
+        head = lowered[0]
+        if head in {"primary", "foreign", "unique", "constraint", "check"}:
+            continue
+        column_name = head
+        column_type = "unknown"
+        if len(lowered) > 1:
+            column_type = lowered[1]
+        columns.append(f"{column_name}:{column_type}")
+
+    if not columns:
+        return _sql_parenthesized_shape(statement)
+    return ",".join(columns)
+
+
+def _split_top_level_csv(value: str) -> list[str]:
+    chunks: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for char in value:
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth > 0:
+            depth -= 1
+        elif char == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                chunks.append(part)
+            current = []
+            continue
+        current.append(char)
+
+    tail = "".join(current).strip()
+    if tail:
+        chunks.append(tail)
+    return chunks
+
+
+def _canonical_target_value(value: Any) -> str:
+    if not isinstance(value, str):
+        return "<none>"
+    compact = " ".join(value.strip().split())
+    if compact == "":
+        return "<none>"
+    if _is_variable_token(compact):
+        return "<string_var>"
+    if "/" in compact or "\\" in compact:
+        name = os.path.basename(compact).lower()
+        if name.endswith(".db"):
+            return "*.db"
+        if "." in name:
+            return f"*.{name.rsplit('.', 1)[1]}"
+        return "<path>"
+    return compact.lower()
 
 
 class ClassMemory:
@@ -116,10 +310,7 @@ class ClassMemory:
         if not template_ids:
             template_ids = [self._default_template_id(diagnosis.failure_type)]
 
-        embedding = _hashed_embedding(
-            " | ".join(template_ids + lines),
-            dim=self._config.embedding_dim,
-        )
+        embedding = _hashed_embedding(" | ".join(template_ids), dim=self._config.embedding_dim)
         features = {
             "attempts": float(max(0, attempts)),
             "has_last_error": 1.0 if bool(diagnostics.get("health_deep")) else 0.0,
@@ -166,19 +357,6 @@ class ClassMemory:
                 }
                 created_new = True
             best_s1 = 1.0 if best_s1 < self._config.min_similarity_for_id else best_s1
-
-        desired_id = self._class_id_for(signature)
-        if desired_id < best_id:
-            current_record = classes.get(best_id)
-            if isinstance(current_record, dict):
-                existing = classes.get(desired_id)
-                if isinstance(existing, dict):
-                    self._merge_class_records(existing, current_record)
-                else:
-                    classes[desired_id] = current_record
-                if best_id != desired_id:
-                    classes.pop(best_id, None)
-                best_id = desired_id
 
         margin = best_s1 - max(second, 0.0)
         record = classes[best_id]
@@ -274,6 +452,31 @@ class ClassMemory:
             action_key=best_key,
             candidate=candidate,
         )
+
+    def action_stats(self, *, class_id: str, action_key: str) -> dict[str, Any] | None:
+        classes = self._state.get("classes", {})
+        record = classes.get(class_id)
+        if not isinstance(record, dict):
+            return None
+        actions = record.get("actions", {})
+        if not isinstance(actions, dict):
+            return None
+        stats = actions.get(action_key)
+        if not isinstance(stats, dict):
+            return None
+
+        alpha = float(stats.get("alpha", 1.0) or 1.0)
+        beta = float(stats.get("beta", 1.0) or 1.0)
+        return {
+            "attempts": int(stats.get("attempts", 0) or 0),
+            "alpha": alpha,
+            "beta": beta,
+            "lcb": _beta_lcb(alpha, beta),
+            "mean_latency": float(stats.get("mean_latency", 0.0) or 0.0),
+            "last_ok_ts": stats.get("last_ok_ts"),
+            "last_failure_ts": stats.get("last_failure_ts"),
+            "cooldown_until_ts": float(stats.get("cooldown_until_ts", 0.0) or 0.0),
+        }
 
     def record_outcome(
         self,
@@ -561,17 +764,46 @@ def _collect_normalization_lines(
 ) -> list[str]:
     rows: list[str] = []
     rows.append(diagnosis.failure_type)
-    rows.extend(diagnosis.hypotheses[:3])
-    rows.extend(diagnosis.evidence[:3])
+
+    health = diagnostics.get("health_deep")
+    if isinstance(health, dict):
+        rows.append(f"health_status:{int(health.get('status_code', 0) or 0)}")
+        detail = health.get("detail")
+        if isinstance(detail, dict):
+            detail_error = detail.get("error")
+            if detail_error is not None:
+                rows.append(f"health_error:{detail_error}")
+            status = detail.get("status")
+            if isinstance(status, dict):
+                widgets_present = status.get("widgets_table_present")
+                if isinstance(widgets_present, bool):
+                    rows.append(f"widgets_present:{widgets_present}")
+                integrity = status.get("integrity")
+                if isinstance(integrity, list) and integrity:
+                    rows.append(f"integrity:{str(integrity[0]).lower()}")
+        health_error = health.get("error")
+        if health_error is not None:
+            rows.append(f"health_error:{health_error}")
+
     log_tail = diagnostics.get("log_tail")
     if isinstance(log_tail, list):
-        rows.extend(str(item) for item in log_tail[-6:])
-    health = diagnostics.get("health_deep")
-    if isinstance(health, dict) and health.get("error") is not None:
-        rows.append(str(health.get("error")))
+        rows.extend(str(item) for item in log_tail[-3:])
+
     db_status = diagnostics.get("db_status")
-    if isinstance(db_status, dict) and db_status.get("error") is not None:
-        rows.append(str(db_status.get("error")))
+    if isinstance(db_status, dict):
+        db_error = db_status.get("error")
+        if db_error is not None:
+            rows.append(f"db_error:{db_error}")
+        widgets_present = db_status.get("widgets_table_present")
+        if isinstance(widgets_present, bool):
+            rows.append(f"db_widgets_present:{widgets_present}")
+
+    db_integrity = diagnostics.get("db_integrity")
+    if isinstance(db_integrity, dict):
+        integrity_rows = db_integrity.get("rows")
+        if isinstance(integrity_rows, list) and integrity_rows:
+            rows.append(f"db_integrity:{str(integrity_rows[0]).lower()}")
+
     return [row for row in rows if row.strip() != ""]
 
 
@@ -686,19 +918,24 @@ def _normalize_arg_schema(value: Any) -> Any:
 
 
 def _target_kind(operation: str, params: dict[str, Any]) -> str:
-    preferred_keys = [
-        "db_path",
-        "database_path",
-        "destination_path",
-        "service_name",
-        "backup_id",
+    alias_groups = [
+        ("db_path", ["db_path", "database_path"]),
+        ("destination_path", ["destination_path", "target_path"]),
+        ("source_path", ["source_path", "source"]),
+        ("service_name", ["service_name"]),
+        ("backup_id", ["backup_id", "selection", "restore_point"]),
     ]
-    for key in preferred_keys:
-        value = params.get(key)
+    for canonical_key, aliases in alias_groups:
+        value = None
+        for key in aliases:
+            raw = params.get(key)
+            if isinstance(raw, str) and raw.strip() != "":
+                value = raw
+                break
         if isinstance(value, str) and value.strip() != "":
             if "/" in value or "\\" in value:
-                return f"{key}:path"
-            return f"{key}:{value.strip().lower()}"
+                return f"{canonical_key}:path"
+            return f"{canonical_key}:{value.strip().lower()}"
     return f"{operation}:default"
 
 

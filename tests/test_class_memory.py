@@ -75,6 +75,27 @@ def test_template_mining_collapses_variants_and_separates_families(tmp_path: Pat
     assert sig_a.template_ids != sig_c.template_ids
 
 
+def test_signature_ignores_why_text_variation_for_same_diagnostics(tmp_path: Path) -> None:
+    mem = ClassMemory(_config(tmp_path))
+    diagnostics = _diagnostics_with_log("widgets table missing at /tmp/a/1.log")
+
+    diagnosis_a = Diagnosis(
+        failure_type="schema_invalid",
+        hypotheses=["widgets table was dropped by fault injection"],
+        evidence=["health deep reports schema_invalid"],
+    )
+    diagnosis_b = Diagnosis(
+        failure_type="schema_invalid",
+        hypotheses=["possible table drift after maintenance action"],
+        evidence=["service probes indicate missing table"],
+    )
+
+    sig_a = mem.build_signature(diagnostics=diagnostics, diagnosis=diagnosis_a, attempts=0)
+    sig_b = mem.build_signature(diagnostics=diagnostics, diagnosis=diagnosis_b, attempts=0)
+
+    assert sig_a.template_ids == sig_b.template_ids
+
+
 def test_clustering_class_ids_stable_across_ingestion_order(tmp_path: Path) -> None:
     cases = [
         _diagnostics_with_log("worker 1001 failed on path /opt/a/one"),
@@ -108,6 +129,74 @@ def test_canonical_action_key_ignores_tool_name_for_same_effect() -> None:
     two = _run_sql_spec("name-b", "CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY);")
 
     assert canonical_action_key(one) == canonical_action_key(two)
+
+
+def test_canonical_action_key_normalizes_sql_transaction_wrappers() -> None:
+    inline = _run_sql_spec(
+        "inline",
+        "CREATE TABLE IF NOT EXISTS widgets (id INTEGER PRIMARY KEY, name TEXT);",
+    )
+    wrapped = DynamicToolSpec(
+        name="wrapped",
+        rationale="r",
+        operation="run_sql",
+        params={
+            "db_path": "./data/app.db",
+            "statements": [
+                "BEGIN;",
+                "CREATE TABLE IF NOT EXISTS widgets(id INTEGER PRIMARY KEY,name TEXT);",
+                "COMMIT;",
+            ],
+        },
+    )
+
+    assert canonical_action_key(inline) == canonical_action_key(wrapped)
+
+
+def test_canonical_action_key_normalizes_create_table_default_variants() -> None:
+    one = _run_sql_spec(
+        "one",
+        (
+            "CREATE TABLE IF NOT EXISTS widgets "
+            "(id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+            "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);"
+        ),
+    )
+    two = _run_sql_spec(
+        "two",
+        (
+            "CREATE TABLE IF NOT EXISTS widgets "
+            "(id INTEGER PRIMARY KEY, name TEXT, "
+            "created_at TEXT DEFAULT (datetime('now')));"
+        ),
+    )
+
+    assert canonical_action_key(one) == canonical_action_key(two)
+
+
+def test_canonical_action_key_normalizes_replace_file_aliases() -> None:
+    first = DynamicToolSpec(
+        name="replace-a",
+        rationale="r",
+        operation="replace_file",
+        params={
+            "source_path": "/tmp/backup/latest.db",
+            "destination_path": "data/app.db",
+            "backup_current": True,
+        },
+    )
+    second = DynamicToolSpec(
+        name="replace-b",
+        rationale="r",
+        operation="replace_file",
+        params={
+            "source": "./snapshots/latest.db",
+            "target_path": "./data/app.db",
+            "backup_current": True,
+        },
+    )
+
+    assert canonical_action_key(first) == canonical_action_key(second)
 
 
 def test_dedupe_and_tie_break_deterministic() -> None:

@@ -129,6 +129,7 @@ class EngineVerifier:
 class EngineJev:
     def __init__(self, *, reject_sources: set[str] | None = None) -> None:
         self.reject_sources = reject_sources or set()
+        self.states: list[dict[str, Any]] = []
 
     async def choose_candidate(
         self,
@@ -136,9 +137,62 @@ class EngineJev:
         state: dict[str, Any],
         candidates: list[dict[str, Any]],
     ) -> JevDecision:
+        self.states.append(dict(state))
         source = str(state.get("source") or "full_loop")
         if source in self.reject_sources:
             return JevDecision(usable=False, reason=f"reject:{source}")
+        selected = candidates[0] if candidates else {}
+        return JevDecision(
+            usable=True,
+            selected_candidate_name=str(selected.get("name") or ""),
+            selected_candidate_operation=str(selected.get("operation") or ""),
+            usable_probability=0.95,
+            risk_score=0.1,
+        )
+
+
+class EngineJevRejectClassMemoryContext:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def choose_candidate(
+        self,
+        *,
+        state: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> JevDecision:
+        self.calls.append(dict(state))
+        if "class_memory_candidate" in state:
+            return JevDecision(
+                usable=False,
+                reason="jev_request_error:TypeSafeUnprocessableEntityError",
+            )
+        selected = candidates[0] if candidates else {}
+        return JevDecision(
+            usable=True,
+            selected_candidate_name=str(selected.get("name") or ""),
+            selected_candidate_operation=str(selected.get("operation") or ""),
+            usable_probability=0.95,
+            risk_score=0.1,
+        )
+
+
+class EngineJevRejectClassMemorySource:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def choose_candidate(
+        self,
+        *,
+        state: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> JevDecision:
+        self.calls.append(dict(state))
+        if state.get("source") == "class_memory":
+            return JevDecision(
+                usable=False,
+                reason="jev_request_error:TypeSafeUnprocessableEntityError",
+            )
         selected = candidates[0] if candidates else {}
         return JevDecision(
             usable=True,
@@ -241,11 +295,12 @@ async def test_gate_rejected_candidate_is_never_executed(tmp_path: Path) -> None
 
     tools = EngineTools(execute_ok_sequence=[True, True])
     verifier = EngineVerifier(healthy_sequence=[True, True])
+    events = EventLog(tmp_path / "events.jsonl")
     agent = RecoveryAgent(
         llm=llm,
         tools=tools,  # type: ignore[arg-type]
         verifier=verifier,  # type: ignore[arg-type]
-        events=EventLog(tmp_path / "events.jsonl"),
+        events=events,
         policy_store_path=(tmp_path / "policy.json").as_posix(),
         monitor_interval_seconds=0.01,
         jev=EngineJev(reject_sources={"class_memory", "full_loop"}),  # type: ignore[arg-type]
@@ -258,6 +313,124 @@ async def test_gate_rejected_candidate_is_never_executed(tmp_path: Path) -> None
     await agent.run_iteration()
 
     assert tools.security_gate_runs == 0
+    skip_events = [
+        item
+        for item in events.events
+        if item.event_type == "class_memory.fast_path_skipped"
+    ]
+    assert len(skip_events) == 1
+    assert skip_events[0].payload.get("reason") == "reject:class_memory"
+
+
+@pytest.mark.asyncio
+async def test_fast_path_candidate_context_passed_to_jev(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    memory, _, class_spec = _class_memory(tmp_path, llm)
+
+    tools = EngineTools(execute_ok_sequence=[True])
+    verifier = EngineVerifier(healthy_sequence=[True])
+    jev = EngineJev()
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=tools,  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
+        events=EventLog(tmp_path / "events.jsonl"),
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=jev,  # type: ignore[arg-type]
+        class_memory=memory,
+        classmem_enabled=True,
+        classmem_dedupe_enabled=True,
+        classmem_fastpath_enabled=True,
+    )
+
+    await agent.run_iteration()
+
+    classmem_states = [state for state in jev.states if state.get("source") == "class_memory"]
+    assert classmem_states
+    context = classmem_states[0].get("class_memory_candidate")
+    assert isinstance(context, dict)
+    assert context.get("action_key") == canonical_action_key(class_spec)
+    champion_stats = context.get("champion_stats")
+    assert isinstance(champion_stats, dict)
+    assert int(champion_stats.get("attempts", 0)) >= 8
+
+
+@pytest.mark.asyncio
+async def test_fast_path_retries_without_context_after_jev_request_error(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    memory, _, _ = _class_memory(tmp_path, llm)
+
+    tools = EngineTools(execute_ok_sequence=[True])
+    verifier = EngineVerifier(healthy_sequence=[True])
+    jev = EngineJevRejectClassMemoryContext()
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=tools,  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=jev,  # type: ignore[arg-type]
+        class_memory=memory,
+        classmem_enabled=True,
+        classmem_dedupe_enabled=True,
+        classmem_fastpath_enabled=True,
+    )
+
+    await agent.run_iteration()
+
+    assert len(jev.calls) >= 2
+    assert "class_memory_candidate" in jev.calls[0]
+    assert "class_memory_candidate" not in jev.calls[1]
+    assert tools.security_gate_runs == 1
+
+    skip_events = [
+        item
+        for item in events.events
+        if item.event_type == "class_memory.fast_path_skipped"
+    ]
+    assert not skip_events
+
+
+@pytest.mark.asyncio
+async def test_fast_path_retries_without_source_after_jev_request_error(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    memory, _, _ = _class_memory(tmp_path, llm)
+
+    tools = EngineTools(execute_ok_sequence=[True])
+    verifier = EngineVerifier(healthy_sequence=[True])
+    jev = EngineJevRejectClassMemorySource()
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=tools,  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=jev,  # type: ignore[arg-type]
+        class_memory=memory,
+        classmem_enabled=True,
+        classmem_dedupe_enabled=True,
+        classmem_fastpath_enabled=True,
+    )
+
+    await agent.run_iteration()
+
+    assert len(jev.calls) >= 3
+    assert jev.calls[0].get("source") == "class_memory"
+    assert jev.calls[1].get("source") == "class_memory"
+    assert "source" not in jev.calls[2]
+    assert tools.security_gate_runs == 1
+
+    skip_events = [
+        item
+        for item in events.events
+        if item.event_type == "class_memory.fast_path_skipped"
+    ]
+    assert not skip_events
 
 
 @pytest.mark.asyncio

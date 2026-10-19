@@ -36,11 +36,47 @@ class JevDecisionClient:
         if not candidates:
             return JevDecision(usable=False, reason="no_candidates")
 
-        return await asyncio.to_thread(
-            self._choose_candidate_sync,
-            state,
-            candidates,
-        )
+        try:
+            return await asyncio.to_thread(
+                self._choose_candidate_sync,
+                state,
+                candidates,
+            )
+        except Exception as exc:  # pragma: no cover - depends on external Jev server behavior
+            raw: dict[str, Any] = {
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "state_summary": self._summarize_state_for_error(state),
+                "candidate_summary": self._summarize_candidates_for_error(candidates),
+            }
+
+            module_name = type(exc).__module__
+            if module_name and module_name != "builtins":
+                raw["exception_module"] = module_name
+
+            status_code = getattr(exc, "status", None)
+            if not isinstance(status_code, int):
+                status_code = getattr(exc, "status_code", None)
+            if isinstance(status_code, int):
+                raw["status"] = status_code
+
+            endpoint = getattr(exc, "endpoint", None)
+            if isinstance(endpoint, str) and endpoint.strip() != "":
+                raw["endpoint"] = endpoint
+
+            request_id = getattr(exc, "request_id", None)
+            if isinstance(request_id, str) and request_id.strip() != "":
+                raw["request_id"] = request_id
+
+            body = self._sanitize_error_body(getattr(exc, "body", None))
+            if body is not None:
+                raw["body"] = body
+
+            return JevDecision(
+                usable=False,
+                reason=f"jev_request_error:{type(exc).__name__}",
+                raw=raw,
+            )
 
     def _choose_candidate_sync(
         self,
@@ -73,16 +109,11 @@ class JevDecisionClient:
             ).strip()
 
         questions: dict[str, Any] = {
-            "select_action": Choice(
-                instructions=(
-                    "Choose the single best recovery action for this incident state. "
-                    "Prefer lowest-risk actions that can recover service quickly."
-                ),
-                criteria=criteria,
-            ),
             "can_execute_automatically": Noul(
                 instructions=(
-                    "At least one candidate is safe and appropriate for automatic execution now."
+                    "At least one candidate is safe and appropriate for automatic execution now. "
+                    "Return a higher probability when there is a concrete, reversible action "
+                    "with executable parameters."
                 )
             ),
             "risk_score": Score(
@@ -94,6 +125,16 @@ class JevDecisionClient:
                 ],
             ),
         }
+        if len(option_to_candidate) >= 2:
+            questions["select_action"] = Choice(
+                instructions=(
+                    "Choose the single best recovery action for this incident state. "
+                    "Prefer lowest-risk actions that can recover service quickly. "
+                    "Prefer candidates with concrete executable parameters; treat "
+                    "placeholder-style values as weaker options."
+                ),
+                criteria=criteria,
+            )
 
         classifier = self._build_classifier(TypeSafeClassifier)
         payload = {
@@ -106,20 +147,23 @@ class JevDecisionClient:
         raw = self._to_dict(response)
         model_version = self._extract_str(response, raw, "model_version")
 
-        choice_block = self._question_block(
-            response,
-            raw,
-            section="choices",
-            question_id="select_action",
-        )
-        selected_option = self._extract_choice(choice_block)
-        if selected_option is None or selected_option not in option_to_candidate:
-            return JevDecision(
-                usable=False,
-                reason="invalid_choice_response",
-                model_version=model_version,
-                raw=raw,
+        if len(option_to_candidate) >= 2:
+            choice_block = self._question_block(
+                response,
+                raw,
+                section="choices",
+                question_id="select_action",
             )
+            selected_option = self._extract_choice(choice_block)
+            if selected_option is None or selected_option not in option_to_candidate:
+                return JevDecision(
+                    usable=False,
+                    reason="invalid_choice_response",
+                    model_version=model_version,
+                    raw=raw,
+                )
+        else:
+            selected_option = next(iter(option_to_candidate))
 
         usability_block = self._question_block(
             response,
@@ -304,4 +348,103 @@ class JevDecisionClient:
                 return float(value)
 
         return None
+
+    @classmethod
+    def _summarize_state_for_error(cls, state: dict[str, Any]) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "keys": sorted(state.keys()),
+            "types": {key: cls._value_type(value) for key, value in state.items()},
+        }
+
+        candidate_actions = state.get("candidate_actions")
+        if isinstance(candidate_actions, list):
+            summary["candidate_actions_count"] = len(candidate_actions)
+
+        prior_attempts = state.get("prior_attempts")
+        if isinstance(prior_attempts, list):
+            summary["prior_attempts_count"] = len(prior_attempts)
+
+        hypotheses = state.get("hypotheses")
+        if isinstance(hypotheses, list):
+            summary["hypotheses_count"] = len(hypotheses)
+
+        context = state.get("class_memory_candidate")
+        if isinstance(context, dict):
+            summary["class_memory_candidate_keys"] = sorted(context.keys())
+            summary["class_memory_candidate_types"] = {
+                key: cls._value_type(value) for key, value in context.items()
+            }
+
+        return summary
+
+    @classmethod
+    def _summarize_candidates_for_error(
+        cls,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        operations: list[str] = []
+        shapes: list[dict[str, Any]] = []
+        for candidate in candidates:
+            operation = candidate.get("operation")
+            if isinstance(operation, str):
+                operations.append(operation)
+            params = candidate.get("params")
+            shape: dict[str, Any] = {
+                "keys": sorted(candidate.keys()),
+                "operation": operation if isinstance(operation, str) else None,
+            }
+            if isinstance(params, dict):
+                shape["param_keys"] = sorted(params.keys())
+                shape["param_types"] = {
+                    key: cls._value_type(value) for key, value in params.items()
+                }
+            else:
+                shape["params_type"] = cls._value_type(params)
+            shapes.append(shape)
+        return {
+            "count": len(candidates),
+            "operations": operations,
+            "shapes": shapes,
+        }
+
+    @classmethod
+    def _sanitize_error_body(cls, value: Any, *, depth: int = 0) -> Any:
+        if value is None:
+            return None
+
+        if isinstance(value, (str, int, float, bool)):
+            if isinstance(value, str) and len(value) > 500:
+                return f"{value[:500]}..."
+            return value
+
+        if depth > 10:
+            return "<truncated:depth>"
+
+        if isinstance(value, dict):
+            sanitized: dict[str, Any] = {}
+            for key, item in value.items():
+                if isinstance(key, str) and key.lower() in {"input", "request"}:
+                    continue
+                sanitized[str(key)] = cls._sanitize_error_body(item, depth=depth + 1)
+            return sanitized
+
+        if isinstance(value, list):
+            return [cls._sanitize_error_body(item, depth=depth + 1) for item in value[:20]]
+
+        if isinstance(value, tuple):
+            return [cls._sanitize_error_body(item, depth=depth + 1) for item in value[:20]]
+
+        return cls._truncate_text(repr(value), limit=500)
+
+    @staticmethod
+    def _value_type(value: Any) -> str:
+        if value is None:
+            return "NoneType"
+        return type(value).__name__
+
+    @staticmethod
+    def _truncate_text(value: str, *, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return f"{value[:limit]}..."
 

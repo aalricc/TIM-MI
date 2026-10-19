@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -226,6 +227,26 @@ class RecoveryAgent:
             and fast_path_decision.eligible
             and fast_path_decision.candidate is not None
         ):
+            fast_path_context: dict[str, Any] = {
+                "class_id": class_match.class_id if class_match is not None else None,
+                "action_key": fast_path_decision.action_key,
+                "gate_reason": fast_path_decision.gate_reason,
+                "s1": fast_path_decision.s1,
+                "s2": fast_path_decision.s2,
+                "margin": fast_path_decision.margin,
+            }
+            if (
+                self._class_memory is not None
+                and class_match is not None
+                and fast_path_decision.action_key is not None
+            ):
+                stats = self._class_memory.action_stats(
+                    class_id=class_match.class_id,
+                    action_key=fast_path_decision.action_key,
+                )
+                if stats is not None:
+                    fast_path_context["champion_stats"] = stats
+
             fast_how = HowProposal(primary=fast_path_decision.candidate, alternatives=[])
             selected_how, executed_candidate, jev_decision = await self._select_candidate_with_jev(
                 incident=incident,
@@ -233,6 +254,8 @@ class RecoveryAgent:
                 how=fast_how,
                 source="class_memory",
                 count_unusable_failure=False,
+                class_match=class_match,
+                fast_path_context=fast_path_context,
             )
             if selected_how is not None:
                 await self._execute_selected_action(
@@ -254,19 +277,21 @@ class RecoveryAgent:
         )
         incident.rag_repair_chunks.extend(self._load_skills_chunks())
 
-        how = await self._llm.propose_how(
+        raw_how = await self._llm.propose_how(
             diagnosis=diagnosis,
             rag_chunks=incident.rag_repair_chunks,
             prior_attempts=incident.prior_attempts,
             latest_tool_error=incident.last_tool_error,
             state_fingerprint=incident.state_fingerprint,
         )
+        how = self._normalize_how_proposal(raw_how)
 
         selected_how, executed_candidate, jev_decision = await self._select_candidate_with_jev(
             incident=incident,
             diagnosis=diagnosis,
             how=how,
             source="full_loop",
+            class_match=class_match,
         )
         if selected_how is None:
             return
@@ -469,6 +494,8 @@ class RecoveryAgent:
         how: HowProposal,
         source: str,
         count_unusable_failure: bool = True,
+        class_match: ClassMatch | None = None,
+        fast_path_context: dict[str, Any] | None = None,
     ) -> tuple[DynamicToolSpec | None, str, dict[str, Any] | None]:
         candidates = [how.primary, *how.alternatives]
         if self._classmem_enabled and self._classmem_dedupe_enabled:
@@ -488,6 +515,21 @@ class RecoveryAgent:
                             "usable": False,
                             "reason": "all_candidates_previously_failed",
                         },
+                        class_match=class_match,
+                        source=source,
+                    )
+                elif source == "class_memory":
+                    await self._publish_fast_path_skipped(
+                        incident=incident,
+                        reason="all_candidates_previously_failed",
+                        decision_payload={
+                            "usable": False,
+                            "reason": "all_candidates_previously_failed",
+                        },
+                        candidate_rows=[],
+                        class_match=class_match,
+                        selected_action_key=None,
+                        fast_path_context=fast_path_context,
                     )
                 return None, "none", {"usable": False, "reason": "all_candidates_previously_failed"}
         candidate_rows = [candidate.model_dump() for candidate in candidates]
@@ -499,6 +541,18 @@ class RecoveryAgent:
                     reason="jev_not_configured",
                     candidate_rows=candidate_rows,
                     decision_payload={"usable": False, "reason": "jev_not_configured"},
+                    class_match=class_match,
+                    source=source,
+                )
+            elif source == "class_memory":
+                await self._publish_fast_path_skipped(
+                    incident=incident,
+                    reason="jev_not_configured",
+                    decision_payload={"usable": False, "reason": "jev_not_configured"},
+                    candidate_rows=candidate_rows,
+                    class_match=class_match,
+                    selected_action_key=None,
+                    fast_path_context=fast_path_context,
                 )
             return None, "none", {"usable": False, "reason": "jev_not_configured"}
 
@@ -514,7 +568,35 @@ class RecoveryAgent:
         }
         if self._classmem_enabled:
             state["source"] = source
+            if source == "class_memory" and fast_path_context is not None:
+                state["class_memory_candidate"] = fast_path_context
         decision = await self._jev.choose_candidate(state=state, candidates=candidate_rows)
+        if (
+            source == "class_memory"
+            and fast_path_context is not None
+            and not decision.usable
+            and isinstance(decision.reason, str)
+            and decision.reason.startswith("jev_request_error")
+            and "class_memory_candidate" in state
+        ):
+            fallback_state = dict(state)
+            fallback_state.pop("class_memory_candidate", None)
+            decision = await self._jev.choose_candidate(
+                state=fallback_state,
+                candidates=candidate_rows,
+            )
+            if (
+                not decision.usable
+                and isinstance(decision.reason, str)
+                and decision.reason.startswith("jev_request_error")
+                and "source" in fallback_state
+            ):
+                strict_state = dict(fallback_state)
+                strict_state.pop("source", None)
+                decision = await self._jev.choose_candidate(
+                    state=strict_state,
+                    candidates=candidate_rows,
+                )
         decision_payload = self._decision_payload(decision)
         if not decision.usable:
             if count_unusable_failure:
@@ -523,6 +605,27 @@ class RecoveryAgent:
                     reason=decision.reason or "jev_decision_unusable",
                     candidate_rows=candidate_rows,
                     decision_payload=decision_payload,
+                    class_match=class_match,
+                    source=source,
+                )
+            elif source == "class_memory":
+                selected_spec = self._selected_candidate_from_decision(
+                    candidate_rows=candidate_rows,
+                    decision_payload=decision_payload,
+                )
+                selected_action_key = None
+                if self._classmem_enabled and selected_spec is not None:
+                    selected_action_key = canonical_action_key(selected_spec)
+                    incident.failed_action_keys.add(selected_action_key)
+
+                await self._publish_fast_path_skipped(
+                    incident=incident,
+                    reason=decision.reason or "jev_decision_unusable",
+                    decision_payload=decision_payload,
+                    candidate_rows=candidate_rows,
+                    class_match=class_match,
+                    selected_action_key=selected_action_key,
+                    fast_path_context=fast_path_context,
                 )
             return None, "none", decision_payload
 
@@ -534,6 +637,18 @@ class RecoveryAgent:
                     reason="selected_candidate_not_found",
                     candidate_rows=candidate_rows,
                     decision_payload=decision_payload,
+                    class_match=class_match,
+                    source=source,
+                )
+            elif source == "class_memory":
+                await self._publish_fast_path_skipped(
+                    incident=incident,
+                    reason="selected_candidate_not_found",
+                    decision_payload=decision_payload,
+                    candidate_rows=candidate_rows,
+                    class_match=class_match,
+                    selected_action_key=None,
+                    fast_path_context=fast_path_context,
                 )
             return None, "none", decision_payload
 
@@ -576,7 +691,30 @@ class RecoveryAgent:
         reason: str,
         candidate_rows: list[dict[str, Any]],
         decision_payload: dict[str, Any],
+        class_match: ClassMatch | None,
+        source: str,
     ) -> None:
+        selected_spec = self._selected_candidate_from_decision(
+            candidate_rows=candidate_rows,
+            decision_payload=decision_payload,
+        )
+        selected_action_key: str | None = None
+        if selected_spec is not None and self._classmem_enabled:
+            selected_action_key = canonical_action_key(selected_spec)
+            incident.failed_action_keys.add(selected_action_key)
+            if (
+                self._class_memory is not None
+                and class_match is not None
+                and not reason.startswith("jev_request_error")
+            ):
+                self._class_memory.record_outcome(
+                    match=class_match,
+                    spec=selected_spec,
+                    latency_ms=0.0,
+                    success=False,
+                    source=source,
+                )
+
         incident.attempts += 1
         incident.state_fingerprint = self._tools.state_fingerprint()
         incident.last_tool_error = reason
@@ -588,6 +726,7 @@ class RecoveryAgent:
                 verifier_details={
                     "candidate_actions": candidate_rows,
                     "decision": decision_payload,
+                    "selected_action_key": selected_action_key,
                 },
             )
         )
@@ -600,6 +739,7 @@ class RecoveryAgent:
                 "reason": reason,
                 "candidate_actions": candidate_rows,
                 "decision": decision_payload,
+                "selected_action_key": selected_action_key,
                 "attempts": incident.attempts,
             },
         )
@@ -613,9 +753,145 @@ class RecoveryAgent:
             },
         )
 
+    async def _publish_fast_path_skipped(
+        self,
+        *,
+        incident: IncidentContext,
+        reason: str,
+        decision_payload: dict[str, Any],
+        candidate_rows: list[dict[str, Any]],
+        class_match: ClassMatch | None,
+        selected_action_key: str | None,
+        fast_path_context: dict[str, Any] | None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "incident_id": incident.incident_id,
+            "reason": reason,
+            "decision": decision_payload,
+            "candidate_count": len(candidate_rows),
+            "selected_action_key": selected_action_key,
+            "fallback_source": "full_loop",
+            "class_id": class_match.class_id if class_match is not None else None,
+        }
+        if fast_path_context is not None:
+            payload["class_memory_candidate"] = fast_path_context
+        await self._events.publish("class_memory.fast_path_skipped", payload)
+
+    @staticmethod
+    def _selected_candidate_from_decision(
+        *,
+        candidate_rows: list[dict[str, Any]],
+        decision_payload: dict[str, Any],
+    ) -> DynamicToolSpec | None:
+        selected_name = decision_payload.get("selected_candidate_name")
+        selected_operation = decision_payload.get("selected_candidate_operation")
+        normalized: list[DynamicToolSpec] = []
+        for row in candidate_rows:
+            try:
+                normalized.append(DynamicToolSpec.model_validate(row))
+            except Exception:
+                continue
+
+        if isinstance(selected_name, str) and selected_name:
+            for item in normalized:
+                if item.name == selected_name:
+                    return item
+        if isinstance(selected_operation, str) and selected_operation:
+            for item in normalized:
+                if item.operation == selected_operation:
+                    return item
+        return None
+
+    _PLACEHOLDER_RE = re.compile(r"<[^>]+>")
+
+    @classmethod
+    def _is_placeholder(cls, value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        text = value.strip()
+        return text == "" or bool(cls._PLACEHOLDER_RE.search(text))
+
+    @classmethod
+    def _normalize_candidate(cls, candidate: DynamicToolSpec) -> DynamicToolSpec | None:
+        params = dict(candidate.params)
+        operation = candidate.operation
+
+        if operation == "run_sql":
+            sql = params.get("sql")
+            if not isinstance(sql, str) or sql.strip() == "":
+                statements = params.get("statements")
+                if isinstance(statements, list):
+                    chunks = [str(item).strip() for item in statements if str(item).strip()]
+                    if chunks:
+                        sql = "\n".join(chunks)
+            if not isinstance(sql, str) or sql.strip() == "" or cls._is_placeholder(sql):
+                return None
+            db_path = params.get("db_path")
+            if not isinstance(db_path, str) or cls._is_placeholder(db_path):
+                db_path = "data/app.db"
+            return candidate.model_copy(
+                update={
+                    "params": {
+                        "sql": sql.strip(),
+                        "db_path": db_path.strip(),
+                    }
+                }
+            )
+
+        if operation == "replace_file":
+            source = params.get("source_path")
+            if not isinstance(source, str):
+                source = params.get("source")
+            destination = params.get("destination_path")
+            if not isinstance(destination, str):
+                destination = params.get("target_path")
+            if not isinstance(source, str) or cls._is_placeholder(source):
+                return None
+            if not isinstance(destination, str) or cls._is_placeholder(destination):
+                return None
+            return candidate.model_copy(
+                update={
+                    "params": {
+                        "source_path": source.strip(),
+                        "destination_path": destination.strip(),
+                    }
+                }
+            )
+
+        if operation == "request_backup_restore":
+            backup_id = params.get("backup_id")
+            if not isinstance(backup_id, str) or backup_id.strip() == "":
+                backup_id = params.get("selection") or params.get("restore_point")
+            if not isinstance(backup_id, str) or cls._is_placeholder(backup_id):
+                backup_id = "latest"
+            normalized_backup = backup_id.strip() or "latest"
+            return candidate.model_copy(update={"params": {"backup_id": normalized_backup}})
+
+        if operation == "restart_service":
+            service_name = params.get("service_name")
+            if not isinstance(service_name, str) or cls._is_placeholder(service_name):
+                service_name = "target-app"
+            normalized_service = service_name.strip() or "target-app"
+            return candidate.model_copy(
+                update={"params": {"service_name": normalized_service}}
+            )
+
+        return candidate
+
+    @classmethod
+    def _normalize_how_proposal(cls, how: HowProposal) -> HowProposal:
+        normalized: list[DynamicToolSpec] = []
+        for candidate in [how.primary, *how.alternatives]:
+            item = cls._normalize_candidate(candidate)
+            if item is not None:
+                normalized.append(item)
+        if not normalized:
+            return how
+        return HowProposal(primary=normalized[0], alternatives=normalized[1:])
+
     @staticmethod
     def _decision_payload(decision: JevDecision) -> dict[str, Any]:
-        return {
+        payload = {
             "usable": decision.usable,
             "reason": decision.reason,
             "selected_candidate_name": decision.selected_candidate_name,
@@ -624,6 +900,13 @@ class RecoveryAgent:
             "risk_score": decision.risk_score,
             "model_version": decision.model_version,
         }
+        if (
+            isinstance(decision.reason, str)
+            and decision.reason.startswith("jev_request_error")
+            and decision.raw
+        ):
+            payload["raw"] = decision.raw
+        return payload
 
     @staticmethod
     def _build_symptom_query(diagnostics: dict[str, Any]) -> str:
