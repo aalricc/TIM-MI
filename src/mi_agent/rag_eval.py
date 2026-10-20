@@ -120,10 +120,7 @@ def evaluate_cases(
         for row in rows[:safe_top_k]:
             metadata_raw = row.get("metadata")
             metadata: dict[str, Any]
-            if isinstance(metadata_raw, dict):
-                metadata = metadata_raw
-            else:
-                metadata = {}
+            metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
             section = metadata.get("section") if isinstance(metadata.get("section"), str) else None
             chunk_index = metadata.get("chunk_index")
             if not isinstance(chunk_index, int):
@@ -239,10 +236,7 @@ def reciprocal_rank_fuse(
         for rank, row in enumerate(entries[:safe_top_k], start=1):
             metadata_raw = row.get("metadata")
             metadata: dict[str, Any]
-            if isinstance(metadata_raw, dict):
-                metadata = metadata_raw
-            else:
-                metadata = {}
+            metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
             chunk_index = metadata.get("chunk_index")
             if isinstance(chunk_index, float) and chunk_index.is_integer():
                 chunk_index = int(chunk_index)
