@@ -60,6 +60,9 @@ class IncidentContext:
     diagnosis: Diagnosis | None = None
     rag_symptom_chunks: list[RAGChunk] = field(default_factory=list)
     rag_repair_chunks: list[RAGChunk] = field(default_factory=list)
+    rag_symptom_status: dict[str, Any] = field(default_factory=dict)
+    rag_repair_status: dict[str, Any] = field(default_factory=dict)
+    rag_call_counts: dict[str, int] = field(default_factory=lambda: {"symptom": 0, "repair": 0})
     prior_attempts: list[AttemptFeedback] = field(default_factory=list)
     latest_diagnostics: dict[str, Any] = field(default_factory=dict)
     failed_action_keys: set[str] = field(default_factory=set)

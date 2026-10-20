@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -8,9 +9,10 @@ from typing import Any
 
 def build_index(*, api_key: str, index_host: str) -> Any:
     try:
-        from pinecone import Pinecone  # type: ignore[import-untyped]
+        pinecone_module = importlib.import_module("pinecone")
     except ModuleNotFoundError as exc:
         raise RuntimeError("pinecone package is required for namespace export") from exc
+    Pinecone = getattr(pinecone_module, "Pinecone")
     return Pinecone(api_key=api_key).Index(host=index_host)
 
 

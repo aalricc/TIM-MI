@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import re
 from pathlib import Path
 from typing import Any
@@ -60,9 +61,10 @@ UPSERT_BATCH_SIZE = 90
 
 def extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
     try:
-        from pypdf import PdfReader
+        pypdf_module = importlib.import_module("pypdf")
     except ModuleNotFoundError as exc:
         raise RuntimeError("pypdf is required for PDF ingestion") from exc
+    PdfReader = getattr(pypdf_module, "PdfReader")
 
     reader = PdfReader(path)
     pages: list[tuple[int, str]] = []

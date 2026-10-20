@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from functools import lru_cache
 from typing import Any
 
@@ -42,11 +43,12 @@ def search_sqlite_docs(
 @lru_cache(maxsize=16)
 def _cached_index(api_key: str, index_host: str) -> Any:
     try:
-        from pinecone import Pinecone  # type: ignore[import-untyped]
+        pinecone_module = importlib.import_module("pinecone")
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "Pinecone dependency is missing. Install optional dependency group 'rag'."
         ) from exc
+    Pinecone = getattr(pinecone_module, "Pinecone")
 
     client = Pinecone(api_key=api_key)
     return client.Index(host=index_host)
