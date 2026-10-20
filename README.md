@@ -115,6 +115,10 @@ For Pinecone RAG (mandatory):
 - `MI_RAG_ENABLED=true`
 - `PINECONE_API_KEY=<key>`
 - `PINECONE_INDEX_HOST=<host>`
+- `PINECONE_NAMESPACE=sqlite-docs`
+- `MI_RAG_QUERY_PREFIX=sqlite`
+- `MI_RAG_QUERY_REWRITE=true`
+- `MI_RAG_FETCH_DEPTH=10`
 
 ## Run
 

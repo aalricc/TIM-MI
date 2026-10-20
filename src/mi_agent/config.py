@@ -52,6 +52,10 @@ class MISettings(BaseSettings):
 
     rag_enabled: bool = True
     rag_top_k: int = Field(default=5, ge=1, le=10)
+    rag_fetch_depth: int = Field(default=10, ge=1, le=50)
+    rag_query_max_chars: int = Field(default=300, ge=120, le=2000)
+    rag_query_prefix: str = "sqlite"
+    rag_query_rewrite: bool = True
     pinecone_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("PINECONE_API_KEY", "MI_PINECONE_API_KEY"),

@@ -1,0 +1,90 @@
+[
+  {
+    "query": "database is locked",
+    "expected_sources": [
+      "sqlite_error_message_glossary",
+      "Result and Error Codes"
+    ],
+    "required": true
+  },
+  {
+    "query": "database disk image is malformed",
+    "expected_sources": [
+      "sqlite_error_message_glossary",
+      "Recovering Data From A Corrupt SQLite Database"
+    ],
+    "required": true,
+    "note": "known weak case"
+  },
+  {
+    "query": "how to corrupt an SQLite database file",
+    "expected_sources": [
+      "How To Corrupt An SQLite Database File"
+    ],
+    "required": true
+  },
+  {
+    "query": "write-ahead log checkpoint wal file",
+    "expected_sources": [
+      "Write-Ahead Logging",
+      "WAL-mode File Format"
+    ],
+    "required": true
+  },
+  {
+    "query": "recover a corrupted database .recover command",
+    "expected_sources": [
+      "Recovering Data From A Corrupt SQLite Database",
+      "Command Line Shell For SQLite"
+    ],
+    "required": true
+  },
+  {
+    "query": "file locking and busy handler concurrency",
+    "expected_sources": [
+      "File Locking And Concurrency In SQLite Version 3"
+    ],
+    "required": true
+  },
+  {
+    "query": "database is locked while running checkpoint",
+    "query_raw": "sqlite recovery | symptom grounding | database is locked while running checkpoint | log_tail=2026-10-20T10:14:22Z request_id=8d35b8aa-f57f-4f9d-b3a9-190d38af74d3 /var/lib/app/data/app.db",
+    "query_normalized": "database is locked while running checkpoint",
+    "expected_sources": [
+      "Checkpoint a database",
+      "Write-Ahead Logging",
+      "File Locking And Concurrency In SQLite Version 3"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "database disk image is malformed | hypothesis=btree page corrupted | latest_tool_error=run_sql failed",
+    "query_raw": "sqlite repair guidance | dynamic recovery | database disk image is malformed | hypothesis=btree page corrupted | latest_tool_error=run_sql failed at 2026-10-20T10:15:11Z request_id=3f90aafc-4338-4642-8579-b63b574f80bc",
+    "query_normalized": "database disk image is malformed | hypothesis=btree page corrupted | latest_tool_error=run_sql failed",
+    "expected_sources": [
+      "Recovering Data From A Corrupt SQLite Database",
+      "How To Corrupt An SQLite Database File"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "integrity row says in database main page 5 | log says no such table widgets while path",
+    "query_raw": "sqlite recovery | symptom grounding | integrity row says *** in database main page 5 | log says no such table widgets while path /srv/prod/db/main.sqlite",
+    "query_normalized": "integrity row says in database main page 5 | log says no such table widgets while path",
+    "expected_sources": [
+      "sqlite_error_message_glossary",
+      "The Schema Table",
+      "Result and Error Codes"
+    ],
+    "required": false,
+    "note": "realistic long query",
+    "diagnose_queries": [
+      "no such table widgets",
+      "sqlite | no such table widgets",
+      "SQLITE_ERROR no such table",
+      "sqlite_schema table not found"
+    ]
+  }
+]

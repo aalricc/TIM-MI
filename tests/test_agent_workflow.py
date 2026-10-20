@@ -8,10 +8,12 @@ import pytest
 from mi_agent.agent.engine import RecoveryAgent
 from mi_agent.decision.client import JevDecision
 from mi_agent.events import EventLog
+from mi_agent.rag_query import apply_query_prefix_and_cap
 from mi_agent.workflow.models import (
     Diagnosis,
     DynamicToolSpec,
     HowProposal,
+    IncidentContext,
     MonitorStatus,
     VerificationResult,
 )
@@ -316,3 +318,132 @@ async def test_jev_can_select_alternative_action(tmp_path: Path) -> None:
     how = trace.get("how")
     assert isinstance(how, dict)
     assert how.get("executed_candidate") == "alternative:repair_sql"
+
+
+@pytest.mark.asyncio
+async def test_rag_status_events_and_trace_are_recorded(tmp_path: Path) -> None:
+    tools = FakeTools(unhealthy=True, execution_ok=False)
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    rag_call_events = [item for item in events.events if item.event_type == "rag.call"]
+    rag_empty_events = [item for item in events.events if item.event_type == "rag.empty"]
+    assert len(rag_call_events) == 2
+    assert len(rag_empty_events) == 2
+
+    phases = {str(item.payload.get("phase")) for item in rag_call_events}
+    assert phases == {"symptom", "repair"}
+
+    trace = agent.get_llm_trace()
+    assert isinstance(trace, dict)
+    rag = trace.get("rag")
+    assert isinstance(rag, dict)
+    symptom = rag.get("symptom")
+    repair = rag.get("repair")
+    assert isinstance(symptom, dict)
+    assert isinstance(repair, dict)
+    assert symptom.get("status") == "empty"
+    assert repair.get("status") == "empty"
+
+
+def test_rag_query_rewrite_off_matches_legacy_prefix_behavior(tmp_path: Path) -> None:
+    diagnostics = {"health_deep": {"error": "service timeout while polling"}}
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=FakeTools(unhealthy=True, execution_ok=False),  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=EventLog(tmp_path / "events.jsonl"),
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+        rag_query_prefix="sqlite",
+        rag_query_max_chars=300,
+        rag_query_rewrite=False,
+    )
+
+    expected = apply_query_prefix_and_cap(
+        query="service timeout while polling",
+        prefix="sqlite",
+        max_chars=300,
+    )
+    assert agent._build_symptom_query(diagnostics) == expected
+
+
+@pytest.mark.asyncio
+async def test_rag_query_rewrite_on_uses_fetch_depth_per_retrieval_call(tmp_path: Path) -> None:
+    class DepthTools:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        async def retrieve_rag_chunks(self, query: str, *, k: int) -> list[Any]:
+            del query
+            self.calls.append(k)
+            return []
+
+    tools = DepthTools()
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=EventLog(tmp_path / "events.jsonl"),
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+        rag_top_k=3,
+        rag_fetch_depth=7,
+        rag_query_rewrite=True,
+    )
+
+    incident = IncidentContext(incident_id="inc-rag-depth")
+    await agent._retrieve_rag_chunks_for_incident(
+        incident,
+        phase="symptom",
+        query="database disk image is malformed",
+    )
+
+    assert tools.calls == [7]
+
+
+@pytest.mark.asyncio
+async def test_rag_query_rewrite_off_uses_top_k_for_retrieval(tmp_path: Path) -> None:
+    class DepthTools:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        async def retrieve_rag_chunks(self, query: str, *, k: int) -> list[Any]:
+            del query
+            self.calls.append(k)
+            return []
+
+    tools = DepthTools()
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=EventLog(tmp_path / "events.jsonl"),
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+        rag_top_k=3,
+        rag_fetch_depth=7,
+        rag_query_rewrite=False,
+    )
+
+    incident = IncidentContext(incident_id="inc-rag-topk")
+    await agent._retrieve_rag_chunks_for_incident(
+        incident,
+        phase="symptom",
+        query="database disk image is malformed",
+    )
+
+    assert tools.calls == [3]

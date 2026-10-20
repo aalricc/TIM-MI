@@ -57,6 +57,11 @@ def build_agent(
         classmem_enabled=settings.classmem_enabled,
         classmem_dedupe_enabled=settings.classmem_dedupe_enabled,
         classmem_fastpath_enabled=settings.classmem_fastpath_enabled,
+        rag_top_k=settings.rag_top_k,
+        rag_fetch_depth=settings.rag_fetch_depth,
+        rag_query_max_chars=settings.rag_query_max_chars,
+        rag_query_prefix=settings.rag_query_prefix,
+        rag_query_rewrite=settings.rag_query_rewrite,
     )
     context = MIContext(
         settings=settings,

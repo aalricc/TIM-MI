@@ -16,6 +16,7 @@ def _clear_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "MI_PINECONE_API_KEY",
         "PINECONE_INDEX_HOST",
         "MI_PINECONE_INDEX_HOST",
+        "MI_RAG_QUERY_PREFIX",
         "MI_RAG_ENABLED",
         "MI_JEV_ENABLED",
     ]:
@@ -80,3 +81,31 @@ def test_valid_rag_config_passes() -> None:
     assert settings.rag_enabled is True
     assert settings.jev_enabled is True
     assert settings.pinecone_namespace == "sqlite-docs"
+
+
+def test_rag_query_prefix_default_and_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(
+        openai_api_key="test-key",
+        jev_api_key="test-jev-key",
+        pinecone_api_key="pc-key",
+        pinecone_index_host="pc-host",
+    )
+    assert settings.rag_query_prefix == "sqlite"
+
+    monkeypatch.setenv("MI_RAG_QUERY_PREFIX", "sqlite recovery")
+    override_settings = _settings(
+        openai_api_key="test-key",
+        jev_api_key="test-jev-key",
+        pinecone_api_key="pc-key",
+        pinecone_index_host="pc-host",
+    )
+    assert override_settings.rag_query_prefix == "sqlite recovery"
+
+    monkeypatch.setenv("MI_RAG_QUERY_PREFIX", "")
+    empty_settings = _settings(
+        openai_api_key="test-key",
+        jev_api_key="test-jev-key",
+        pinecone_api_key="pc-key",
+        pinecone_index_host="pc-host",
+    )
+    assert empty_settings.rag_query_prefix == ""

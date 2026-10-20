@@ -21,6 +21,12 @@ from mi_agent.decision.client import JevDecision, JevDecisionClient
 from mi_agent.events import EventLog
 from mi_agent.llm.client import LLMClient
 from mi_agent.observability import sanitize_payload
+from mi_agent.rag_query import (
+    build_repair_query,
+    build_symptom_query,
+    cap_chunks_per_source,
+    prepare_retrieval_query,
+)
 from mi_agent.tools.executor import ToolExecutor
 from mi_agent.verifier.verifier import Verifier
 from mi_agent.workflow.models import (
@@ -57,6 +63,11 @@ class RecoveryAgent:
         classmem_enabled: bool = False,
         classmem_dedupe_enabled: bool = True,
         classmem_fastpath_enabled: bool = True,
+        rag_top_k: int = 5,
+        rag_fetch_depth: int = 10,
+        rag_query_max_chars: int = 300,
+        rag_query_prefix: str = "sqlite",
+        rag_query_rewrite: bool = True,
     ) -> None:
         self._llm = llm
         self._tools = tools
@@ -69,6 +80,11 @@ class RecoveryAgent:
         self._classmem_enabled = classmem_enabled and class_memory is not None
         self._classmem_dedupe_enabled = classmem_dedupe_enabled
         self._classmem_fastpath_enabled = classmem_fastpath_enabled
+        self._rag_top_k = max(1, rag_top_k)
+        self._rag_fetch_depth = max(1, rag_fetch_depth)
+        self._rag_query_max_chars = max(120, rag_query_max_chars)
+        self._rag_query_prefix = rag_query_prefix
+        self._rag_query_rewrite = rag_query_rewrite
         default_skills_path = str(Path(policy_store_path).with_name("skills.md"))
         self._skills_path = skills_path or default_skills_path
 
@@ -171,9 +187,10 @@ class RecoveryAgent:
             diagnostics = await self._tools.collect_diagnostics()
             incident.latest_diagnostics = diagnostics
             symptom_query = self._build_symptom_query(diagnostics)
-            incident.rag_symptom_chunks = await self._tools.retrieve_rag_chunks(
-                symptom_query,
-                k=5,
+            incident.rag_symptom_chunks = await self._retrieve_rag_chunks_for_incident(
+                incident,
+                phase="symptom",
+                query=symptom_query,
             )
 
             diagnosis = await self._llm.diagnose_why(
@@ -181,7 +198,11 @@ class RecoveryAgent:
                 rag_chunks=incident.rag_symptom_chunks,
             )
             incident.diagnosis = diagnosis
-            self._record_diagnosis_trace(incident_id=incident.incident_id, diagnosis=diagnosis)
+            self._record_diagnosis_trace(
+                incident_id=incident.incident_id,
+                diagnosis=diagnosis,
+                rag_status=incident.rag_symptom_status,
+            )
             await self._events.publish(
                 "diagnosis.why",
                 {
@@ -271,9 +292,10 @@ class RecoveryAgent:
                 return
 
         repair_query = self._build_repair_query(incident)
-        incident.rag_repair_chunks = await self._tools.retrieve_rag_chunks(
-            repair_query,
-            k=5,
+        incident.rag_repair_chunks = await self._retrieve_rag_chunks_for_incident(
+            incident,
+            phase="repair",
+            query=repair_query,
         )
         incident.rag_repair_chunks.extend(self._load_skills_chunks())
 
@@ -331,6 +353,8 @@ class RecoveryAgent:
             source=source,
             action_key=action_key,
             class_id=class_match.class_id if class_match is not None else None,
+            rag_symptom_status=incident.rag_symptom_status,
+            rag_repair_status=incident.rag_repair_status,
         )
         planning_payload: dict[str, Any] = {
             "incident_id": incident.incident_id,
@@ -908,31 +932,114 @@ class RecoveryAgent:
             payload["raw"] = decision.raw
         return payload
 
-    @staticmethod
-    def _build_symptom_query(diagnostics: dict[str, Any]) -> str:
-        parts: list[str] = ["sqlite recovery", "symptom grounding"]
-        health = diagnostics.get("health_deep")
-        if isinstance(health, dict):
-            parts.append(str(health.get("error") or "unknown_health_error"))
-        integrity = diagnostics.get("db_integrity")
-        if isinstance(integrity, dict):
-            rows = integrity.get("rows")
-            if isinstance(rows, list) and rows:
-                parts.append(str(rows[0]))
-        log_tail = diagnostics.get("log_tail")
-        if isinstance(log_tail, list) and log_tail:
-            parts.append(str(log_tail[-1])[:500])
-        return " | ".join(parts)
+    def _build_symptom_query(self, diagnostics: dict[str, Any]) -> str:
+        normalized_query = build_symptom_query(diagnostics, max_chars=None)
+        return prepare_retrieval_query(
+            query=normalized_query,
+            prefix=self._rag_query_prefix,
+            max_chars=self._rag_query_max_chars,
+            rewrite_enabled=self._rag_query_rewrite,
+        )
 
-    @staticmethod
-    def _build_repair_query(incident: IncidentContext) -> str:
-        pieces = ["sqlite repair guidance", "dynamic recovery"]
-        if incident.diagnosis is not None:
-            pieces.append(incident.diagnosis.failure_type)
-            pieces.extend(incident.diagnosis.hypotheses[:2])
-        if incident.last_tool_error:
-            pieces.append(f"latest_tool_error={incident.last_tool_error}")
-        return " | ".join(pieces)
+    def _build_repair_query(self, incident: IncidentContext) -> str:
+        diagnosis = incident.diagnosis
+        normalized_query = build_repair_query(
+            diagnostics=incident.latest_diagnostics,
+            failure_type=diagnosis.failure_type if diagnosis is not None else None,
+            hypotheses=diagnosis.hypotheses if diagnosis is not None else [],
+            last_tool_error=incident.last_tool_error,
+            max_chars=None,
+        )
+        return prepare_retrieval_query(
+            query=normalized_query,
+            prefix=self._rag_query_prefix,
+            max_chars=self._rag_query_max_chars,
+            rewrite_enabled=self._rag_query_rewrite,
+        )
+
+    async def _retrieve_rag_chunks_for_incident(
+        self,
+        incident: IncidentContext,
+        *,
+        phase: str,
+        query: str,
+    ) -> list[RAGChunk]:
+        if not self._rag_query_rewrite:
+            chunks = await self._tools.retrieve_rag_chunks(query, k=self._rag_top_k)
+        else:
+            raw_chunks = await self._tools.retrieve_rag_chunks(query, k=self._rag_fetch_depth)
+            chunks = cap_chunks_per_source(raw_chunks, max_per_source=2, k=self._rag_top_k)
+
+        meta: dict[str, Any] = {}
+        consume_meta = getattr(self._tools, "consume_last_rag_meta", None)
+        if callable(consume_meta):
+            consumed = consume_meta()
+            if isinstance(consumed, dict):
+                meta = consumed
+
+        status = str(meta.get("status") or ("ok" if chunks else "empty"))
+        status_payload: dict[str, Any] = {
+            "status": status,
+            "query_used": str(meta.get("query_used") or query)[:1200],
+            "count": int(meta.get("count") if meta.get("count") is not None else len(chunks)),
+        }
+        if isinstance(meta.get("reason"), str):
+            status_payload["reason"] = meta["reason"]
+        if isinstance(meta.get("error_type"), str):
+            status_payload["error_type"] = meta["error_type"]
+        if isinstance(meta.get("error_message"), str):
+            status_payload["error_message"] = meta["error_message"]
+
+        if phase == "symptom":
+            incident.rag_symptom_status = status_payload
+        else:
+            incident.rag_repair_status = status_payload
+
+        incident.rag_call_counts[phase] = incident.rag_call_counts.get(phase, 0) + 1
+        await self._events.publish(
+            "rag.call",
+            {
+                "incident_id": incident.incident_id,
+                "phase": phase,
+                "call_count": incident.rag_call_counts[phase],
+                "top_k": self._rag_top_k,
+                "fetch_depth": self._rag_fetch_depth,
+                "rewrite_enabled": self._rag_query_rewrite,
+                **status_payload,
+            },
+        )
+
+        if status == "skipped":
+            await self._events.publish(
+                "rag.skipped",
+                {
+                    "incident_id": incident.incident_id,
+                    "phase": phase,
+                    **status_payload,
+                },
+            )
+        elif status == "empty":
+            await self._events.publish(
+                "rag.empty",
+                {
+                    "incident_id": incident.incident_id,
+                    "phase": phase,
+                    **status_payload,
+                },
+            )
+        elif status == "error":
+            await self._events.publish(
+                "rag.error",
+                {
+                    "incident_id": incident.incident_id,
+                    "phase": phase,
+                    "error_type": status_payload.get("error_type", "RAGError"),
+                    "error": status_payload.get("error_message", "unknown rag error"),
+                    **status_payload,
+                },
+            )
+
+        return chunks
 
     def _load_policy(self) -> dict[str, dict[str, float]]:
         path = Path(self._policy_store_path)
@@ -1062,9 +1169,24 @@ class RecoveryAgent:
             )
         ]
 
-    def _record_diagnosis_trace(self, *, incident_id: str, diagnosis: Any) -> None:
+    def _record_diagnosis_trace(
+        self,
+        *,
+        incident_id: str,
+        diagnosis: Any,
+        rag_status: dict[str, Any],
+    ) -> None:
         entry = self._trace_entry(incident_id)
         entry["why"] = sanitize_payload(diagnosis.model_dump(), max_string_length=1200)
+        entry["rag"] = sanitize_payload(
+            {
+                "symptom": rag_status,
+                "repair": entry.get("rag", {}).get("repair")
+                if isinstance(entry.get("rag"), dict)
+                else None,
+            },
+            max_string_length=1200,
+        )
         raw = self._consume_llm_trace()
         if raw is not None:
             entry.setdefault("raw", {})["diagnose_why"] = raw
@@ -1081,6 +1203,8 @@ class RecoveryAgent:
         source: str,
         action_key: str,
         class_id: str | None,
+        rag_symptom_status: dict[str, Any],
+        rag_repair_status: dict[str, Any],
     ) -> None:
         entry = self._trace_entry(incident_id)
         how_payload: dict[str, Any] = {
@@ -1102,6 +1226,13 @@ class RecoveryAgent:
             how_payload,
             max_string_length=1200,
         )
+        entry["rag"] = sanitize_payload(
+            {
+                "symptom": rag_symptom_status,
+                "repair": rag_repair_status,
+            },
+            max_string_length=1200,
+        )
         raw = self._consume_llm_trace()
         if raw is not None:
             entry.setdefault("raw", {})["propose_how"] = raw
@@ -1114,6 +1245,7 @@ class RecoveryAgent:
                 "updated_ts": time.time(),
                 "why": None,
                 "how": None,
+                "rag": None,
                 "raw": {},
             }
             self._llm_trace_order.append(incident_id)
