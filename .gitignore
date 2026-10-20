@@ -44,4 +44,4 @@ knowledge_base/
 
 !.env.example
 
-.local/jev/
+.local/jev/results/
