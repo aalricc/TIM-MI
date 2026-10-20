@@ -153,5 +153,75 @@
     ],
     "required": false,
     "note": "realistic long query"
+  },
+  {
+    "query": "no such table: widgets | SQLITE_ERROR",
+    "query_raw": "sqlite recovery | symptom grounding | no such table: widgets | SQLITE_ERROR | log_tail=2026-10-21T10:31:18Z request_id=4b0c4f0a-95d4-49fb-8f9d-8e55da2240f3 /srv/prod/db/main.sqlite",
+    "query_normalized": "no such table: widgets | SQLITE_ERROR",
+    "expected_sources": [
+      "sqlite_error_message_glossary",
+      "The Schema Table",
+      "Result and Error Codes"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "schema_invalid widgets table missing | SQLITE_SCHEMA",
+    "query_raw": "sqlite repair guidance | dynamic recovery | schema_invalid widgets table missing | SQLITE_SCHEMA | latest_tool_error=run_sql failed at 2026-10-21T10:32:20Z request_id=1a6ee4f3-6f46-4b7a-b500-d31fd2f5c8ff",
+    "query_normalized": "schema_invalid widgets table missing | SQLITE_SCHEMA",
+    "expected_sources": [
+      "sqlite_error_message_glossary",
+      "The Schema Table",
+      "Result and Error Codes"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "no such column | SQLITE_ERROR",
+    "query_raw": "sqlite recovery | symptom grounding | no such column | SQLITE_ERROR | integrity row says query failed on widgets table while path /var/lib/app/data/app.db",
+    "query_normalized": "no such column | SQLITE_ERROR",
+    "expected_sources": [
+      "sqlite_error_message_glossary",
+      "The Schema Table",
+      "Result and Error Codes"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "database schema has changed | SQLITE_SCHEMA",
+    "query_raw": "sqlite repair guidance | dynamic recovery | database schema has changed | SQLITE_SCHEMA | latest_tool_error=run_sql failed at 2026-10-21T10:34:05Z request_id=f0fbeca8-9bf7-43ff-9505-397f5c076af8",
+    "query_normalized": "database schema has changed | SQLITE_SCHEMA",
+    "expected_sources": [
+      "sqlite_error_message_glossary",
+      "The Schema Table",
+      "Result and Error Codes"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "database table is locked | SQLITE_LOCKED",
+    "query_raw": "sqlite recovery | symptom grounding | database table is locked | SQLITE_LOCKED | log_tail=2026-10-21T10:35:02Z request_id=0518c183-0cf5-4268-9dfa-7267ec0d5418 /srv/prod/db/main.sqlite",
+    "query_normalized": "database table is locked | SQLITE_LOCKED",
+    "expected_sources": [
+      "sqlite_error_message_glossary",
+      "Result and Error Codes"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "disk I/O error | SQLITE_IOERR",
+    "query_raw": "sqlite recovery | symptom grounding | disk I/O error | SQLITE_IOERR | latest_tool_error=run_sql failed at 2026-10-21T10:36:11Z request_id=f5e4bb75-844c-466d-a6ee-9ac7384c15b8",
+    "query_normalized": "disk I/O error | SQLITE_IOERR",
+    "expected_sources": [
+      "sqlite_error_message_glossary",
+      "Result and Error Codes"
+    ],
+    "required": false,
+    "note": "realistic long query"
   }
 ]
