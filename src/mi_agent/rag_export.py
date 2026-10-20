@@ -12,7 +12,7 @@ def build_index(*, api_key: str, index_host: str) -> Any:
         pinecone_module = importlib.import_module("pinecone")
     except ModuleNotFoundError as exc:
         raise RuntimeError("pinecone package is required for namespace export") from exc
-    Pinecone = getattr(pinecone_module, "Pinecone")
+    Pinecone = pinecone_module.Pinecone
     return Pinecone(api_key=api_key).Index(host=index_host)
 
 

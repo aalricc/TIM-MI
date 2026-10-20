@@ -64,7 +64,7 @@ def extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
         pypdf_module = importlib.import_module("pypdf")
     except ModuleNotFoundError as exc:
         raise RuntimeError("pypdf is required for PDF ingestion") from exc
-    PdfReader = getattr(pypdf_module, "PdfReader")
+    PdfReader = pypdf_module.PdfReader
 
     reader = PdfReader(path)
     pages: list[tuple[int, str]] = []

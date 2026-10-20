@@ -48,7 +48,7 @@ def _cached_index(api_key: str, index_host: str) -> Any:
         raise RuntimeError(
             "Pinecone dependency is missing. Install optional dependency group 'rag'."
         ) from exc
-    Pinecone = getattr(pinecone_module, "Pinecone")
+    Pinecone = pinecone_module.Pinecone
 
     client = Pinecone(api_key=api_key)
     return client.Index(host=index_host)
