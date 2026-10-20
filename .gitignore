@@ -45,3 +45,4 @@ knowledge_base/
 !.env.example
 
 .local/jev/results/
+results/
