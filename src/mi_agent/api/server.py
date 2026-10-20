@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +107,213 @@ def _build_history(events: list[dict[str, Any]], *, limit: int = 50) -> list[dic
     return recovered_rows[: max(1, limit)]
 
 
+def _build_incident_views(
+    events: list[dict[str, Any]],
+    *,
+    max_items: int = 6,
+) -> dict[str, dict[str, Any]]:
+    safe_max = max(1, max_items)
+    rl_by_incident: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    tools_by_incident: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    pending_rl_keys: dict[str, deque[str]] = defaultdict(deque)
+
+    for row in events:
+        incident_id = _event_incident_id(row)
+        if incident_id is None:
+            continue
+        event_type = str(row.get("event_type") or "")
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+
+        if event_type == "dynamic_tool.executed":
+            action_key = payload.get("action_key")
+            tool_name = payload.get("tool_name")
+            action_details = payload.get("action")
+            operation = None
+            if isinstance(action_details, dict):
+                operation_value = action_details.get("operation")
+                if isinstance(operation_value, str) and operation_value:
+                    operation = operation_value
+
+            stat_key = (
+                action_key
+                if isinstance(action_key, str) and action_key
+                else (
+                    tool_name
+                    if isinstance(tool_name, str) and tool_name
+                    else "unknown_action"
+                )
+            )
+
+            tool_row = tools_by_incident[incident_id].setdefault(
+                stat_key,
+                {
+                    "incident_id": incident_id,
+                    "action": stat_key,
+                    "tool_name": stat_key,
+                    "operation": "n/a",
+                    "attempts": 0,
+                },
+            )
+            tool_row["attempts"] = int(tool_row["attempts"]) + 1
+            if isinstance(tool_name, str) and tool_name:
+                tool_row["tool_name"] = tool_name
+            if isinstance(operation, str) and operation:
+                tool_row["operation"] = operation
+
+            rl_row = rl_by_incident[incident_id].setdefault(
+                stat_key,
+                {
+                    "incident_id": incident_id,
+                    "action": stat_key,
+                    "attempts": 0.0,
+                    "reward_total": 0.0,
+                    "avg_reward": 0.0,
+                },
+            )
+            rl_row["attempts"] = float(rl_row["attempts"]) + 1.0
+            pending_rl_keys[incident_id].append(stat_key)
+            continue
+
+        if event_type == "verification.result":
+            queue = pending_rl_keys.get(incident_id)
+            if not queue:
+                continue
+            stat_key = queue.popleft()
+            rl_row = rl_by_incident[incident_id].setdefault(
+                stat_key,
+                {
+                    "incident_id": incident_id,
+                    "action": stat_key,
+                    "attempts": 0.0,
+                    "reward_total": 0.0,
+                    "avg_reward": 0.0,
+                },
+            )
+            reward = 1.0 if bool(payload.get("healthy", False)) else -1.0
+            rl_row["reward_total"] = float(rl_row["reward_total"]) + reward
+
+    incident_ids = sorted(set(rl_by_incident.keys()) | set(tools_by_incident.keys()))
+    views: dict[str, dict[str, Any]] = {}
+    for incident_id in incident_ids:
+        rl_rows = list(rl_by_incident.get(incident_id, {}).values())
+        for rl_row in rl_rows:
+            attempts = float(rl_row.get("attempts", 0.0))
+            reward_total = float(rl_row.get("reward_total", 0.0))
+            rl_row["avg_reward"] = (reward_total / attempts) if attempts > 0 else 0.0
+        rl_rows.sort(
+            key=lambda row: (
+                float(row.get("reward_total", 0.0)),
+                float(row.get("attempts", 0.0)),
+            ),
+            reverse=True,
+        )
+
+        tool_rows = list(tools_by_incident.get(incident_id, {}).values())
+        tool_rows.sort(
+            key=lambda row: (
+                int(row.get("attempts", 0)),
+                str(row.get("action") or ""),
+            ),
+            reverse=True,
+        )
+
+        views[incident_id] = {
+            "incident_id": incident_id,
+            "rl_summary": {
+                "actions": rl_rows[:safe_max],
+                "total_attempts": sum(float(row.get("attempts", 0.0)) for row in rl_rows),
+                "reward_total": sum(float(row.get("reward_total", 0.0)) for row in rl_rows),
+            },
+            "tool_catalog": tool_rows[:safe_max],
+        }
+    return views
+
+
+def _build_history_incident_views(
+    events: list[dict[str, Any]],
+    *,
+    timeline_limit: int = 30,
+) -> dict[str, dict[str, Any]]:
+    safe_limit = max(1, timeline_limit)
+    by_incident: dict[str, dict[str, Any]] = {}
+
+    def _record(incident_id: str) -> dict[str, Any]:
+        return by_incident.setdefault(
+            incident_id,
+            {
+                "incident_id": incident_id,
+                "workflow_state": "incident_active",
+                "attempts": 0,
+                "last_error": None,
+                "failure_type": None,
+                "latest_why": None,
+                "latest_how": None,
+                "timeline_rows": [],
+            },
+        )
+
+    for row in events:
+        incident_id = _event_incident_id(row)
+        if incident_id is None:
+            continue
+        event_type = str(row.get("event_type") or "")
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+
+        record = _record(incident_id)
+        record["timeline_rows"].append(row)
+
+        if event_type == "diagnosis.why":
+            record["latest_why"] = payload
+            failure_type = payload.get("failure_type")
+            if isinstance(failure_type, str):
+                record["failure_type"] = failure_type
+        elif event_type == "planning.how":
+            record["latest_how"] = payload
+        elif event_type == "incident.recovery_failed":
+            attempts = payload.get("attempts")
+            if isinstance(attempts, int):
+                record["attempts"] = attempts
+            error = payload.get("error")
+            if isinstance(error, str):
+                record["last_error"] = error
+        elif event_type == "incident.recovered":
+            attempts = payload.get("attempts")
+            if isinstance(attempts, int):
+                record["attempts"] = attempts
+            record["workflow_state"] = "recovered"
+        elif event_type == "incident.closed":
+            record["workflow_state"] = "healthy"
+            attempts = payload.get("attempts")
+            if isinstance(attempts, int):
+                record["attempts"] = attempts
+
+    views: dict[str, dict[str, Any]] = {}
+    for incident_id, record in by_incident.items():
+        timeline_rows = list(record.get("timeline_rows") or [])
+        timeline = list(reversed(timeline_rows[-safe_limit:]))
+        views[incident_id] = {
+            "incident_id": incident_id,
+            "agent_state": {
+                "workflow_state": record.get("workflow_state", "incident_active"),
+                "active_incident": {
+                    "incident_id": incident_id,
+                    "attempts": int(record.get("attempts") or 0),
+                    "last_error": record.get("last_error"),
+                    "failure_type": record.get("failure_type"),
+                },
+                "last_monitor": None,
+            },
+            "latest_why": record.get("latest_why"),
+            "latest_how": record.get("latest_how"),
+            "timeline": timeline,
+        }
+    return views
+
+
 def create_api(context: MIContext, agent: RecoveryAgent) -> FastAPI:
     app = FastAPI(title="MI Recovery Agent", version="2.0")
     loop_task: asyncio.Task[None] | None = None
@@ -190,6 +398,11 @@ def create_api(context: MIContext, agent: RecoveryAgent) -> FastAPI:
             timeline = list(reversed(timeline_rows[-safe_limit:]))
 
         history = _build_history(all_events, limit=50)
+        incident_views = _build_incident_views(all_events, max_items=6)
+        history_incident_views = _build_history_incident_views(
+            all_events,
+            timeline_limit=min(200, safe_limit),
+        )
 
         policy = agent.policy
         rl_actions: list[dict[str, Any]] = []
@@ -227,6 +440,25 @@ def create_api(context: MIContext, agent: RecoveryAgent) -> FastAPI:
                 "reward_total": sum(row["reward_total"] for row in rl_actions),
             },
             "tool_catalog": context.tools.catalog,
+            "incident_views": sanitize_payload(
+                incident_views,
+                max_items=200,
+                max_string_length=600,
+            ),
+            "history_incident_views": sanitize_payload(
+                history_incident_views,
+                max_items=200,
+                max_string_length=600,
+            ),
+            "live_incident_view": (
+                sanitize_payload(
+                    incident_views.get(active_incident_id, None),
+                    max_items=50,
+                    max_string_length=600,
+                )
+                if active_incident_id is not None
+                else None
+            ),
             "latest_why": latest_why,
             "latest_how": latest_how,
             "latest_trace_incident_id": active_incident_id,

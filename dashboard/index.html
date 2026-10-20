@@ -59,12 +59,33 @@
         display: grid;
       }
       #live-view {
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 12px;
       }
       #history-view {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 12px;
+      }
+      .live-full {
+        grid-column: 1 / -1;
+      }
+      .history-full {
+        grid-column: 1 / -1;
+      }
+      @media (max-width: 1400px) {
+        #live-view {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 900px) {
+        #live-view,
+        #history-view {
+          grid-template-columns: 1fr;
+        }
+        .live-full,
+        .history-full {
+          grid-column: 1;
+        }
       }
       section {
         background: var(--panel);
@@ -126,6 +147,65 @@
         border-color: #3d6ad6;
         color: #8fb0ff;
       }
+      .card-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 260px;
+        overflow-y: auto;
+      }
+      .info-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #11141b;
+        padding: 8px;
+      }
+      .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 4px;
+      }
+      .incident-badge {
+        font-size: 11px;
+        border: 1px solid #3d6ad6;
+        color: #8fb0ff;
+        border-radius: 999px;
+        padding: 1px 8px;
+      }
+      .incident-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .incident-panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #11141b;
+        padding: 10px;
+      }
+      .incident-panel h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        color: #dce3f2;
+      }
+      .incident-panel.full {
+        grid-column: 1 / -1;
+      }
+      @media (max-width: 1200px) {
+        .incident-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 900px) {
+        .incident-grid {
+          grid-template-columns: 1fr;
+        }
+        .incident-panel.full {
+          grid-column: 1;
+        }
+      }
     </style>
   </head>
   <body>
@@ -155,6 +235,11 @@
       </section>
 
       <section>
+        <h2>Recovery Timeline</h2>
+        <div id="timeline"></div>
+      </section>
+
+      <section>
         <h2>RL Live</h2>
         <div id="rl"></div>
       </section>
@@ -164,24 +249,23 @@
         <div id="catalog"></div>
       </section>
 
-      <section>
-        <h2>Recovery Timeline</h2>
-        <div id="timeline"></div>
-      </section>
-
-      <section style="grid-column: 1 / -1;">
+      <section class="live-full">
         <h2>Raw LLM Trace</h2>
         <div id="raw-trace"></div>
       </section>
     </main>
 
     <main id="history-view" class="view">
-      <section>
+      <section class="history-full">
         <h2>Recovery History</h2>
         <div id="history"></div>
       </section>
-      <section>
-        <h2>History Trace</h2>
+      <section class="history-full">
+        <h2>Incident View</h2>
+        <div id="history-incident"></div>
+      </section>
+      <section class="history-full">
+        <h2>Raw LLM Trace</h2>
         <div id="history-trace"></div>
       </section>
     </main>
@@ -212,14 +296,13 @@
         byId('history-view').classList.toggle('active', tab === 'history');
       }
 
-      function renderAgentState(data) {
-        const state = data.agent_state || {};
-        const incident = state.active_incident;
-        const lastMonitor = state.last_monitor || {};
+      function stateMarkup(state) {
+        const incident = state && state.active_incident ? state.active_incident : null;
+        const lastMonitor = state && state.last_monitor ? state.last_monitor : {};
         const cls = state.workflow_state === 'healthy'
           ? 'ok'
           : (state.workflow_state === 'incident_active' ? 'bad' : 'warn');
-        byId('agent-state').innerHTML = `
+        return `
           <div class="pill ${cls}">workflow: ${esc(state.workflow_state || 'unknown')}</div>
           <div class="pill">monitor: ${esc(lastMonitor.detail || 'n/a')}</div>
           <div class="small">incident: ${esc(incident ? incident.incident_id : 'none')}</div>
@@ -228,13 +311,16 @@
         `;
       }
 
-      function renderWhy(data) {
-        const why = data.latest_why;
+      function renderAgentState(data) {
+        const state = data.agent_state || {};
+        byId('agent-state').innerHTML = stateMarkup(state);
+      }
+
+      function whyMarkup(why, emptyText) {
         if (!why) {
-          byId('why').innerHTML = '<div class="small">No active diagnosis.</div>';
-          return;
+          return `<div class="small">${esc(emptyText)}</div>`;
         }
-        byId('why').innerHTML = `
+        return `
           <div><b>failure_type:</b> <span class="mono">${esc(why.failure_type || 'unknown')}</span></div>
           <div class="small"><b>hypotheses</b></div>
           <ul>${(why.hypotheses || []).map((item) => `<li>${esc(item)}</li>`).join('')}</ul>
@@ -243,15 +329,17 @@
         `;
       }
 
-      function renderHow(data) {
-        const how = data.latest_how;
+      function renderWhy(data) {
+        byId('why').innerHTML = whyMarkup(data.latest_why, 'No active diagnosis.');
+      }
+
+      function howMarkup(how, emptyText) {
         if (!how) {
-          byId('how').innerHTML = '<div class="small">No active HOW proposal.</div>';
-          return;
+          return `<div class="small">${esc(emptyText)}</div>`;
         }
         const primary = how.primary || {};
         const alternatives = Array.isArray(how.alternatives) ? how.alternatives : [];
-        byId('how').innerHTML = `
+        return `
           <div>
             <b>Primary</b>
             <span class="badge">EXECUTED</span>
@@ -270,50 +358,85 @@
         `;
       }
 
-      function renderRl(data) {
-        const summary = data.rl_summary || {};
-        const rows = Array.isArray(summary.actions) ? summary.actions : [];
-        byId('rl').innerHTML = `
+      function renderHow(data) {
+        byId('how').innerHTML = howMarkup(data.latest_how, 'No active HOW proposal.');
+      }
+
+      function incidentViewFor(data, incidentId) {
+        if (!incidentId) {
+          return null;
+        }
+        const views = data && data.incident_views && typeof data.incident_views === 'object'
+          ? data.incident_views
+          : {};
+        return views[incidentId] || null;
+      }
+
+      function incidentRlMarkup(incidentView, emptyText) {
+        if (!incidentView) {
+          return emptyText ? `<div class="small">${esc(emptyText)}</div>` : '';
+        }
+        const summary = incidentView.rl_summary || {};
+        const rows = Array.isArray(summary.actions) ? summary.actions.slice(0, 6) : [];
+        if (!rows.length) {
+          return '<div class="small">No incident-scoped RL stats yet.</div>';
+        }
+        return `
           <div class="small">total_attempts: ${esc(summary.total_attempts || 0)} • reward_total: ${esc(summary.reward_total || 0)}</div>
-          <table>
-            <thead>
-              <tr><th>action</th><th>attempts</th><th>reward_total</th><th>avg_reward</th></tr>
-            </thead>
-            <tbody>
-              ${rows.map((row) => `
-                <tr>
-                  <td class="mono">${esc(row.action)}</td>
-                  <td>${esc(row.attempts)}</td>
-                  <td>${esc(row.reward_total)}</td>
-                  <td>${esc(Number(row.avg_reward || 0).toFixed(3))}</td>
-                </tr>
-              `).join('') || '<tr><td colspan="4" class="small">No RL stats yet.</td></tr>'}
-            </tbody>
-          </table>
+          <div class="card-list">
+            ${rows.map((row) => `
+              <div class="info-card">
+                <div class="card-header">
+                  <span class="mono">${esc(row.action || 'unknown_action')}</span>
+                  <span class="incident-badge">${esc(row.incident_id || incidentView.incident_id || 'unknown_incident')}</span>
+                </div>
+                <div class="small">attempts: ${esc(row.attempts || 0)}</div>
+                <div class="small">reward_total: ${esc(row.reward_total || 0)}</div>
+                <div class="small">avg_reward: ${esc(Number(row.avg_reward || 0).toFixed(3))}</div>
+              </div>
+            `).join('')}
+          </div>
         `;
       }
 
-      function renderCatalog(data) {
-        const catalog = data.tool_catalog || {};
-        const items = Object.entries(catalog);
-        if (!items.length) {
-          byId('catalog').innerHTML = '<div class="small">No persisted dynamic tools yet.</div>';
-          return;
+      function renderIncidentRl(containerId, incidentView, emptyText) {
+        byId(containerId).innerHTML = incidentRlMarkup(incidentView, emptyText);
+      }
+
+      function incidentCatalogMarkup(incidentView, emptyText) {
+        if (!incidentView) {
+          return emptyText ? `<div class="small">${esc(emptyText)}</div>` : '';
         }
-        byId('catalog').innerHTML = `
-          <ul>
-            ${items.map(([name, value]) => `<li><span class="mono">${esc(name)}</span> — ${esc((value && value.operation) || 'n/a')}</li>`).join('')}
-          </ul>
+        const rows = Array.isArray(incidentView.tool_catalog) ? incidentView.tool_catalog.slice(0, 6) : [];
+        if (!rows.length) {
+          return '<div class="small">No incident-scoped dynamic tools yet.</div>';
+        }
+        return `
+          <div class="card-list">
+            ${rows.map((row) => `
+              <div class="info-card">
+                <div class="card-header">
+                  <span class="mono">${esc(row.tool_name || row.action || 'unknown_tool')}</span>
+                  <span class="incident-badge">${esc(row.incident_id || incidentView.incident_id || 'unknown_incident')}</span>
+                </div>
+                <div class="small">action: <span class="mono">${esc(row.action || 'n/a')}</span></div>
+                <div class="small">operation: ${esc(row.operation || 'n/a')}</div>
+                <div class="small">attempts: ${esc(row.attempts || 0)}</div>
+              </div>
+            `).join('')}
+          </div>
         `;
       }
 
-      function renderTimeline(data) {
-        const timeline = Array.isArray(data.timeline) ? data.timeline.slice(0, 30) : [];
+      function renderIncidentCatalog(containerId, incidentView, emptyText) {
+        byId(containerId).innerHTML = incidentCatalogMarkup(incidentView, emptyText);
+      }
+
+      function timelineMarkup(timeline, emptyText) {
         if (!timeline.length) {
-          byId('timeline').innerHTML = '<div class="small">No active recovery timeline.</div>';
-          return;
+          return `<div class="small">${esc(emptyText)}</div>`;
         }
-        byId('timeline').innerHTML = `
+        return `
           <ul>
             ${timeline.map((row) => {
               const ts = new Date((row.ts || 0) * 1000).toLocaleTimeString();
@@ -321,6 +444,63 @@
               return `<li><span class="mono">${esc(ts)}</span> ${esc(row.event_type || 'event')}${esc(incident)}</li>`;
             }).join('')}
           </ul>
+        `;
+      }
+
+      function renderTimeline(data) {
+        const timeline = Array.isArray(data.timeline) ? data.timeline.slice(0, 30) : [];
+        byId('timeline').innerHTML = timelineMarkup(timeline, 'No active recovery timeline.');
+      }
+
+      function historyIncidentDetailFor(data, incidentId) {
+        if (!incidentId) {
+          return null;
+        }
+        const views = data && data.history_incident_views && typeof data.history_incident_views === 'object'
+          ? data.history_incident_views
+          : {};
+        return views[incidentId] || null;
+      }
+
+      function renderHistoryIncidentDashboard(data, incidentId) {
+        if (!incidentId) {
+          byId('history-incident').innerHTML = '<div class="small">Select a history incident to inspect details.</div>';
+          return;
+        }
+        const incidentDetail = historyIncidentDetailFor(data, incidentId);
+        if (!incidentDetail) {
+          byId('history-incident').innerHTML = `<div class="small">No incident details found for ${esc(incidentId)}.</div>`;
+          return;
+        }
+        const incidentView = incidentViewFor(data, incidentId);
+        const timeline = Array.isArray(incidentDetail.timeline) ? incidentDetail.timeline.slice(0, 30) : [];
+        byId('history-incident').innerHTML = `
+          <div class="incident-grid">
+            <div class="incident-panel">
+              <h3>Agent State</h3>
+              ${stateMarkup(incidentDetail.agent_state || {})}
+            </div>
+            <div class="incident-panel">
+              <h3>WHY Diagnosis</h3>
+              ${whyMarkup(incidentDetail.latest_why, 'No diagnosis for this incident.')}
+            </div>
+            <div class="incident-panel">
+              <h3>HOW Proposals</h3>
+              ${howMarkup(incidentDetail.latest_how, 'No HOW proposal for this incident.')}
+            </div>
+            <div class="incident-panel">
+              <h3>RL Live</h3>
+              ${incidentRlMarkup(incidentView, 'No RL data for this incident.')}
+            </div>
+            <div class="incident-panel">
+              <h3>Dynamic Tool Catalog</h3>
+              ${incidentCatalogMarkup(incidentView, 'No dynamic tools for this incident.')}
+            </div>
+            <div class="incident-panel">
+              <h3>Recovery Timeline</h3>
+              ${timelineMarkup(timeline, 'No timeline for this incident.')}
+            </div>
+          </div>
         `;
       }
 
@@ -354,7 +534,7 @@
                 <th>attempts</th>
                 <th>final_tool</th>
                 <th>recovered_at</th>
-                <th>trace</th>
+                <th>incident</th>
               </tr>
             </thead>
             <tbody>
@@ -376,7 +556,7 @@
                         class="trace-button ${isSelected ? 'selected' : ''}"
                         data-history-incident="${esc(row.incident_id || '')}"
                       >
-                        ${isSelected ? 'Viewing' : 'View Trace'}
+                        ${isSelected ? 'Viewing' : 'View Incident'}
                       </button>
                     </td>
                   </tr>
@@ -434,8 +614,8 @@
           renderAgentState(dashboard);
           renderWhy(dashboard);
           renderHow(dashboard);
-          renderRl(dashboard);
-          renderCatalog(dashboard);
+          renderIncidentRl('rl', dashboard.live_incident_view || null, '');
+          renderIncidentCatalog('catalog', dashboard.live_incident_view || null, '');
           renderTimeline(dashboard);
           renderHistoryRows(dashboard.history || []);
 
@@ -449,6 +629,7 @@
 
           const historyTrace = await fetchTrace(selectedHistoryIncident);
           renderHistoryTrace(historyTrace, selectedHistoryIncident);
+          renderHistoryIncidentDashboard(dashboard, selectedHistoryIncident);
 
           const activeIncident = dashboard.agent_state && dashboard.agent_state.active_incident;
           const activeLabel = activeIncident ? `active incident ${activeIncident.incident_id}` : 'no active incident';
@@ -482,6 +663,7 @@
         }
         if (latestDashboard) {
           renderHistoryRows(latestDashboard.history || []);
+          renderHistoryIncidentDashboard(latestDashboard, selectedHistoryIncident);
         }
       });
 

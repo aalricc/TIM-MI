@@ -254,6 +254,9 @@ def test_agent_dashboard_schema_and_rl_summary(tmp_path: Path) -> None:
     assert payload["latest_why"]["failure_type"] == "schema_invalid"
     assert payload["latest_how"]["executed_candidate"] == "primary"
     assert len(payload["latest_how"]["alternatives"]) == 2
+    live_view = payload["live_incident_view"]
+    assert isinstance(live_view, dict)
+    assert live_view["incident_id"] == payload["agent_state"]["active_incident"]["incident_id"]
 
 
 def test_agent_llm_trace_redacts_secrets(tmp_path: Path) -> None:
@@ -314,6 +317,7 @@ def test_live_dashboard_clears_after_recovery_and_history_retains_record(tmp_pat
     assert payload["timeline"] == []
     assert payload["latest_why"] is None
     assert payload["latest_how"] is None
+    assert payload["live_incident_view"] is None
 
     history = payload["history"]
     assert isinstance(history, list)
@@ -343,3 +347,102 @@ def test_history_trace_lookup_by_incident_id(tmp_path: Path) -> None:
         trace = trace_response.json()["trace"]
         assert isinstance(trace, dict)
         assert trace["incident_id"] == incident_id
+
+
+def test_incident_views_limit_cards_to_six(tmp_path: Path) -> None:
+    client, events = _build_client(tmp_path)
+    incident_id = "inc-limit-1"
+
+    with client:
+        for idx in range(8):
+            asyncio.run(events.publish("incident.started", {"incident_id": incident_id}))
+            asyncio.run(
+                events.publish(
+                    "dynamic_tool.executed",
+                    {
+                        "incident_id": incident_id,
+                        "tool_name": f"tool-{idx}",
+                        "action_key": f"action-{idx}",
+                        "action": {"operation": "run_sql"},
+                    },
+                )
+            )
+            asyncio.run(
+                events.publish(
+                    "verification.result",
+                    {"incident_id": incident_id, "healthy": idx % 2 == 0},
+                )
+            )
+        response = client.get("/agent/dashboard")
+
+    assert response.status_code == 200
+    payload = response.json()
+    incident_view = payload["incident_views"][incident_id]
+    assert len(incident_view["rl_summary"]["actions"]) == 6
+    assert len(incident_view["tool_catalog"]) == 6
+    assert all(row["incident_id"] == incident_id for row in incident_view["rl_summary"]["actions"])
+    assert all(row["incident_id"] == incident_id for row in incident_view["tool_catalog"])
+
+
+def test_history_incident_view_is_scoped_per_incident(tmp_path: Path) -> None:
+    client, events = _build_client(tmp_path)
+    alpha_id = "inc-history-alpha"
+    beta_id = "inc-history-beta"
+
+    with client:
+        for incident_id, action_key in ((alpha_id, "alpha-action"), (beta_id, "beta-action")):
+            asyncio.run(events.publish("incident.started", {"incident_id": incident_id}))
+            asyncio.run(
+                events.publish(
+                    "dynamic_tool.executed",
+                    {
+                        "incident_id": incident_id,
+                        "tool_name": f"{incident_id}-tool",
+                        "action_key": action_key,
+                        "action": {"operation": "request_backup_restore"},
+                    },
+                )
+            )
+            asyncio.run(
+                events.publish(
+                    "verification.result",
+                    {"incident_id": incident_id, "healthy": True},
+                )
+            )
+            asyncio.run(
+                events.publish(
+                    "incident.recovered",
+                    {
+                        "incident_id": incident_id,
+                        "tool_name": f"{incident_id}-tool",
+                        "attempts": 1,
+                    },
+                )
+            )
+
+        response = client.get("/agent/dashboard")
+
+    assert response.status_code == 200
+    payload = response.json()
+    history_ids = {row["incident_id"] for row in payload["history"]}
+    assert alpha_id in history_ids
+    assert beta_id in history_ids
+
+    alpha_view = payload["incident_views"][alpha_id]
+    beta_view = payload["incident_views"][beta_id]
+    assert {row["action"] for row in alpha_view["rl_summary"]["actions"]} == {"alpha-action"}
+    assert {row["action"] for row in beta_view["rl_summary"]["actions"]} == {"beta-action"}
+    assert {row["action"] for row in alpha_view["tool_catalog"]} == {"alpha-action"}
+    assert {row["action"] for row in beta_view["tool_catalog"]} == {"beta-action"}
+
+    alpha_detail = payload["history_incident_views"][alpha_id]
+    beta_detail = payload["history_incident_views"][beta_id]
+    assert alpha_detail["agent_state"]["active_incident"]["incident_id"] == alpha_id
+    assert beta_detail["agent_state"]["active_incident"]["incident_id"] == beta_id
+    assert "latest_why" in alpha_detail
+    assert "latest_how" in beta_detail
+    assert all(
+        isinstance(row.get("payload"), dict)
+        and row["payload"].get("incident_id") == alpha_id
+        for row in alpha_detail["timeline"]
+    )
