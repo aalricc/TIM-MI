@@ -223,5 +223,66 @@
     ],
     "required": false,
     "note": "realistic long query"
+  },
+  {
+    "query": "wal file keeps growing and is never truncated",
+    "query_raw": "sqlite recovery | symptom grounding | wal file keeps growing and is never truncated | log_tail=2026-10-21T11:08:33Z request_id=4cf863fa-6e61-4f2f-b5d0-57dc56c26ab1 /srv/prod/db/main.sqlite",
+    "query_normalized": "wal file keeps growing and is never truncated",
+    "expected_sources": [
+      "Write-Ahead Logging"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "how does a reader block a WAL checkpoint",
+    "query_raw": "sqlite recovery | symptom grounding | how does a reader block a WAL checkpoint | latest_tool_error=run_sql failed at 2026-10-21T11:09:47Z request_id=15cbf95e-c609-4f09-a096-4540d80d437a",
+    "query_normalized": "how does a reader block a WAL checkpoint",
+    "expected_sources": [
+      "Write-Ahead Logging",
+      "Checkpoint a database"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "what is the wal-index shared memory file format",
+    "query_raw": "sqlite recovery | symptom grounding | what is the wal-index shared memory file format | log_tail=2026-10-21T11:11:02Z request_id=0fa46d69-f0b4-4f86-9cb9-7362be8e3fef /srv/prod/db/main.sqlite",
+    "query_normalized": "what is the wal-index shared memory file format",
+    "expected_sources": [
+      "WAL-mode File Format"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "difference between SHARED RESERVED PENDING and EXCLUSIVE locks",
+    "query_raw": "sqlite recovery | symptom grounding | difference between SHARED RESERVED PENDING and EXCLUSIVE locks | integrity row says lock escalation observed while path /var/lib/app/data/app.db",
+    "query_normalized": "difference between SHARED RESERVED PENDING and EXCLUSIVE locks",
+    "expected_sources": [
+      "File Locking And Concurrency In SQLite Version 3"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "does deleting the journal file corrupt the database",
+    "query_raw": "sqlite repair guidance | dynamic recovery | does deleting the journal file corrupt the database | hypothesis=journal deleted during write | latest_tool_error=run_sql failed at 2026-10-21T11:12:58Z request_id=8d5e60ee-32de-4be4-b858-95ff4aee4ba8",
+    "query_normalized": "does deleting the journal file corrupt the database",
+    "expected_sources": [
+      "How To Corrupt An SQLite Database File"
+    ],
+    "required": false,
+    "note": "realistic long query"
+  },
+  {
+    "query": "use sqlite3_recover to salvage rows from a damaged database",
+    "query_raw": "sqlite repair guidance | dynamic recovery | use sqlite3_recover to salvage rows from a damaged database | latest_tool_error=run_sql failed at 2026-10-21T11:14:05Z request_id=6df67238-f48e-42fa-a74c-9e852883236b",
+    "query_normalized": "use sqlite3_recover to salvage rows from a damaged database",
+    "expected_sources": [
+      "Recovering Data From A Corrupt SQLite Database"
+    ],
+    "required": false,
+    "note": "realistic long query"
   }
 ]
