@@ -118,7 +118,12 @@ def evaluate_cases(
         rows = search_fn(case.query, safe_top_k)
         hits: list[RAGEvalHit] = []
         for row in rows[:safe_top_k]:
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            metadata_raw = row.get("metadata")
+            metadata: dict[str, Any]
+            if isinstance(metadata_raw, dict):
+                metadata = metadata_raw
+            else:
+                metadata = {}
             section = metadata.get("section") if isinstance(metadata.get("section"), str) else None
             chunk_index = metadata.get("chunk_index")
             if not isinstance(chunk_index, int):
@@ -232,7 +237,12 @@ def reciprocal_rank_fuse(
 
     for entries in result_lists:
         for rank, row in enumerate(entries[:safe_top_k], start=1):
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            metadata_raw = row.get("metadata")
+            metadata: dict[str, Any]
+            if isinstance(metadata_raw, dict):
+                metadata = metadata_raw
+            else:
+                metadata = {}
             chunk_index = metadata.get("chunk_index")
             if isinstance(chunk_index, float) and chunk_index.is_integer():
                 chunk_index = int(chunk_index)

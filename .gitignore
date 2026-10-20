@@ -16,6 +16,10 @@ state/policy_store.json
 state/events.jsonl
 !state/.gitkeep
 
+state/skills.md
+state/class_store.json.lock
+state/skills.md.lock
+
 target/app/app.log
 target/app/data/*.db
 !target/app/data/.gitkeep
@@ -31,6 +35,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+
+# RAG ingest
+knowledge_base/
 
 # macOS
 .DS_Store

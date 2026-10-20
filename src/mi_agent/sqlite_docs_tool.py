@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 
@@ -14,15 +15,7 @@ def search_sqlite_docs(
     if query.strip() == "":
         return []
 
-    try:
-        from pinecone import Pinecone  # type: ignore[import-not-found]
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Pinecone dependency is missing. Install optional dependency group 'rag'."
-        ) from exc
-
-    client = Pinecone(api_key=api_key)
-    index = client.Index(host=index_host)
+    index = _cached_index(api_key, index_host)
     result = index.search(
         namespace=namespace,
         query={"top_k": k, "inputs": {"text": query}},
@@ -39,8 +32,40 @@ def search_sqlite_docs(
                 "score": float(hit.get("_score")) if hit.get("_score") is not None else None,
                 "metadata": {
                     "section": fields.get("section"),
-                    "chunk_index": fields.get("chunk_index"),
+                    "chunk_index": _coerce_chunk_index(fields.get("chunk_index")),
                 },
             }
         )
     return output
+
+
+@lru_cache(maxsize=16)
+def _cached_index(api_key: str, index_host: str) -> Any:
+    try:
+        from pinecone import Pinecone  # type: ignore[import-untyped]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Pinecone dependency is missing. Install optional dependency group 'rag'."
+        ) from exc
+
+    client = Pinecone(api_key=api_key)
+    return client.Index(host=index_host)
+
+
+def _coerce_chunk_index(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text == "":
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+        return int(number) if number.is_integer() else None
+    return None

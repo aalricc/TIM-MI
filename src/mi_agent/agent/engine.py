@@ -978,10 +978,23 @@ class RecoveryAgent:
                 meta = consumed
 
         status = str(meta.get("status") or ("ok" if chunks else "empty"))
+        count_raw = meta.get("count")
+        count_value: int
+        if isinstance(count_raw, int):
+            count_value = count_raw
+        elif isinstance(count_raw, float) and count_raw.is_integer():
+            count_value = int(count_raw)
+        elif isinstance(count_raw, str):
+            try:
+                count_value = int(count_raw)
+            except ValueError:
+                count_value = len(chunks)
+        else:
+            count_value = len(chunks)
         status_payload: dict[str, Any] = {
             "status": status,
             "query_used": str(meta.get("query_used") or query)[:1200],
-            "count": int(meta.get("count") if meta.get("count") is not None else len(chunks)),
+            "count": count_value,
         }
         if isinstance(meta.get("reason"), str):
             status_payload["reason"] = meta["reason"]
