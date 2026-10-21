@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -183,6 +185,11 @@ def _build_client(
     verifier_healthy: bool = False,
     monitor_health_sequence: list[bool] | None = None,
 ) -> tuple[TestClient, EventLog]:
+    if "pinecone" not in sys.modules:
+        pinecone_stub = types.ModuleType("pinecone")
+        pinecone_stub.__version__ = "test"
+        sys.modules["pinecone"] = pinecone_stub
+
     events = EventLog(tmp_path / "events.jsonl")
     llm = APIFakeLLM()
     tools = APIFakeTools(
@@ -259,6 +266,61 @@ def test_agent_dashboard_schema_and_rl_summary(tmp_path: Path) -> None:
     assert live_view["incident_id"] == payload["agent_state"]["active_incident"]["incident_id"]
 
 
+def test_agent_dashboard_timeline_prefers_workflow_step_events(tmp_path: Path) -> None:
+    client, _ = _build_client(tmp_path)
+    with client:
+        response = client.get("/agent/dashboard")
+
+    assert response.status_code == 200
+    payload = response.json()
+    timeline = payload["timeline"]
+    assert isinstance(timeline, list)
+    assert timeline
+    assert all(row.get("event_type") == "workflow.step" for row in timeline)
+
+    step_rows = [row.get("payload") for row in timeline if isinstance(row.get("payload"), dict)]
+    step_names = {str(row.get("step")) for row in step_rows}
+    assert "class_memory.lookup" in step_names
+    assert "jev.requested" in step_names
+    assert "jev.result" in step_names
+
+
+def test_agent_dashboard_timeline_includes_post_success_persist_steps(tmp_path: Path) -> None:
+    client, _ = _build_client(
+        tmp_path,
+        execution_ok=True,
+        verifier_healthy=True,
+        monitor_health_sequence=[False, False],
+    )
+    with client:
+        response = client.get("/agent/dashboard")
+
+    assert response.status_code == 200
+    timeline = response.json()["timeline"]
+    step_rows = [row.get("payload") for row in timeline if isinstance(row.get("payload"), dict)]
+    step_names = {str(row.get("step")) for row in step_rows}
+    assert "persist.tool_catalog" in step_names
+    assert "persist.policy_store" in step_names
+    assert "persist.skills" in step_names
+    assert "persist.class_memory" in step_names
+    assert "post_recovery.ping" in step_names
+
+
+def test_startup_emits_rag_summary_event(tmp_path: Path) -> None:
+    client, events = _build_client(tmp_path)
+    with client:
+        response = client.get("/agent/dashboard")
+
+    assert response.status_code == 200
+    rag_events = [item for item in events.events if item.event_type == "rag.startup"]
+    assert len(rag_events) == 1
+    payload = rag_events[0].payload
+    assert payload["enabled"] is True
+    assert payload["namespace"] == "sqlite-docs"
+    assert payload["top_k"] == 5
+    assert isinstance(payload.get("pinecone_version"), str)
+
+
 def test_agent_llm_trace_redacts_secrets(tmp_path: Path) -> None:
     client, _ = _build_client(tmp_path)
     with client:
@@ -305,7 +367,7 @@ def test_live_dashboard_clears_after_recovery_and_history_retains_record(tmp_pat
         tmp_path,
         execution_ok=True,
         verifier_healthy=True,
-        monitor_health_sequence=[False],
+        monitor_health_sequence=[False, True],
     )
     with client:
         response = client.get("/agent/dashboard")
@@ -332,7 +394,7 @@ def test_history_trace_lookup_by_incident_id(tmp_path: Path) -> None:
         tmp_path,
         execution_ok=True,
         verifier_healthy=True,
-        monitor_health_sequence=[False],
+        monitor_health_sequence=[False, True],
     )
     with client:
         dashboard_response = client.get("/agent/dashboard")

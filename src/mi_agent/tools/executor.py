@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import sqlite3
 from collections.abc import Awaitable, Callable
@@ -34,6 +35,7 @@ class ToolExecutor:
         request_backup_restore_hook: RestoreHook | None = None,
         restart_service_hook: RestartHook | None = None,
     ) -> None:
+        self._logger = logging.getLogger(__name__)
         self._settings = settings
         self._paths = PathGuard(settings)
         self._request_backup_restore_hook = request_backup_restore_hook
@@ -43,6 +45,7 @@ class ToolExecutor:
         self._catalog: dict[str, dict[str, Any]] = self._load_catalog()
         self._session_tools: dict[str, dict[str, DynamicToolSpec]] = {}
         self._seen_log_fingerprints: set[str] = set()
+        self._last_rag_meta: dict[str, Any] = {}
 
     @property
     def catalog(self) -> dict[str, dict[str, Any]]:
@@ -65,7 +68,7 @@ class ToolExecutor:
             "new_log_errors": new_log_errors,
         }
         return MonitorStatus(
-            healthy=health_ok and not new_log_errors,
+            healthy=health_ok,
             status_code=int(health.get("status_code", 0) or 0),
             detail=detail,
             payload=payload,
@@ -98,21 +101,71 @@ class ToolExecutor:
         }
 
     async def retrieve_rag_chunks(self, query: str, *, k: int) -> list[RAGChunk]:
+        query_used = str(query)[:1200]
+
         if not self._settings.rag_enabled:
+            self._last_rag_meta = {
+                "status": "skipped",
+                "reason": "rag_disabled",
+                "query_used": query_used,
+                "count": 0,
+            }
+            self._logger.warning("RAG retrieval skipped: rag disabled")
             return []
+
         api_key = self._settings.pinecone_api_key
         host = self._settings.pinecone_index_host
         if api_key is None or host is None:
+            self._last_rag_meta = {
+                "status": "skipped",
+                "reason": "missing_config",
+                "query_used": query_used,
+                "count": 0,
+            }
+            self._logger.warning("RAG retrieval skipped: missing Pinecone configuration")
             return []
-        rows = await self._run_in_thread(
-            search_sqlite_docs,
-            query,
-            k,
-            api_key=api_key,
-            index_host=host,
-            namespace=self._settings.pinecone_namespace,
-        )
-        return [RAGChunk.model_validate(row) for row in rows]
+
+        try:
+            rows = await self._run_in_thread(
+                search_sqlite_docs,
+                query,
+                k,
+                api_key=api_key,
+                index_host=host,
+                namespace=self._settings.pinecone_namespace,
+            )
+            chunks = [RAGChunk.model_validate(row) for row in rows]
+        except Exception as exc:
+            self._last_rag_meta = {
+                "status": "error",
+                "reason": "search_failed",
+                "query_used": query_used,
+                "count": 0,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+            self._logger.warning(
+                "RAG retrieval failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return []
+
+        status = "ok" if chunks else "empty"
+        self._last_rag_meta = {
+            "status": status,
+            "reason": "search_ok",
+            "query_used": query_used,
+            "count": len(chunks),
+        }
+        if status == "empty":
+            self._logger.warning("RAG retrieval returned no hits")
+        return chunks
+
+    def consume_last_rag_meta(self) -> dict[str, Any]:
+        payload = dict(self._last_rag_meta)
+        self._last_rag_meta = {}
+        return payload
 
     def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
         namespace = self._session_tools.setdefault(incident_id, {})

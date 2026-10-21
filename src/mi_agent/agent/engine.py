@@ -96,6 +96,32 @@ class RecoveryAgent:
         self._llm_trace_order: list[str] = []
         self._max_llm_trace_incidents = 120
 
+    @staticmethod
+    def _path_mode_for_source(source: str) -> str:
+        if source == "class_memory":
+            return "fast_path"
+        return "full_loop"
+
+    async def _publish_workflow_step(
+        self,
+        *,
+        incident_id: str,
+        attempt: int,
+        step: str,
+        path_mode: str,
+        status: str = "ok",
+        **extra: Any,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "incident_id": incident_id,
+            "attempt": attempt,
+            "path_mode": path_mode,
+            "step": step,
+            "status": status,
+        }
+        payload.update(extra)
+        await self._events.publish("workflow.step", payload)
+
     @property
     def snapshot(self) -> AgentSnapshot:
         return AgentSnapshot(
@@ -170,6 +196,14 @@ class RecoveryAgent:
                 "incident.started",
                 {"incident_id": self._incident.incident_id},
             )
+            await self._publish_workflow_step(
+                incident_id=self._incident.incident_id,
+                attempt=1,
+                path_mode="monitor",
+                step="monitor.unhealthy_detected",
+                status="detected",
+                detail=monitor.detail,
+            )
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.UNHEALTHY_DETECTED)
 
         await self._attempt_recovery(self._incident, retry_from_step5=False)
@@ -180,22 +214,48 @@ class RecoveryAgent:
         *,
         retry_from_step5: bool,
     ) -> None:
+        attempt = incident.attempts + 1
         diagnostics = incident.latest_diagnostics
         if retry_from_step5 and incident.diagnosis is not None and diagnostics:
             diagnosis = incident.diagnosis
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode="full_loop",
+                step="context.reused",
+                status="ok",
+                from_step=5,
+            )
         else:
             diagnostics = await self._tools.collect_diagnostics()
             incident.latest_diagnostics = diagnostics
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode="full_loop",
+                step="diagnostics.collected",
+                status="ok",
+            )
             symptom_query = self._build_symptom_query(diagnostics)
             incident.rag_symptom_chunks = await self._retrieve_rag_chunks_for_incident(
                 incident,
                 phase="symptom",
                 query=symptom_query,
+                attempt=attempt,
+                path_mode="full_loop",
             )
 
             diagnosis = await self._llm.diagnose_why(
                 evidence=diagnostics,
                 rag_chunks=incident.rag_symptom_chunks,
+            )
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode="full_loop",
+                step="llm.why",
+                status="ok",
+                failure_type=diagnosis.failure_type,
             )
             incident.diagnosis = diagnosis
             self._record_diagnosis_trace(
@@ -213,6 +273,7 @@ class RecoveryAgent:
 
         class_match: ClassMatch | None = None
         fast_path_decision: FastPathDecision | None = None
+        full_loop_reason = "class_memory_disabled"
         if self._classmem_enabled and self._class_memory is not None:
             signature = self._class_memory.build_signature(
                 diagnostics=diagnostics,
@@ -240,6 +301,26 @@ class RecoveryAgent:
                     "new_class": class_match.created_new,
                 },
             )
+            full_loop_reason = str(fast_path_decision.gate_reason or "fast_path_not_eligible")
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode="class_memory",
+                step="class_memory.lookup",
+                status="ok",
+                class_id=class_match.class_id,
+                fast_path_eligible=fast_path_decision.eligible,
+                gate_reason=fast_path_decision.gate_reason,
+            )
+        else:
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode="class_memory",
+                step="class_memory.lookup",
+                status="disabled",
+                reason="class_memory_disabled",
+            )
 
         if (
             self._classmem_enabled
@@ -248,6 +329,15 @@ class RecoveryAgent:
             and fast_path_decision.eligible
             and fast_path_decision.candidate is not None
         ):
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode="fast_path",
+                step="path.selected",
+                status="ok",
+                reason="fast_path_eligible",
+                class_id=class_match.class_id if class_match is not None else None,
+            )
             fast_path_context: dict[str, Any] = {
                 "class_id": class_match.class_id if class_match is not None else None,
                 "action_key": fast_path_decision.action_key,
@@ -274,6 +364,7 @@ class RecoveryAgent:
                 diagnosis=diagnosis,
                 how=fast_how,
                 source="class_memory",
+                attempt=attempt,
                 count_unusable_failure=False,
                 class_match=class_match,
                 fast_path_context=fast_path_context,
@@ -286,16 +377,29 @@ class RecoveryAgent:
                     executed_candidate=executed_candidate,
                     jev_decision=jev_decision,
                     source="class_memory",
+                    attempt=attempt,
                     class_match=class_match,
                     selected_action_key=fast_path_decision.action_key,
                 )
                 return
+            full_loop_reason = "fast_path_unusable_fallback"
+
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode="full_loop",
+            step="path.selected",
+            status="ok",
+            reason=full_loop_reason,
+        )
 
         repair_query = self._build_repair_query(incident)
         incident.rag_repair_chunks = await self._retrieve_rag_chunks_for_incident(
             incident,
             phase="repair",
             query=repair_query,
+            attempt=attempt,
+            path_mode="full_loop",
         )
         incident.rag_repair_chunks.extend(self._load_skills_chunks())
 
@@ -307,12 +411,21 @@ class RecoveryAgent:
             state_fingerprint=incident.state_fingerprint,
         )
         how = self._normalize_how_proposal(raw_how)
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode="full_loop",
+            step="llm.how",
+            status="ok",
+            candidate_count=len([how.primary, *how.alternatives]),
+        )
 
         selected_how, executed_candidate, jev_decision = await self._select_candidate_with_jev(
             incident=incident,
             diagnosis=diagnosis,
             how=how,
             source="full_loop",
+            attempt=attempt,
             class_match=class_match,
         )
         if selected_how is None:
@@ -325,6 +438,7 @@ class RecoveryAgent:
             executed_candidate=executed_candidate,
             jev_decision=jev_decision,
             source="full_loop",
+            attempt=attempt,
             class_match=class_match,
             selected_action_key=None,
         )
@@ -338,12 +452,23 @@ class RecoveryAgent:
         executed_candidate: str,
         jev_decision: dict[str, Any] | None,
         source: str,
+        attempt: int,
         class_match: ClassMatch | None,
         selected_action_key: str | None,
     ) -> None:
         started = time.perf_counter()
         action_key = selected_action_key or canonical_action_key(selected_how)
+        path_mode = self._path_mode_for_source(source)
         tool_name = self._tools.register_temporary_dynamic_tool(incident.incident_id, selected_how)
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="dynamic_tool.registered",
+            status="ok",
+            tool_name=tool_name,
+            operation=selected_how.operation,
+        )
         self._record_how_trace(
             incident_id=incident.incident_id,
             proposal=how,
@@ -378,6 +503,16 @@ class RecoveryAgent:
         )
 
         action_result = await self._tools.execute_dynamic_tool(incident.incident_id, tool_name)
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="dynamic_tool.executed",
+            status="ok" if bool(action_result.get("ok", False)) else "error",
+            tool_name=tool_name,
+            operation=selected_how.operation,
+            error=action_result.get("error"),
+        )
         executed_payload: dict[str, Any] = {
             "incident_id": incident.incident_id,
             "tool_name": tool_name,
@@ -396,6 +531,14 @@ class RecoveryAgent:
         )
 
         verification = await self._verifier.verify()
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="verification.result",
+            status="ok" if verification.healthy else "failed",
+            failure_type=verification.failure_type,
+        )
         verification_payload: dict[str, Any] = {
             "incident_id": incident.incident_id,
             **verification.model_dump(),
@@ -427,19 +570,29 @@ class RecoveryAgent:
         incident.prior_attempts.append(feedback)
 
         latency_ms = (time.perf_counter() - started) * 1000.0
-        if self._classmem_enabled and self._class_memory is not None and class_match is not None:
-            self._class_memory.record_outcome(
-                match=class_match,
-                spec=selected_how,
-                latency_ms=latency_ms,
-                success=verification.healthy,
-                source=source,
-            )
 
         if verification.healthy:
             self._tools.persist_dynamic_tool(incident.incident_id, tool_name)
             self._tools.discard_incident_tools(incident.incident_id, keep=tool_name)
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="persist.tool_catalog",
+                status="ok",
+                tool_name=tool_name,
+            )
+
             self._update_policy(tool_name, reward=1.0)
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="persist.policy_store",
+                status="ok",
+                action_key=tool_name,
+            )
+
             if (
                 self._classmem_enabled
                 and self._class_memory is not None
@@ -452,33 +605,137 @@ class RecoveryAgent:
                         class_id=class_match.class_id,
                         section_body=section,
                     )
+                    await self._publish_workflow_step(
+                        incident_id=incident.incident_id,
+                        attempt=attempt,
+                        path_mode=path_mode,
+                        step="persist.skills",
+                        status="ok",
+                        class_id=class_match.class_id,
+                    )
+                else:
+                    await self._publish_workflow_step(
+                        incident_id=incident.incident_id,
+                        attempt=attempt,
+                        path_mode=path_mode,
+                        step="persist.skills",
+                        status="skipped",
+                        reason="empty_class_memory_section",
+                        class_id=class_match.class_id,
+                    )
             else:
                 self._append_skill_entry(
                     incident=incident,
                     tool_name=tool_name,
                     operation=selected_how.operation,
                 )
-            self._workflow_state = transition(
-                self._workflow_state,
-                WorkflowEvent.RECOVERY_SUCCEEDED,
-            )
-            recovered_payload: dict[str, Any] = {
-                "incident_id": incident.incident_id,
-                "tool_name": tool_name,
-                "attempts": incident.attempts,
-            }
-            if self._classmem_enabled:
-                recovered_payload.update(
-                    {
-                        "latency_ms": latency_ms,
-                        "source": source,
-                        "action_key": action_key,
-                        "class_id": class_match.class_id if class_match is not None else None,
-                    }
+                await self._publish_workflow_step(
+                    incident_id=incident.incident_id,
+                    attempt=attempt,
+                    path_mode=path_mode,
+                    step="persist.skills",
+                    status="ok",
                 )
-            await self._events.publish(
-                "incident.recovered",
-                recovered_payload,
+
+            if (
+                self._classmem_enabled
+                and self._class_memory is not None
+                and class_match is not None
+            ):
+                self._class_memory.record_outcome(
+                    match=class_match,
+                    spec=selected_how,
+                    latency_ms=latency_ms,
+                    success=True,
+                    source=source,
+                )
+                await self._publish_workflow_step(
+                    incident_id=incident.incident_id,
+                    attempt=attempt,
+                    path_mode=path_mode,
+                    step="persist.class_memory",
+                    status="ok",
+                    class_id=class_match.class_id,
+                )
+            else:
+                reason = "class_memory_disabled"
+                if self._classmem_enabled and class_match is None:
+                    reason = "class_match_unavailable"
+                await self._publish_workflow_step(
+                    incident_id=incident.incident_id,
+                    attempt=attempt,
+                    path_mode=path_mode,
+                    step="persist.class_memory",
+                    status="skipped",
+                    reason=reason,
+                )
+
+            post_recovery_monitor = await self._tools.monitor_health()
+            self._last_monitor = post_recovery_monitor
+            await self._events.publish("monitor.health", post_recovery_monitor.model_dump())
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="post_recovery.ping",
+                status="healthy" if post_recovery_monitor.healthy else "unhealthy",
+                detail=post_recovery_monitor.detail,
+                status_code=post_recovery_monitor.status_code,
+            )
+
+            if post_recovery_monitor.healthy:
+                self._workflow_state = transition(
+                    self._workflow_state,
+                    WorkflowEvent.RECOVERY_SUCCEEDED,
+                )
+                recovered_payload: dict[str, Any] = {
+                    "incident_id": incident.incident_id,
+                    "tool_name": tool_name,
+                    "attempts": incident.attempts,
+                }
+                if self._classmem_enabled:
+                    recovered_payload.update(
+                        {
+                            "latency_ms": latency_ms,
+                            "source": source,
+                            "action_key": action_key,
+                            "class_id": class_match.class_id if class_match is not None else None,
+                        }
+                    )
+                await self._events.publish(
+                    "incident.recovered",
+                    recovered_payload,
+                )
+                await self._publish_workflow_step(
+                    incident_id=incident.incident_id,
+                    attempt=attempt,
+                    path_mode=path_mode,
+                    step="attempt.result",
+                    status="recovered",
+                    tool_name=tool_name,
+                )
+                await self._events.publish(
+                    "incident.closed",
+                    {
+                        "incident_id": incident.incident_id,
+                        "attempts": incident.attempts,
+                    },
+                )
+                self._incident = None
+                return
+
+            incident.last_tool_error = "post_recovery_ping_unhealthy"
+            if self._classmem_enabled:
+                incident.failed_action_keys.add(action_key)
+            self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_FAILED)
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="attempt.result",
+                status="retry",
+                tool_name=tool_name,
+                reason=incident.last_tool_error,
             )
             return
 
@@ -487,6 +744,14 @@ class RecoveryAgent:
         )
         if self._classmem_enabled:
             incident.failed_action_keys.add(action_key)
+        if self._classmem_enabled and self._class_memory is not None and class_match is not None:
+            self._class_memory.record_outcome(
+                match=class_match,
+                spec=selected_how,
+                latency_ms=latency_ms,
+                success=False,
+                source=source,
+            )
         self._tools.discard_incident_tools(incident.incident_id)
         self._update_policy(tool_name, reward=-1.0)
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_FAILED)
@@ -509,6 +774,15 @@ class RecoveryAgent:
             "incident.recovery_failed",
             failed_payload,
         )
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="attempt.result",
+            status="failed",
+            tool_name=tool_name,
+            reason=incident.last_tool_error,
+        )
 
     async def _select_candidate_with_jev(
         self,
@@ -517,10 +791,12 @@ class RecoveryAgent:
         diagnosis: Any,
         how: HowProposal,
         source: str,
+        attempt: int,
         count_unusable_failure: bool = True,
         class_match: ClassMatch | None = None,
         fast_path_context: dict[str, Any] | None = None,
     ) -> tuple[DynamicToolSpec | None, str, dict[str, Any] | None]:
+        path_mode = self._path_mode_for_source(source)
         candidates = [how.primary, *how.alternatives]
         if self._classmem_enabled and self._classmem_dedupe_enabled:
             candidates = dedupe_candidates_by_action_key(candidates)
@@ -539,12 +815,14 @@ class RecoveryAgent:
                             "usable": False,
                             "reason": "all_candidates_previously_failed",
                         },
+                        attempt=attempt,
                         class_match=class_match,
                         source=source,
                     )
                 elif source == "class_memory":
                     await self._publish_fast_path_skipped(
                         incident=incident,
+                        attempt=attempt,
                         reason="all_candidates_previously_failed",
                         decision_payload={
                             "usable": False,
@@ -557,20 +835,40 @@ class RecoveryAgent:
                     )
                 return None, "none", {"usable": False, "reason": "all_candidates_previously_failed"}
         candidate_rows = [candidate.model_dump() for candidate in candidates]
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="jev.requested",
+            status="started",
+            source=source,
+            candidate_count=len(candidate_rows),
+        )
 
         if self._jev is None:
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="jev.result",
+                status="unusable",
+                source=source,
+                reason="jev_not_configured",
+            )
             if count_unusable_failure:
                 await self._handle_unusable_decision(
                     incident=incident,
                     reason="jev_not_configured",
                     candidate_rows=candidate_rows,
                     decision_payload={"usable": False, "reason": "jev_not_configured"},
+                    attempt=attempt,
                     class_match=class_match,
                     source=source,
                 )
             elif source == "class_memory":
                 await self._publish_fast_path_skipped(
                     incident=incident,
+                    attempt=attempt,
                     reason="jev_not_configured",
                     decision_payload={"usable": False, "reason": "jev_not_configured"},
                     candidate_rows=candidate_rows,
@@ -622,6 +920,17 @@ class RecoveryAgent:
                     candidates=candidate_rows,
                 )
         decision_payload = self._decision_payload(decision)
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="jev.result",
+            status="usable" if decision.usable else "unusable",
+            source=source,
+            reason=decision.reason,
+            selected_candidate=decision.selected_candidate_name,
+            selected_operation=decision.selected_candidate_operation,
+        )
         if not decision.usable:
             if count_unusable_failure:
                 await self._handle_unusable_decision(
@@ -629,6 +938,7 @@ class RecoveryAgent:
                     reason=decision.reason or "jev_decision_unusable",
                     candidate_rows=candidate_rows,
                     decision_payload=decision_payload,
+                    attempt=attempt,
                     class_match=class_match,
                     source=source,
                 )
@@ -644,6 +954,7 @@ class RecoveryAgent:
 
                 await self._publish_fast_path_skipped(
                     incident=incident,
+                    attempt=attempt,
                     reason=decision.reason or "jev_decision_unusable",
                     decision_payload=decision_payload,
                     candidate_rows=candidate_rows,
@@ -661,12 +972,14 @@ class RecoveryAgent:
                     reason="selected_candidate_not_found",
                     candidate_rows=candidate_rows,
                     decision_payload=decision_payload,
+                    attempt=attempt,
                     class_match=class_match,
                     source=source,
                 )
             elif source == "class_memory":
                 await self._publish_fast_path_skipped(
                     incident=incident,
+                    attempt=attempt,
                     reason="selected_candidate_not_found",
                     decision_payload=decision_payload,
                     candidate_rows=candidate_rows,
@@ -715,9 +1028,11 @@ class RecoveryAgent:
         reason: str,
         candidate_rows: list[dict[str, Any]],
         decision_payload: dict[str, Any],
+        attempt: int,
         class_match: ClassMatch | None,
         source: str,
     ) -> None:
+        path_mode = self._path_mode_for_source(source)
         selected_spec = self._selected_candidate_from_decision(
             candidate_rows=candidate_rows,
             decision_payload=decision_payload,
@@ -754,7 +1069,8 @@ class RecoveryAgent:
                 },
             )
         )
-        self._update_policy("decision_unusable", reward=-1.0)
+        if not reason.startswith("jev_request_error"):
+            self._update_policy("decision_unusable", reward=-1.0)
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_FAILED)
         await self._events.publish(
             "decision.unusable",
@@ -776,11 +1092,21 @@ class RecoveryAgent:
                 "attempts": incident.attempts,
             },
         )
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="attempt.result",
+            status="failed",
+            tool_name="decision_unusable",
+            reason=reason,
+        )
 
     async def _publish_fast_path_skipped(
         self,
         *,
         incident: IncidentContext,
+        attempt: int,
         reason: str,
         decision_payload: dict[str, Any],
         candidate_rows: list[dict[str, Any]],
@@ -800,6 +1126,15 @@ class RecoveryAgent:
         if fast_path_context is not None:
             payload["class_memory_candidate"] = fast_path_context
         await self._events.publish("class_memory.fast_path_skipped", payload)
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode="fast_path",
+            step="path.fallback",
+            status="fallback",
+            reason=reason,
+            fallback_path="full_loop",
+        )
 
     @staticmethod
     def _selected_candidate_from_decision(
@@ -923,6 +1258,7 @@ class RecoveryAgent:
             "usable_probability": decision.usable_probability,
             "risk_score": decision.risk_score,
             "model_version": decision.model_version,
+            "shadow": decision.shadow,
         }
         if (
             isinstance(decision.reason, str)
@@ -963,6 +1299,8 @@ class RecoveryAgent:
         *,
         phase: str,
         query: str,
+        attempt: int | None = None,
+        path_mode: str = "full_loop",
     ) -> list[RAGChunk]:
         if not self._rag_query_rewrite:
             chunks = await self._tools.retrieve_rag_chunks(query, k=self._rag_top_k)
@@ -1050,6 +1388,18 @@ class RecoveryAgent:
                     "error": status_payload.get("error_message", "unknown rag error"),
                     **status_payload,
                 },
+            )
+
+        if attempt is not None:
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step=f"rag.{phase}",
+                status=status,
+                query=status_payload.get("query_used"),
+                count=status_payload.get("count"),
+                reason=status_payload.get("reason"),
             )
 
         return chunks

@@ -69,15 +69,32 @@ class FakeLLM:
 
 
 class FakeTools:
-    def __init__(self, *, unhealthy: bool, execution_ok: bool) -> None:
+    def __init__(
+        self,
+        *,
+        unhealthy: bool,
+        execution_ok: bool,
+        monitor_health_sequence: list[bool] | None = None,
+    ) -> None:
         self.unhealthy = unhealthy
         self.execution_ok = execution_ok
+        self._monitor_health_sequence = monitor_health_sequence
+        self._monitor_index = 0
         self.catalog: dict[str, dict[str, Any]] = {}
         self.executions = 0
         self.persisted: list[str] = []
         self.registered_tools: list[str] = []
 
     async def monitor_health(self) -> MonitorStatus:
+        if self._monitor_health_sequence is not None:
+            idx = min(self._monitor_index, len(self._monitor_health_sequence) - 1)
+            healthy = self._monitor_health_sequence[idx]
+            self._monitor_index += 1
+            return MonitorStatus(
+                healthy=healthy,
+                status_code=200 if healthy else 500,
+                detail="healthy" if healthy else "health_endpoint_unhealthy",
+            )
         return MonitorStatus(healthy=not self.unhealthy, status_code=500 if self.unhealthy else 200)
 
     async def collect_diagnostics(self) -> dict[str, Any]:
@@ -187,6 +204,125 @@ async def test_success_persists_winning_dynamic_tool(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_success_emits_ordered_persist_steps(tmp_path: Path) -> None:
+    tools = FakeTools(
+        unhealthy=True,
+        execution_ok=True,
+        monitor_health_sequence=[False, True],
+    )
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    step_rows = [
+        item.payload
+        for item in events.events
+        if item.event_type == "workflow.step" and isinstance(item.payload, dict)
+    ]
+    step_names = [str(row.get("step")) for row in step_rows]
+
+    expected_order = [
+        "persist.tool_catalog",
+        "persist.policy_store",
+        "persist.skills",
+        "persist.class_memory",
+        "post_recovery.ping",
+        "attempt.result",
+    ]
+    indices = [step_names.index(name) for name in expected_order]
+    assert indices == sorted(indices)
+    assert any(
+        row.get("step") == "post_recovery.ping" and row.get("status") == "healthy"
+        for row in step_rows
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_recovery_healthy_ping_closes_incident(tmp_path: Path) -> None:
+    tools = FakeTools(
+        unhealthy=True,
+        execution_ok=True,
+        monitor_health_sequence=[False, True, True],
+    )
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+    await agent.run_iteration()
+
+    assert tools.executions == 1
+    assert agent.snapshot.incident is None
+    closed_events = [item for item in events.events if item.event_type == "incident.closed"]
+    assert closed_events
+    attempt_rows = [
+        item.payload
+        for item in events.events
+        if item.event_type == "workflow.step"
+        and isinstance(item.payload, dict)
+        and item.payload.get("step") == "attempt.result"
+    ]
+    assert attempt_rows
+    assert all(int(row.get("attempt", 0)) == 1 for row in attempt_rows)
+
+
+@pytest.mark.asyncio
+async def test_post_recovery_unhealthy_ping_keeps_incident_open(tmp_path: Path) -> None:
+    tools = FakeTools(
+        unhealthy=True,
+        execution_ok=True,
+        monitor_health_sequence=[False, False, False],
+    )
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+    first_snapshot = agent.snapshot
+    assert first_snapshot.incident is not None
+    assert first_snapshot.incident.attempts == 1
+
+    await agent.run_iteration()
+    second_snapshot = agent.snapshot
+    assert second_snapshot.incident is not None
+    assert second_snapshot.incident.attempts == 2
+    assert tools.executions == 2
+
+    closed_events = [item for item in events.events if item.event_type == "incident.closed"]
+    assert not closed_events
+    assert any(
+        item.event_type == "workflow.step"
+        and isinstance(item.payload, dict)
+        and item.payload.get("step") == "post_recovery.ping"
+        and item.payload.get("status") == "unhealthy"
+        for item in events.events
+    )
+
+
+@pytest.mark.asyncio
 async def test_failures_continue_without_no_viable_cap(tmp_path: Path) -> None:
     tools = FakeTools(unhealthy=True, execution_ok=False)
     agent = RecoveryAgent(
@@ -258,6 +394,56 @@ async def test_alternatives_recorded_but_one_action_executed(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_workflow_step_events_are_explicit_and_ordered_for_full_loop(tmp_path: Path) -> None:
+    tools = FakeTools(unhealthy=True, execution_ok=False)
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    workflow_events = [item for item in events.events if item.event_type == "workflow.step"]
+    assert workflow_events
+
+    step_rows = [item.payload for item in workflow_events]
+    step_names = [str(row.get("step")) for row in step_rows]
+
+    assert "monitor.unhealthy_detected" in step_names
+    assert "diagnostics.collected" in step_names
+    assert "rag.symptom" in step_names
+    assert "llm.why" in step_names
+    assert "class_memory.lookup" in step_names
+    assert "path.selected" in step_names
+    assert "rag.repair" in step_names
+    assert "llm.how" in step_names
+    assert "jev.requested" in step_names
+    assert "jev.result" in step_names
+    assert "dynamic_tool.registered" in step_names
+    assert "dynamic_tool.executed" in step_names
+    assert "verification.result" in step_names
+    assert "attempt.result" in step_names
+
+    class_memory_rows = [row for row in step_rows if row.get("step") == "class_memory.lookup"]
+    assert class_memory_rows
+    assert class_memory_rows[-1].get("status") == "disabled"
+
+    path_rows = [row for row in step_rows if row.get("step") == "path.selected"]
+    assert path_rows
+    assert path_rows[-1].get("path_mode") == "full_loop"
+
+    jev_rows = [row for row in step_rows if str(row.get("step", "")).startswith("jev.")]
+    assert len(jev_rows) >= 2
+    assert all(int(row.get("attempt", 0)) == 1 for row in jev_rows)
+
+
+@pytest.mark.asyncio
 async def test_jev_unusable_skips_execution_and_loops_with_feedback(tmp_path: Path) -> None:
     tools = FakeTools(unhealthy=True, execution_ok=True)
     events = EventLog(tmp_path / "events.jsonl")
@@ -286,6 +472,43 @@ async def test_jev_unusable_skips_execution_and_loops_with_feedback(tmp_path: Pa
     decision_events = [item for item in events.events if item.event_type == "decision.unusable"]
     assert len(decision_events) == 1
     assert decision_events[0].payload["reason"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_jev_request_error_unusable_does_not_penalize_policy(tmp_path: Path) -> None:
+    tools = FakeTools(unhealthy=True, execution_ok=True)
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=EventLog(tmp_path / "events.jsonl"),
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=FakeJev(
+            JevDecision(
+                usable=False,
+                reason="jev_request_error:TypeSafeAPITimeoutError",
+            )
+        ),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    assert tools.executions == 0
+    assert "decision_unusable" not in agent.policy
+
+
+def test_decision_payload_includes_shadow() -> None:
+    payload = RecoveryAgent._decision_payload(
+        JevDecision(
+            usable=True,
+            selected_candidate_name="repair_sql",
+            selected_candidate_operation="run_sql",
+            shadow={"selected_option": "option_1"},
+        )
+    )
+
+    assert payload["shadow"] == {"selected_option": "option_1"}
 
 
 @pytest.mark.asyncio

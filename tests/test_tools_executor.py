@@ -92,8 +92,9 @@ async def test_monitor_health_detects_new_error_logs(settings) -> None:  # type:
     first = await tools.monitor_health()
     second = await tools.monitor_health()
 
-    assert first.healthy is False
+    assert first.healthy is True
     assert first.detail == "error_log_detected"
+    assert first.payload.get("new_log_errors")
     assert second.healthy is True
 
 
@@ -114,3 +115,34 @@ async def test_collect_diagnostics_prefers_log_endpoint(settings) -> None:  # ty
 
     diagnostics = await tools.collect_diagnostics()
     assert diagnostics["log_tail"] == ["line-a", "line-b"]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_rag_chunks_catches_errors(settings, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    tools = ToolExecutor(settings)
+
+    def _boom(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        del args, kwargs
+        raise RuntimeError("pinecone timeout")
+
+    monkeypatch.setattr("mi_agent.tools.executor.search_sqlite_docs", _boom)
+
+    rows = await tools.retrieve_rag_chunks("query", k=3)
+    meta = tools.consume_last_rag_meta()
+
+    assert rows == []
+    assert meta["status"] == "error"
+    assert meta["error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_retrieve_rag_chunks_marks_missing_config_skipped(settings) -> None:  # type: ignore[no-untyped-def]
+    tools = ToolExecutor(settings)
+    tools._settings.pinecone_api_key = None
+
+    rows = await tools.retrieve_rag_chunks("query", k=3)
+    meta = tools.consume_last_rag_meta()
+
+    assert rows == []
+    assert meta["status"] == "skipped"
+    assert meta["reason"] == "missing_config"
