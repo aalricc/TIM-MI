@@ -158,6 +158,70 @@ def test_choose_candidate_sync_single_candidate_does_not_require_choice() -> Non
     assert decision.selected_candidate_operation == "run_sql"
     assert decision.usable_probability == 0.91
     assert decision.risk_score == 0.12
+    assert decision.shadow.get("selected_option") == "option_1"
+    per_candidate = decision.shadow.get("per_candidate")
+    assert isinstance(per_candidate, dict)
+    assert "choice_margin" not in decision.shadow
+
+
+def test_choose_candidate_sync_collects_shadow_metrics_for_multiple_candidates() -> None:
+    pytest.importorskip("langchain_typesafe")
+    settings = MISettings(
+        OPENAI_API_KEY="test-openai",
+        JEV_API_KEY="test-jev",
+        PINECONE_API_KEY="test-pinecone",
+        PINECONE_INDEX_HOST="test-index",
+    )
+    client = JevDecisionClient(settings)
+    client._build_classifier = lambda _cls: object()  # type: ignore[method-assign]
+    client._invoke_classifier = lambda _classifier, _payload: {  # type: ignore[method-assign]
+        "choices": {
+            "select_action": {
+                "choice": "option_2",
+                "probabilities": {"option_1": 0.35, "option_2": 0.65},
+            }
+        },
+        "nouls": {
+            "can_execute_automatically": {"noul": 0.91},
+            "safe_option_1": {"noul": 0.25},
+            "destructive_option_1": {"noul": 0.12},
+            "safe_option_2": {"noul": 0.88},
+            "destructive_option_2": {"noul": 0.08},
+        },
+        "scores": {"risk_score": {"score": 0.12}},
+        "model_version": "jev-test",
+    }
+
+    decision = client._choose_candidate_sync(
+        state={"incident_id": "inc-1"},
+        candidates=[
+            {
+                "name": "restore",
+                "operation": "request_backup_restore",
+                "rationale": "recover db",
+                "params": {"backup_id": "latest"},
+            },
+            {
+                "name": "repair_sql",
+                "operation": "run_sql",
+                "rationale": "repair",
+                "params": {"db_path": "data/app.db", "sql": "PRAGMA integrity_check;"},
+            },
+        ],
+    )
+
+    assert decision.usable is True
+    assert decision.selected_candidate_name == "repair_sql"
+    assert decision.selected_candidate_operation == "run_sql"
+
+    per_candidate = decision.shadow.get("per_candidate")
+    assert isinstance(per_candidate, dict)
+    assert set(per_candidate.keys()) == {"option_1", "option_2"}
+    assert per_candidate["option_1"]["safe"] == 0.25
+    assert per_candidate["option_1"]["destructive"] == 0.12
+    assert per_candidate["option_2"]["safe"] == 0.88
+    assert per_candidate["option_2"]["destructive"] == 0.08
+    assert decision.shadow.get("choice_margin") == pytest.approx(0.3)
 
 
 def test_choose_candidate_sync_single_candidate_respects_threshold() -> None:
@@ -193,4 +257,9 @@ def test_choose_candidate_sync_single_candidate_respects_threshold() -> None:
     )
     assert decision.selected_candidate_name == "repair_sql"
     assert decision.selected_candidate_operation == "run_sql"
+    assert decision.shadow.get("selected_option") == "option_1"
+    per_candidate = decision.shadow.get("per_candidate")
+    assert isinstance(per_candidate, dict)
+    assert set(per_candidate.keys()) == {"option_1"}
+    assert "choice_margin" not in decision.shadow
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,11 +22,20 @@ class JevDecision:
     risk_score: float | None = None
     model_version: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    shadow: dict[str, Any] = field(default_factory=dict)
 
 
 class JevDecisionClient:
     def __init__(self, settings: MISettings) -> None:
         self._settings = settings
+
+    @staticmethod
+    def _candidate_label(candidate: dict[str, Any], limit: int = 300) -> str:
+        params = json.dumps(candidate.get("params", {}), default=str, sort_keys=True)
+        if len(params) > limit:
+            params = params[:limit] + "..."
+        return (f"{candidate.get('name', 'unknown')} "
+                f"(operation={candidate.get('operation', 'unknown')}, params={params})")
 
     async def choose_candidate(
         self,
@@ -135,6 +145,21 @@ class JevDecisionClient:
                 ),
                 criteria=criteria,
             )
+        for option, candidate in option_to_candidate.items():
+            label = self._candidate_label(candidate)
+            questions[f"safe_{option}"] = Noul(
+                instructions=(
+                    "Is this action safe to run automatically right now and likely to fix "
+                    f"the current failure: {label}? Answer no if it already failed in "
+                    "prior_attempts."
+                )
+            )
+            questions[f"destructive_{option}"] = Noul(
+                instructions=(
+                    "Would this action overwrite, delete, or irreversibly change data or "
+                    f"configuration: {label}?"
+                )
+            )
 
         classifier = self._build_classifier(TypeSafeClassifier)
         payload = {
@@ -146,6 +171,7 @@ class JevDecisionClient:
 
         raw = self._to_dict(response)
         model_version = self._extract_str(response, raw, "model_version")
+        choice_block: Any = None
 
         if len(option_to_candidate) >= 2:
             choice_block = self._question_block(
@@ -164,6 +190,36 @@ class JevDecisionClient:
                 )
         else:
             selected_option = next(iter(option_to_candidate))
+
+        try:
+            def _p(qid: str) -> float | None:
+                return self._extract_float(
+                    self._question_block(response, raw, section="nouls", question_id=qid),
+                    keys=("noul", "value", "probability"),
+                )
+
+            shadow: dict[str, Any] = {
+                "selected_option": selected_option,
+                "per_candidate": {},
+            }
+            for option, candidate in option_to_candidate.items():
+                shadow["per_candidate"][option] = {
+                    "operation": candidate.get("operation"),
+                    "safe": _p(f"safe_{option}"),
+                    "destructive": _p(f"destructive_{option}"),
+                }
+            if len(option_to_candidate) >= 2:
+                probs = (
+                    choice_block.get("probabilities")
+                    if isinstance(choice_block, dict)
+                    else getattr(choice_block, "probabilities", None)
+                )
+                if isinstance(probs, dict) and len(probs) >= 2:
+                    top = sorted((float(value) for value in probs.values()), reverse=True)
+                    shadow["choice_probabilities"] = probs
+                    shadow["choice_margin"] = top[0] - top[1]
+        except Exception:
+            shadow = {"error": "shadow_extraction_failed"}
 
         usability_block = self._question_block(
             response,
@@ -193,6 +249,7 @@ class JevDecisionClient:
                 usable_probability=usable_probability,
                 model_version=model_version,
                 raw=raw,
+                shadow=shadow,
             )
 
         score_block = self._question_block(
@@ -211,6 +268,7 @@ class JevDecisionClient:
             risk_score=risk_score,
             model_version=model_version,
             raw=raw,
+            shadow=shadow,
         )
 
     def _build_classifier(self, classifier_cls: type[Any]) -> Any:
