@@ -1,5 +1,25 @@
 # Rewrite Worklog
 
+## 2026-10-21 — RAG corpus/eval hardening, docs alignment, and JEV trace clarity
+
+**Problem.** RAG quality and observability needed stronger evaluation coverage, cleaner corpus preparation, stricter type/lint compliance for optional deps, and clearer docs/decision traces.
+**Approach.** Tuned RAG query rewrite defaults, expanded regression/schema eval cases, added a cleaned `sqlite-docs-v2` corpus pipeline plus evaluation docs/glossary, fixed strict mypy/lint issues around optional RAG imports and incident context typing, aligned architecture docs with README fast-path semantics, and added JEV shadow extraction in the decision client for better traceability.
+**Impact.** Better retrieval/eval confidence, cleaner CI/static-check posture, improved operational docs consistency, and richer JEV decision observability.
+
+**Commits included (2026-10-21).**
+- `025cd370` Tune RAG query rewrite defaults and eval coverage.
+- `9b503dfe` Add regression eval cases.
+- `4c181897` Fix strict mypy issues in RAG eval and engine.
+- `bf10e3af` Apply SIM108 cleanup in `rag_eval` metadata handling.
+- `3fa763cf` Fix mypy strict issues for optional RAG deps and incident fields.
+- `d8c007bd` Fix strict typing and lint for optional RAG imports.
+- `d17aa51b` Add 6 schema-related eval cases.
+- `26e27d91` Add cleaned corpus pipeline (`sqlite-docs-v2`), PDF/schema eval cases, and corpus evaluation doc.
+- `f589298c` + `0421e359` Ignore generated eval results.
+- `f6e1f322` Add error-message glossary source doc.
+- `14416a8c` Align architecture flow docs with README fast-path semantics.
+- `517355b5` Add JEV shadow extraction in decision client.
+
 ## 2026-10-20 — Fix class-memory fast-path JEV 422 for single-candidate decisions
 
 **Problem.** Fast path became eligible but still fell back to full loop because JEV returned `422 Unprocessable Entity` when only one candidate action was present (`A choice needs at least two options`).
