@@ -69,7 +69,7 @@ class MISettings(BaseSettings):
         validation_alias=AliasChoices("PINECONE_NAMESPACE", "MI_PINECONE_NAMESPACE"),
     )
 
-    classmem_enabled: bool = False
+    classmem_enabled: bool = True
     classmem_dedupe_enabled: bool = True
     classmem_fastpath_enabled: bool = True
     classmem_join_threshold: float = Field(default=0.82, ge=0.0, le=1.0)
@@ -93,4 +93,8 @@ class MISettings(BaseSettings):
             raise ValueError("MI_JEV_ENABLED must remain true")
         if self.jev_api_key is None or self.jev_api_key.strip() == "":
             raise ValueError("jev_enabled=true requires JEV_API_KEY")
+        if not self.classmem_enabled:
+            raise ValueError("MI_CLASSMEM_ENABLED must remain true")
+        if not self.classmem_fastpath_enabled:
+            raise ValueError("MI_CLASSMEM_FASTPATH_ENABLED must remain true")
         return self

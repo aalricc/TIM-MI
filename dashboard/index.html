@@ -440,7 +440,34 @@
           <ul>
             ${timeline.map((row) => {
               const ts = new Date((row.ts || 0) * 1000).toLocaleTimeString();
-              const incident = row.payload && row.payload.incident_id ? ` • ${row.payload.incident_id}` : '';
+              const payload = row && typeof row.payload === 'object' && row.payload ? row.payload : {};
+              if (row.event_type === 'workflow.step') {
+                const parts = [];
+                const attempt = payload.attempt;
+                if (typeof attempt === 'number') {
+                  parts.push(`attempt ${attempt}`);
+                }
+                const step = payload.step || 'unknown_step';
+                const status = payload.status || 'unknown';
+                const pathMode = payload.path_mode || 'n/a';
+                parts.push(`${step}`);
+                parts.push(`status=${status}`);
+                parts.push(`path=${pathMode}`);
+                if (payload.reason) {
+                  parts.push(`reason=${payload.reason}`);
+                }
+                if (payload.candidate_count !== undefined && payload.candidate_count !== null) {
+                  parts.push(`candidates=${payload.candidate_count}`);
+                }
+                if (payload.selected_candidate) {
+                  parts.push(`selected=${payload.selected_candidate}`);
+                }
+                if (payload.tool_name) {
+                  parts.push(`tool=${payload.tool_name}`);
+                }
+                return `<li><span class="mono">${esc(ts)}</span> ${esc(parts.join(' • '))}</li>`;
+              }
+              const incident = payload.incident_id ? ` • ${payload.incident_id}` : '';
               return `<li><span class="mono">${esc(ts)}</span> ${esc(row.event_type || 'event')}${esc(incident)}</li>`;
             }).join('')}
           </ul>

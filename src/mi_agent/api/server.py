@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,22 @@ def _is_healthy_monitor_event(event_row: dict[str, Any]) -> bool:
     if not isinstance(payload, dict):
         return False
     return bool(payload.get("healthy", False))
+
+
+def _workflow_step_timeline(
+    events: list[dict[str, Any]],
+    *,
+    incident_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, limit)
+    rows = [
+        row
+        for row in events
+        if str(row.get("event_type") or "") == "workflow.step"
+        and _event_incident_id(row) == incident_id
+    ]
+    return list(reversed(rows[-safe_limit:]))
 
 
 def _build_history(events: list[dict[str, Any]], *, limit: int = 50) -> list[dict[str, Any]]:
@@ -294,7 +311,13 @@ def _build_history_incident_views(
     views: dict[str, dict[str, Any]] = {}
     for incident_id, record in by_incident.items():
         timeline_rows = list(record.get("timeline_rows") or [])
-        timeline = list(reversed(timeline_rows[-safe_limit:]))
+        workflow_rows = [
+            row
+            for row in timeline_rows
+            if str(row.get("event_type") or "") == "workflow.step"
+        ]
+        timeline_source = workflow_rows if workflow_rows else timeline_rows
+        timeline = list(reversed(timeline_source[-safe_limit:]))
         views[incident_id] = {
             "incident_id": incident_id,
             "agent_state": {
@@ -322,6 +345,22 @@ def create_api(context: MIContext, agent: RecoveryAgent) -> FastAPI:
     @app.on_event("startup")
     async def _startup() -> None:
         nonlocal loop_task
+        rag_summary: dict[str, Any] = {
+            "enabled": context.settings.rag_enabled,
+            "namespace": context.settings.pinecone_namespace,
+            "top_k": context.settings.rag_top_k,
+        }
+        if context.settings.rag_enabled:
+            try:
+                pinecone = importlib.import_module("pinecone")
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "RAG is enabled but Pinecone dependency is missing. "
+                    "Install optional dependency group 'rag'."
+                ) from exc
+            rag_summary["pinecone_version"] = getattr(pinecone, "__version__", "unknown")
+        await context.events.publish("rag.startup", rag_summary)
+
         preflight = await context.llm.preflight()
         await context.events.publish("llm.preflight", preflight)
         if loop_task is None or loop_task.done():
@@ -384,18 +423,26 @@ def create_api(context: MIContext, agent: RecoveryAgent) -> FastAPI:
         if active_incident_id is None:
             timeline: list[dict[str, Any]] = []
         else:
-            timeline_rows = [
-                row
-                for row in all_events
-                if (
-                    (_event_incident_id(row) == active_incident_id)
-                    or (
-                        str(row.get("event_type") or "") == "monitor.health"
-                        and not _is_healthy_monitor_event(row)
+            workflow_timeline = _workflow_step_timeline(
+                all_events,
+                incident_id=active_incident_id,
+                limit=safe_limit,
+            )
+            if workflow_timeline:
+                timeline = workflow_timeline
+            else:
+                timeline_rows = [
+                    row
+                    for row in all_events
+                    if (
+                        (_event_incident_id(row) == active_incident_id)
+                        or (
+                            str(row.get("event_type") or "") == "monitor.health"
+                            and not _is_healthy_monitor_event(row)
+                        )
                     )
-                )
-            ]
-            timeline = list(reversed(timeline_rows[-safe_limit:]))
+                ]
+                timeline = list(reversed(timeline_rows[-safe_limit:]))
 
         history = _build_history(all_events, limit=50)
         incident_views = _build_incident_views(all_events, max_items=6)

@@ -19,6 +19,8 @@ def _clear_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "MI_RAG_QUERY_PREFIX",
         "MI_RAG_ENABLED",
         "MI_JEV_ENABLED",
+        "MI_CLASSMEM_ENABLED",
+        "MI_CLASSMEM_FASTPATH_ENABLED",
     ]:
         monkeypatch.delenv(key, raising=False)
 
@@ -70,6 +72,24 @@ def test_rag_and_jev_flags_are_mandatory() -> None:
             pinecone_index_host="pc-host",
         )
 
+    with pytest.raises(ValueError, match="MI_CLASSMEM_ENABLED"):
+        _settings(
+            openai_api_key="test-key",
+            jev_api_key="test-jev-key",
+            classmem_enabled=False,
+            pinecone_api_key="pc-key",
+            pinecone_index_host="pc-host",
+        )
+
+    with pytest.raises(ValueError, match="MI_CLASSMEM_FASTPATH_ENABLED"):
+        _settings(
+            openai_api_key="test-key",
+            jev_api_key="test-jev-key",
+            classmem_fastpath_enabled=False,
+            pinecone_api_key="pc-key",
+            pinecone_index_host="pc-host",
+        )
+
 
 def test_valid_rag_config_passes() -> None:
     settings = _settings(
@@ -80,6 +100,8 @@ def test_valid_rag_config_passes() -> None:
     )
     assert settings.rag_enabled is True
     assert settings.jev_enabled is True
+    assert settings.classmem_enabled is True
+    assert settings.classmem_fastpath_enabled is True
     assert settings.pinecone_namespace == "sqlite-docs"
 
 

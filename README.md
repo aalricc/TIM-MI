@@ -29,9 +29,10 @@ The runtime enforces a strict loop:
 - No hard cap on retries/no-viable loops.
 - Dynamic recovery actions are session-first; built-ins are diagnostics-first.
 - Class-memory fast path does not bypass JEV, security gate, or verifier.
+- Class-memory fast path is mandatory at runtime (cannot be disabled).
 - `request_backup_restore` remains available.
 - `restart_service` is optional fallback only.
-- Startup config gate requires OpenAI + JEV + Pinecone credentials.
+- Startup config gate requires OpenAI + JEV + Pinecone credentials and class-memory enabled.
 
 ## Target app surface
 
@@ -98,7 +99,7 @@ Jev decision layer (mandatory, used after candidate-set assembly to choose one a
 - `MI_JEV_BASE_URL=http://host.docker.internal:8017` (when running `mi-agent` in Docker)
 - `MI_JEV_BASE_URL=http://127.0.0.1:8017` (when running `mi-agent` on host)
 
-Class-memory / fast-path controls (optional, but required if you want warm incident reuse):
+Class-memory / fast-path controls (mandatory):
 
 - `MI_CLASSMEM_ENABLED=true`
 - `MI_CLASSMEM_FASTPATH_ENABLED=true`
@@ -141,6 +142,9 @@ Dashboard:
 - `http://localhost:8090/dashboard`
 - Polls every 1s (v1, HTTP polling).
 - Live tab shows only active-incident recovery signals (healthy heartbeat ping is hidden).
+- Timeline uses canonical workflow-step events, including class-memory lookup,
+  path mode (`fast_path` vs `full_loop`), RAG phases, WHY/HOW, JEV request/result,
+  dynamic tool execution, verification, and per-attempt outcome.
 - History tab stores completed recovery records and allows per-incident trace inspection.
 - Shows live workflow state, incident timeline, RL stats, tool catalog, WHY diagnosis,
   HOW proposals, and sanitized raw LLM traces.

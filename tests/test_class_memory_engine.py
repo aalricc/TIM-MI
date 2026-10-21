@@ -287,6 +287,30 @@ async def test_fast_path_failure_falls_back_and_excludes_failed_action(tmp_path:
     assert planning[0].payload.get("source") == "class_memory"
     assert planning[1].payload.get("source") == "full_loop"
 
+    workflow_steps = [item.payload for item in events.events if item.event_type == "workflow.step"]
+    fast_path_selected = [
+        row
+        for row in workflow_steps
+        if row.get("step") == "path.selected" and row.get("path_mode") == "fast_path"
+    ]
+    assert fast_path_selected
+
+    full_loop_selected = [
+        row
+        for row in workflow_steps
+        if row.get("step") == "path.selected" and row.get("path_mode") == "full_loop"
+    ]
+    assert full_loop_selected
+
+    assert any(
+        row.get("step") == "jev.requested" and row.get("path_mode") == "fast_path"
+        for row in workflow_steps
+    )
+    assert any(
+        row.get("step") == "jev.requested" and row.get("path_mode") == "full_loop"
+        for row in workflow_steps
+    )
+
 
 @pytest.mark.asyncio
 async def test_gate_rejected_candidate_is_never_executed(tmp_path: Path) -> None:
