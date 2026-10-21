@@ -8,7 +8,7 @@ Built-ins are for diagnosis. Recovery strategy is selected and executed as a per
 
 - `agent/engine.py`
   - Owns incident lifecycle.
-  - Enforces monitor → diagnostics → RAG(why) → LLM(why) → RAG(how) → LLM(how candidates) → JEV select → dynamic execute → verify loop.
+  - Enforces monitor → diagnostics → RAG(why) → LLM(why) → class-memory lookup (if enabled) → conditional RAG(how)+LLM(how) when fast path is not eligible → JEV select → dynamic execute → verify loop.
 - `tools/executor.py`
   - Runs diagnostic probes.
   - Registers temporary dynamic tools.
@@ -18,7 +18,10 @@ Built-ins are for diagnosis. Recovery strategy is selected and executed as a per
   - OpenAI connectivity is mandatory at runtime.
   - Startup preflight must succeed before monitor loop begins.
   - `diagnose_why`: structured diagnosis (`failure_type`, hypotheses, evidence).
-- `propose_how`: candidate list (`primary` + `alternatives[]`) for JEV selection.
+  - `propose_how`: candidate list (`primary` + `alternatives[]`) for JEV selection.
+- `class_memory.py`
+  - Optional class-memory matching + fast-path eligibility scoring.
+  - Fast path never bypasses JEV, security gate, or verifier.
 - `decision/client.py`
   - Uses JEV (System One) to select one candidate action or return unusable decision.
 - `verifier/verifier.py`
@@ -32,8 +35,8 @@ Built-ins are for diagnosis. Recovery strategy is selected and executed as a per
 2. Collect diagnostic evidence (`health_deep`, `db_status`, log tail, integrity check).
 3. Build symptom query and retrieve SQLite recovery chunks (RAG #1).
 4. Diagnose WHY.
-5. Build repair query from diagnosis + latest failure and retrieve focused chunks (RAG #2).
-6. Plan HOW as candidate actions (`primary` + `alternatives[]`).
+5. Class-memory lookup (if enabled): score incident class + fast-path eligibility.
+6. If fast-path is not eligible, build repair query from diagnosis + latest failure and retrieve focused chunks (RAG #2), then plan HOW as candidate actions (`primary` + `alternatives[]`).
 7. JEV selects one candidate action.
 8. Register selected dynamic tool in session namespace.
 9. Security gate validates only security constraints.
