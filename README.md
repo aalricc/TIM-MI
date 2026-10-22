@@ -9,17 +9,19 @@ The runtime enforces a strict loop:
 3. Run RAG symptom grounding (`search_sqlite_docs`).
 4. LLM call #1: diagnose **WHY**.
 5. Class-memory lookup (if enabled): score incident class + fast-path eligibility.
-6. If fast-path is not eligible, run RAG repair guidance + LLM call #2 (**HOW** candidates).
-7. JEV (System One): evaluate candidate actions and choose one usable action.
-8. Register the selected dynamic tool for the active incident.
-9. Security-only safety gate (schema/path/sandbox checks).
-10. Execute exactly one dynamic action.
-11. Verify recovery independently.
-12. On failure, retain context and loop back to step 5 (no hard cap).
+6. If fast-path is not eligible, run RAG repair guidance.
+7. If fast-path is not eligible, run LLM call #2 (**HOW** candidates).
+8. JEV (System One): evaluate candidate actions and choose one usable action.
+9. Security-only safety gate (schema/path/sandbox checks before execution).
+10. Register the selected dynamic tool for the active incident.
+11. Execute exactly one dynamic action.
+12. Verify recovery independently.
 13. Persist only the winning dynamic tool to `state/tool_catalog.json`.
 14. Update RL policy rewards in `state/policy_store.json`.
 15. Append learned successful recovery skill to `state/skills.md`.
 16. Update class-memory store in `state/class_store.json` (if enabled).
+
+If verification fails, retain context and loop back to step 5 (no hard cap).
 
 ## Architecture Diagram
 ![MI Architecture Diagram](docs/images/tim_mi_architecture.png)

@@ -36,16 +36,19 @@ Built-ins are for diagnosis. Recovery strategy is selected and executed as a per
 3. Build symptom query and retrieve SQLite recovery chunks (RAG #1).
 4. Diagnose WHY.
 5. Class-memory lookup (if enabled): score incident class + fast-path eligibility.
-6. If fast-path is not eligible, build repair query from diagnosis + latest failure and retrieve focused chunks (RAG #2), then plan HOW as candidate actions (`primary` + `alternatives[]`).
-7. JEV selects one candidate action.
-8. Register selected dynamic tool in session namespace.
-9. Security gate validates only security constraints.
-10. Execute one dynamic action.
-11. Verify recovery.
-12. On failure, retain context and retry from step 5 without hard cap.
+6. If fast-path is not eligible, build repair query from diagnosis + latest failure and retrieve focused chunks (RAG #2).
+7. If fast-path is not eligible, plan HOW as candidate actions (`primary` + `alternatives[]`).
+8. JEV selects one candidate action.
+9. Security gate validates only security constraints before execution.
+10. Register selected dynamic tool in session namespace.
+11. Execute one dynamic action.
+12. Verify recovery.
 13. Persist only the final successful dynamic tool.
 14. Update RL policy reward ledger.
 15. Persist a learned recovery skill entry in `state/skills.md`.
+16. Update class-memory store (`state/class_store.json`) when enabled.
+
+If verification fails, retain context and retry from step 5 without hard cap.
 
 ## Safety model
 
@@ -58,6 +61,7 @@ Built-ins are for diagnosis. Recovery strategy is selected and executed as a per
 - `state/tool_catalog.json`: only successful final dynamic tools.
 - `state/policy_store.json`: cumulative reward stats per action key.
 - `state/skills.md`: learned skill playbooks from successful recoveries.
+- `state/class_store.json`: class-memory signatures and action statistics.
 - `state/events.jsonl`: runtime event stream.
 
 ## Dashboard surface
