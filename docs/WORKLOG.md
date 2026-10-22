@@ -1,5 +1,17 @@
 # Rewrite Worklog
 
+## 2026-10-22 — Post-recovery close behavior and workflow timeline stabilization
+
+**Problem.** Incidents were not consistently closed immediately after a healthy post-recovery ping, and dashboard/test visibility needed a more stable, workflow-native event stream across local/CI runs.
+**Approach.** Standardized post-recovery close behavior in the agent/runtime path, added canonical `workflow.step` publishing across attempts/path modes, made dashboard timeline rendering prefer workflow-step semantics, tightened startup/config gates (including mandatory class-memory flags), and stabilized API tests around timeline and startup-event variability.
+**Impact.** Recovery completion state is more deterministic, timeline observability is clearer (`fast_path` vs `full_loop`), startup/runtime guardrails are stricter, and CI-facing dashboard assertions are less flaky.
+
+**Commits included (2026-10-22).**
+- `9071ab4a` Fix recovery: close incident immediately after healthy post-recovery ping; add workflow-step tracing and related tests.
+- `2ab0f61a` Fix runtime/dashboard: post-recovery close semantics, monitor/timeline gating updates, class-memory startup enforcement, and expanded tests.
+- `62f4de8b` Stabilize API dashboard timeline/startup assertions for CI.
+- `d0ee245d` Update prior (2026-10-21) worklog entry.
+
 ## 2026-10-21 — RAG corpus/eval hardening, docs alignment, and JEV trace clarity
 
 **Problem.** RAG quality and observability needed stronger evaluation coverage, cleaner corpus preparation, stricter type/lint compliance for optional deps, and clearer docs/decision traces.
