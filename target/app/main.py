@@ -18,6 +18,10 @@ LOG_PATH = Path(os.getenv("TARGET_LOG_PATH", str(APP_ROOT / "app.log")))
 SCHEMA_PATH = Path(os.getenv("TARGET_SCHEMA_PATH", str(APP_ROOT / "schema.sql")))
 HEARTBEAT_INTERVAL_SECONDS = max(1.0, float(os.getenv("TARGET_HEARTBEAT_INTERVAL_SECONDS", "3")))
 
+# Columns the widget endpoints read; deep health fails if any is missing so a repair
+# that recreates the table with the wrong shape is not reported healthy.
+REQUIRED_WIDGET_COLUMNS = frozenset({"id", "name", "created_at"})
+
 _heartbeat_task: asyncio.Task[None] | None = None
 
 
@@ -72,23 +76,30 @@ def db_status() -> dict[str, object]:
             table_rows = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='widgets'"
             ).fetchall()
+            column_rows = conn.execute("PRAGMA table_info(widgets);").fetchall()
     except sqlite3.Error as exc:
         status.update({"ok": False, "error": sqlite_failure(exc), "details": repr(exc)})
         return status
 
     integrity = [str(row[0]) for row in integrity_rows]
+    integrity_ok = all(item.lower() == "ok" for item in integrity)
+    table_present = len(table_rows) > 0
+    missing_columns = sorted(REQUIRED_WIDGET_COLUMNS - {str(row[1]) for row in column_rows})
     status.update(
         {
-            "ok": all(item.lower() == "ok" for item in integrity) and len(table_rows) > 0,
+            "ok": integrity_ok and table_present and not missing_columns,
             "integrity": integrity,
-            "widgets_table_present": len(table_rows) > 0,
+            "widgets_table_present": table_present,
+            "widgets_columns_missing": missing_columns,
         }
     )
     if not bool(status["ok"]):
-        if not bool(status["widgets_table_present"]):
+        if not table_present:
             status["error"] = "schema_invalid"
-        elif not all(item.lower() == "ok" for item in integrity):
+        elif not integrity_ok:
             status["error"] = "db_corrupt"
+        else:
+            status["error"] = "schema_invalid"
     return status
 
 
