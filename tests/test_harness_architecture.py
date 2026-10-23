@@ -151,7 +151,11 @@ def test_mapping_doc_covers_every_readme_step() -> None:
     assert rows == list(range(1, 17))
 
 
-GUIDE_DOCS = [Path("AGENTS.md"), *sorted(Path("docs/harness/skills").glob("*.md"))]
+GUIDE_DOCS = [
+    Path("AGENTS.md"),
+    *sorted(Path("docs/harness/skills").glob("*.md")),
+    *sorted(Path("docs/runbooks").glob("*.md")),
+]
 _PATH_EXTENSIONS = (".py", ".md", ".json", ".jsonl", ".yml", ".yaml", ".toml", ".html", ".sh")
 
 
@@ -160,8 +164,8 @@ def _guide_references(text: str) -> list[tuple[str, str | None]]:
     refs: list[tuple[str, str | None]] = []
     for span in re.findall(r"`([^`\s]+)`", text):
         path, _, symbol = span.partition("::")
-        if "<" in path or path.startswith(("http", "state/")):
-            continue  # placeholders, URLs, runtime-written (gitignored) state
+        if "<" in path or path.startswith(("http", "state/", "/")):
+            continue  # placeholders, URLs, runtime state (gitignored), container/URL paths
         if "/" not in path and not path.endswith(_PATH_EXTENSIONS):
             continue
         if "*" in path and "/" not in path:
@@ -207,13 +211,14 @@ def test_agent_guides_reference_existing_code() -> None:
                 assert _resolve_symbol(path, symbol), f"{doc}: `{raw_path}::{symbol}` not found"
                 symbols += 1
     # Guard against the extractor silently matching nothing.
-    assert paths >= 40 and symbols >= 20, (paths, symbols)
+    assert paths >= 80 and symbols >= 25, (paths, symbols)
 
 
 def test_guide_reference_extractor_handles_forms() -> None:
     refs = _guide_references(
         "`src/a.py::B.c` `pyproject.toml` `harness/` `state/skills.md` `<name>.schema.v2.json` "
-        "`workflow.step` `make check` `*.schema.v1.json` `S101`"
+        "`workflow.step` `make check` `*.schema.v1.json` `S101` `/target/app/app.log` "
+        "`/health/deep` `MI_LLM_*`"
     )
     assert refs == [("src/a.py", "B.c"), ("pyproject.toml", None), ("harness/", None)]
     assert _resolve_symbol(EXECUTOR, "ToolExecutor.security_gate")

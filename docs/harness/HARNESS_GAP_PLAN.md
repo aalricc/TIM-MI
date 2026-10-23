@@ -135,11 +135,40 @@ Done when: `make check` green after each commit.
   gate only, and gate + pin updated with a stale LLM copy): each fails as intended.
 - Commit: `docs(harness): AGENTS.md and contributor skills`
 
-### CP5 — Runbooks and policy links
-- `docs/runbooks/`: one per fault (`drop_widgets_table`, `delete_db`, `corrupt_db`) with
-  symptoms, expected MI behaviour, approved recovery action, manual fallback, escalation;
-  plus `security-gate-rejection.md` and `stuck-incident.md` (no recovery after N attempts).
-- Link from `harness/guides/README.md` and `docs/THREAT_MODEL.md`.
+### CP5 — Runbooks and policy links — done
+- `docs/runbooks/`: `README.md` (deployment behaviour, common commands, manual takeover,
+  post-incident review), `drop_widgets_table.md`, `delete_db.md`, `corrupt_db.md`,
+  `security-gate-rejection.md`, `stuck-incident.md`. Symptoms and approved actions come
+  from `target/app/main.py`, the executor, and recorded incidents in `state/events.jsonl`.
+- `scripts/find_known_good_backup.py` (+ `tests/test_find_known_good_backup.py`): newest
+  backup at or before the last healthy heartbeat that passes integrity and has
+  `widgets(id, name, created_at)`; read-only; tested on Python 3.12 and via the documented
+  `python - < script` invocation. Manual SQL recreate and diagnostic snippets were run
+  against real and scenario data before being documented.
+- Runbooks are covered by `test_agent_guides_reference_existing_code`.
+- Linked from `harness/guides/README.md` and `docs/THREAT_MODEL.md` (three new residual
+  risks).
+
+### Found during CP5 (deployment problems; fix before CP7 campaigns)
+- **Verifier accepts wrong schemas.** `/health/deep` checks table presence and integrity
+  only. `state/tool_catalog.json` holds a winning tool creating `widgets(id, name)` and
+  class memory holds the same template (`f38576b9…`); both break `GET /widgets`. Fix:
+  make the target's deep health (or the verifier) check the columns `GET /widgets`
+  reads. Risky (verification).
+- **Manual repairs are credited to MI.** `RecoveryAgent.run_iteration` retries without a
+  monitor check. Fix: re-check health before a retry and close the incident without
+  persisting if already healthy. Risky (control flow); add a sensor case.
+- **Backups copy faulty state, no retention.** `target/backup/backup.sh` copies every 10 s
+  regardless of health; `inc-00e04644b7` restored a corrupt `latest` 17 times. Fix: copy
+  only when the database passes the same checks as `scripts/find_known_good_backup.py`;
+  add retention.
+- **Compose default contradicts the runtime.** `docker-compose.yml` defaults
+  `MI_CLASSMEM_ENABLED` to `false`; the runtime refuses to start unless `true`. Fix the
+  default.
+- **Bad learned state.** Remove the wrong-schema tool and templates that write invented
+  tables (`fault_injection_config`, `app_runtime_flags`). Hand edit of runtime state:
+  risky.
+- **`target/last_resort` is unused** (not in compose). Remove or wire in.
 - Commit: `docs(harness): fault runbooks and policy links`
 
 ## Phase 3 — Behaviour lane
