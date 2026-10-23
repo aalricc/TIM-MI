@@ -188,15 +188,23 @@ Decided 2026-10-23:
 
 ## Phase 3 — Behaviour lane
 
-### CP6 — Approved scenario fixtures + offline outcome checker
+### CP6 — Approved scenario fixtures + offline outcome checker — done
 - `harness/scenarios/*.json` (contract `scenario_fixture.schema.v1.json`): fault, repetitions,
   approved outcomes (allowed operations, max attempts, max TTR).
 - `python -m harness.events.slice --since/--until/--incident` to cut campaign windows from
-  `state/events.jsonl` (referenced by `BASELINE.md` § 4, not yet built).
+  `state/events.jsonl` (wired; referenced by `BASELINE.md` § 4).
 - `python -m harness.scenarios.check <fixture> <log-slice>` → `sensor_result`
   (`lane=behavior`), comparing `decision_trace`/KPIs against approved outcomes.
 - Tests run the checker against `tests/harness_scenarios.py` logs.
 - Commit: `feat(harness): scenario fixtures, event slicing, outcome checker`
+
+Done notes:
+- Added `scenario_fixture` v1 contract + fixture set under `harness/scenarios/` for
+  `drop_widgets_table`, `delete_db`, and `corrupt_db`.
+- Added offline CLIs: `python -m harness.events.slice` and
+  `python -m harness.scenarios.check`.
+- Added CP6 tests for pass/fail modes, slicer boundaries, and CLI exit codes.
+- Updated `docs/harness/BASELINE.md` § 4 to use the built slice/check commands.
 
 ### CP7 — Live E2E fault-injection runner (depends on D2)
 - `scripts/e2e_fault_campaign.py`: for each fixture, wait healthy → `POST /ops/fault/{fault}`

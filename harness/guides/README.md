@@ -39,8 +39,8 @@ Owner roles: **runtime maintainer** (owns `src/mi_agent`), **harness maintainer*
 | Guide | Type | Artifact | Owner | Status |
 | --- | --- | --- | --- | --- |
 | Functional spec of recovery behaviour | inferential | `README.md` loop + runtime guarantees | runtime maintainer | in place |
-| Fault-injection scenario fixtures | computational | target endpoints `POST /ops/fault/{delete_db,corrupt_db,drop_widgets_table}`; scripted scenarios in `tests/harness_scenarios.py` | harness maintainer | in place (scripted); gap (approved E2E fixture set) |
-| Approved recovery outcomes | computational | approved actions per fault in `docs/runbooks/`; machine-checkable scenario fixtures (CP6) and baseline outcomes in `docs/harness/BASELINE.md` still to build | operator | partial |
+| Fault-injection scenario fixtures | computational | target endpoints `POST /ops/fault/{delete_db,corrupt_db,drop_widgets_table}`; scripted scenarios in `tests/harness_scenarios.py`; approved fixture set in `harness/scenarios/*.json` | harness maintainer | in place |
+| Approved recovery outcomes | computational | approved actions per fault in `docs/runbooks/`; machine-checkable checks via `python -m harness.scenarios.check [--stage ci|continuous] <fixture> <log-slice>` | operator | in place |
 | Thresholds and their justification | inferential | `docs/THRESHOLD_JUSTIFICATION.md` | runtime maintainer | in place |
 | Learned skills fed to HOW | inferential | `state/skills.md` (runtime-written, contract `skill_entry`) | runtime (auto) / operator review | in place |
 | Runbooks and policy links | inferential | `docs/runbooks/` (one per fault, security-gate rejection, stuck incident; deployment behaviour and manual takeover in its README); `scripts/find_known_good_backup.py`; linked from `docs/THREAT_MODEL.md` | operator | in place |

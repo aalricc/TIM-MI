@@ -42,7 +42,18 @@ Each scenario is one fault injected against a healthy target via
 ## 4. Collection
 
 ```bash
-# slice the campaign window out of state/events.jsonl into the log slice file, then:
+python -m harness.events.slice \
+  --since "<iso-or-epoch>" \
+  --until "<iso-or-epoch>" \
+  state/events.jsonl > <log-slice>.jsonl
+
+python -m harness.scenarios.check --stage continuous harness/scenarios/drop_widgets_table.json <log-slice>.jsonl \
+  > <log-slice>.drop_widgets_table.check.json
+python -m harness.scenarios.check --stage continuous harness/scenarios/delete_db.json <log-slice>.jsonl \
+  > <log-slice>.delete_db.check.json
+python -m harness.scenarios.check --stage continuous harness/scenarios/corrupt_db.json <log-slice>.jsonl \
+  > <log-slice>.corrupt_db.check.json
+
 python -m harness.metrics.kpis <log-slice>.jsonl > <log-slice>.kpis.json
 python -m harness.sensors.runtime_invariants <log-slice>.jsonl > <log-slice>.sensors.json
 ```

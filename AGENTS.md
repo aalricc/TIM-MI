@@ -9,6 +9,9 @@ Working agreement for coding agents and contributors in this repository. Every p
 The harness gap plan is being built checkpoint by checkpoint. Before doing harness work,
 read `docs/harness/HANDOFF.md` (status, next checkpoint, working method, gotchas).
 
+Current checkpoint status (2026-10-23): CP0–CP6 complete, CP7 is next and requires
+decision D2 from `docs/harness/HARNESS_GAP_PLAN.md` before implementation.
+
 ## What this repo is
 
 MI is a diagnostics-first recovery agent for a SQLite-backed target service. The runtime

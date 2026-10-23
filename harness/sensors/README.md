@@ -68,6 +68,7 @@ slice the campaign window first (`docs/harness/BASELINE.md` § 4).
 | Sensor | Type | Stage | Implementation | Owner | Status |
 | --- | --- | --- | --- | --- | --- |
 | Scripted recovery regression (full loop, unusable decisions, failure + unhealthy ping, fast path fail/fallback, cold start) | computational | pre_commit, ci | `tests/harness_scenarios.py` driven by `tests/test_harness_*.py`; `tests/test_agent_workflow.py`, `tests/test_class_memory_engine.py` | runtime maintainer | wired |
+| Approved outcome checker (fixture + log slice) | computational | ci, continuous | `python -m harness.scenarios.check [--stage ci|continuous] harness/scenarios/<fault>.json <log-slice>.jsonl`; uses `harness.events.slice`, `decision_trace`, KPIs, and invariant sensors | operator | wired (ci via tests); manual (continuous) |
 | E2E fault injection (inject → recover → verify via `/health/deep`) | computational | ci | Quick live recovery test in `README.md` (docker compose + live LLM/JEV/Pinecone) | operator | manual |
 | Live LLM integration | computational | ci (opt-in) | `pytest -m live` | runtime maintainer | manual |
 | Recovery KPIs (recovery rate, TTR, attempts, decision telemetry) | computational | continuous | `python -m harness.metrics.kpis state/events.jsonl` | operator | manual |

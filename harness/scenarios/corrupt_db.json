@@ -1,0 +1,15 @@
+{
+  "schema_version": "v1",
+  "scenario_id": "corrupt_db",
+  "fault": "corrupt_db",
+  "repetitions": 1,
+  "approved": {
+    "operations": [
+      "request_backup_restore",
+      "replace_file"
+    ],
+    "max_attempts": 3,
+    "max_ttr_seconds": 300
+  },
+  "source": "docs/runbooks/corrupt_db.md"
+}

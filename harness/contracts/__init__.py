@@ -14,6 +14,7 @@ CONTRACT_NAMES = (
     "problem_class",
     "class_action_stats",
     "skill_entry",
+    "scenario_fixture",
     "sensor_result",
     "decision_trace",
     "workflow_step",

@@ -11,6 +11,7 @@ derivations: `docs/harness/HARNESS_RUNTIME_MAPPING.md`.
 | `problem_class.schema.v1.json` | class in `state/class_store.json` | `classes.<class_id>` |
 | `class_action_stats.schema.v1.json` | class action | `classes.<class_id>.actions.<action_key>` |
 | `skill_entry.schema.v1.json` | skill in `state/skills.md` | class sections and legacy frontmatter blocks |
+| `scenario_fixture.schema.v1.json` | approved fault scenario fixture | `harness/scenarios/*.json` |
 | `sensor_result.schema.v1.json` | sensor run | harness sensors (never the runtime) |
 
 Validation:
