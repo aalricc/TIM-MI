@@ -85,12 +85,37 @@ Done when: `make check` green after each commit.
 - Flip: sensors "Basic security scan" → wired; governance pre-commit row → wired.
 - Commit: `chore(harness): pre-commit hook and ruff security rules`
 
-### CP3 — Dependency vulnerability scan (CI + scheduled drift)
-- CI job `pip-audit` against the installed `.[dev]` environment.
-- `.github/workflows/drift.yml`: weekly schedule running `pip-audit` + `ruff` security rules
-  on `main`, opening an issue on failure.
-- Done when: both workflows green on a branch push; a deliberately vulnerable pin fails locally.
+### CP3 — Dependency vulnerability scan (CI + scheduled drift) — done
+- Initial audit (Python 3.12, `.[dev,jev,rag]`) found 58 unique advisories (95 report rows)
+  in two packages held
+  back by caps: `pypdf` 5.9.0 (57; ships in the image via `rag`) and `pytest` 8.4.2
+  (CVE-2025-71176). Fixed by raising floors: `pypdf>=6.21.1,<7`, `pytest>=9.0.3,<10`,
+  and `pytest-asyncio>=1.3,<2` (first release supporting pytest 9; 1.0–1.2 require
+  pytest < 9). Verified: all checks on 3.12 (`.[dev,jev,rag]`) and 3.14 (`.[dev]`), the
+  exact new floors, and `pip-audit` clean.
+- `pypdf` 6 vs 5 on the 30-PDF corpus: identical text except whitespace on 82 of 254
+  pages, which shifts chunk boundaries (663 → 665 records). The local `.venv` already had
+  pypdf 6.21.0, whose extraction is byte-identical to 6.21.2, so the pin now matches what
+  local ingestion used. The running agent never calls pypdf.
+- CI job `audit`; `.github/workflows/drift.yml` (weekly, fresh resolution, `pip-audit` +
+  ruff `S`, one tracking issue); `make audit`; `pip-audit` in dev extras. Both
+  workflows pass `actionlint` + `shellcheck`; the issue step's create/comment branches
+  were exercised against a stub `gh`.
+- Done when: CI green on the branch push (`audit` job), and `drift.yml` succeeds on a
+  manual `workflow_dispatch` run once the workflow file is on the default branch (GitHub
+  only schedules or dispatches workflows that exist there).
 - Commit: `ci(harness): dependency vulnerability scan and weekly drift workflow`
+
+### Found during CP3 (pre-existing; schedule before CP7)
+- **`pydantic-settings` floor too low.** With `pydantic-settings==2.6.0` (the declared
+  floor) `tests/test_config.py` fails (`OPENAI_API_KEY` alias not populated). Raise the
+  floor to the first passing version and verify with exact-floor install. Runtime
+  dependency: normal review plus full checks.
+- **`mypy --strict src` fails when the `jev` extra is installed** (CI installs only
+  `.[dev]`, so it never sees this): unused `type: ignore` at
+  `src/mi_agent/decision/client.py:97` and an invariant `dict[str, str]` →
+  `dict[str, JsonValue]` argument at line 146. Fix, then run mypy in the `audit` job's
+  `.[dev,jev,rag]` environment too. Risky path (JEV integration): approval required.
 
 ## Phase 2 — Guides
 

@@ -31,6 +31,7 @@ Commands:
 make harness                                              # contract/mapping/sensor/KPI tests + mypy
 python -m harness.sensors.runtime_invariants state/events.jsonl   # exit 1 on violation
 python -m harness.metrics.kpis state/events.jsonl                 # KPI JSON
+make audit                                                        # pip-audit, dependency vulnerabilities
 ```
 
 Harness code imports nothing from `mi_agent` and writes no files.
