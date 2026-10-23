@@ -141,6 +141,21 @@ def test_validation_never_modifies_backups(stack: tuple[Path, Path]) -> None:
     assert after == before
 
 
+def test_check_mode_validates_a_single_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    good, corrupt, narrow = tmp_path / "good.db", tmp_path / "bad.db", tmp_path / "narrow.db"
+    _good_db(good)
+    _corrupt_db(corrupt)
+    _narrow_schema_db(narrow)
+
+    assert tool.main(["--check", str(good)]) == 0
+    assert tool.main(["--check", str(corrupt)]) == 1
+    assert tool.main(["--check", str(narrow)]) == 1
+    assert "widgets missing columns: ['created_at']" in capsys.readouterr().err
+    assert tool.main(["--check", str(tmp_path / "absent.db")]) == 1
+
+
 def test_runs_from_stdin_as_documented(stack: tuple[Path, Path]) -> None:
     # Runbooks pipe the script into the container: python - < scripts/find_known_good_backup.py
     log, backups = stack

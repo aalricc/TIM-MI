@@ -18,7 +18,8 @@ services:
       - ./target/app:/target/app
 
   backup-job:
-    image: alpine:3.20
+    # python image: the job validates each copy with scripts/find_known_good_backup.py.
+    image: python:3.12-slim
     container_name: mi-backup-job
     depends_on:
       - target-app
@@ -27,6 +28,7 @@ services:
       - ./target/app:/target/app:ro
       - backups_data:/target/backups
       - ./target/backup:/backup:ro
+      - ./scripts:/scripts:ro
 
   mi-agent:
     build:
@@ -73,7 +75,7 @@ services:
       PINECONE_API_KEY: ${PINECONE_API_KEY:?PINECONE_API_KEY is required}
       PINECONE_INDEX_HOST: ${PINECONE_INDEX_HOST:?PINECONE_INDEX_HOST is required}
       PINECONE_NAMESPACE: ${PINECONE_NAMESPACE:-sqlite-docs}
-      MI_CLASSMEM_ENABLED: ${MI_CLASSMEM_ENABLED:-false}
+      MI_CLASSMEM_ENABLED: ${MI_CLASSMEM_ENABLED:-true}
       MI_CLASSMEM_DEDUPE_ENABLED: ${MI_CLASSMEM_DEDUPE_ENABLED:-true}
       MI_CLASSMEM_FASTPATH_ENABLED: ${MI_CLASSMEM_FASTPATH_ENABLED:-true}
       MI_CLASSMEM_STORE_PATH: ${MI_CLASSMEM_STORE_PATH:-/state/class_store.json}

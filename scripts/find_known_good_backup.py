@@ -1,10 +1,10 @@
 """Print the newest backup that predates the incident and passes the target's health checks.
 
-The backup job copies app.db every few seconds whatever its state, so after corrupt_db or
-drop_widgets_table the newest backup usually contains the fault. This script picks the newest
-backup taken at or before the last healthy target heartbeat (or --before) and validates it
-read-only: PRAGMA integrity_check is ok, and the widgets table has the columns the target
-reads (id, name, created_at).
+The backup job keeps only copies that pass `--check`, but backups written before that change
+(or copied by other means) can contain a fault. This script picks the newest backup taken at
+or before the last healthy target heartbeat (or --before) and validates it read-only:
+PRAGMA integrity_check is ok, and the widgets table has the columns the target reads
+(id, name, created_at).
 
 Runs with the standard library only. Inside the compose stack (defaults match the mi-agent
 container mounts):
@@ -12,6 +12,9 @@ container mounts):
     docker compose exec -T mi-agent python - < scripts/find_known_good_backup.py
 
 Exit codes: 0 backup printed, 1 no valid backup, 2 no cutoff time found.
+
+`--check FILE` validates a single file instead (exit 0 valid, 1 invalid); the backup job
+uses it to keep only copies that pass these checks.
 """
 
 from __future__ import annotations
@@ -85,9 +88,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backups", type=Path, default=Path("/target/backups"))
     parser.add_argument(
         "--before",
-        help="cutoff as ISO-8601 time or epoch seconds (default: last healthy heartbeat)",
+        help="cutoff as ISO-8601 time with offset, or epoch seconds "
+        "(default: last healthy heartbeat)",
     )
+    parser.add_argument("--check", type=Path, help="validate one database file and exit")
     args = parser.parse_args(argv)
+
+    if args.check is not None:
+        reason = validate_backup(args.check)
+        if reason is not None:
+            print(f"{args.check}: {reason}", file=sys.stderr)
+            return 1
+        return 0
 
     if args.before is not None:
         text = str(args.before)
