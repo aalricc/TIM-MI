@@ -42,6 +42,7 @@ From `workflow.step:jev.result` (one per JEV arbitration, fast path and full loo
 | `unusable_reasons` | `jev.result.reason` counts for `unusable` |
 | `jev_request_error_rate` | unusable with reason prefix `jev_request_error` / `jev_results` (transport failures; these are not penalised in the RL policy) |
 | `selected` | count of `decision.selected` |
+| `gate_rejected` | count of `workflow.step:security.gate` with status `rejected` (JEV-selected actions the security gate blocked; each is a failed attempt) |
 | `selected_with_scores_rate` | share of `decision.selected` whose `decision.usable_probability` and `decision.risk_score` are both numbers |
 
 Pre-JEV rejections (`all_candidates_previously_failed`) emit no `jev.result` and are

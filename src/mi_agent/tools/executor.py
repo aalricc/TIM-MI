@@ -24,6 +24,12 @@ from mi_agent.tools.schemas import (
 from mi_agent.workflow.models import DynamicToolSpec, MonitorStatus, RAGChunk
 
 RestoreHook = Callable[[str], Awaitable[dict[str, Any]]]
+
+
+def base_tool_name(spec: DynamicToolSpec) -> str:
+    """Session tool name for a spec before de-duplication suffixes; also the RL policy key."""
+    return spec.name.strip().replace(" ", "_") or "dynamic_tool"
+
 RestartHook = Callable[[str], Awaitable[dict[str, Any]]]
 
 
@@ -169,9 +175,7 @@ class ToolExecutor:
 
     def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
         namespace = self._session_tools.setdefault(incident_id, {})
-        candidate_name = spec.name.strip().replace(" ", "_")
-        if candidate_name == "":
-            candidate_name = "dynamic_tool"
+        candidate_name = base_tool_name(spec)
 
         if candidate_name not in namespace:
             namespace[candidate_name] = spec

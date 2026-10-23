@@ -8,6 +8,7 @@ import pytest
 from mi_agent.agent.engine import RecoveryAgent
 from mi_agent.class_memory import ClassMatch, ClassMemory, ClassMemoryConfig, canonical_action_key
 from mi_agent.decision.client import JevDecision
+from mi_agent.errors import SecurityGateError
 from mi_agent.events import EventLog
 from mi_agent.workflow.models import (
     Diagnosis,
@@ -569,3 +570,61 @@ async def test_first_success_for_new_class_writes_skill_section(tmp_path: Path) 
     skills_text = (tmp_path / "skills.md").read_text(encoding="utf-8")
     assert f"<!-- class:{class_id} begin -->" in skills_text
     assert memory.render_skills_section(class_id=class_id) in skills_text
+
+
+class GateRejectingEngineTools(EngineTools):
+    def __init__(self, *, rejected_names: set[str], execute_ok_sequence: list[bool]) -> None:
+        super().__init__(execute_ok_sequence=execute_ok_sequence)
+        self.rejected_names = rejected_names
+
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        if spec.name in self.rejected_names:
+            raise SecurityGateError(f"path escapes app root: {spec.name}")
+
+
+@pytest.mark.asyncio
+async def test_gate_rejected_fast_path_is_penalised_and_falls_back(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    memory, match, class_spec = _class_memory(tmp_path, llm)
+    key = canonical_action_key(class_spec)
+    before = memory.action_stats(class_id=match.class_id, action_key=key)
+    assert before is not None
+    tools = GateRejectingEngineTools(rejected_names={class_spec.name}, execute_ok_sequence=[True])
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=tools,  # type: ignore[arg-type]
+        verifier=EngineVerifier(healthy_sequence=[True]),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=EngineJev(),  # type: ignore[arg-type]
+        class_memory=memory,
+        classmem_enabled=True,
+        classmem_dedupe_enabled=True,
+        classmem_fastpath_enabled=True,
+    )
+
+    await agent.run_iteration()  # fast path: gate rejects the learned template
+    await agent.run_iteration()  # retry: template excluded, full loop recovers
+
+    after = memory.action_stats(class_id=match.class_id, action_key=key)
+    assert after is not None
+    assert after["beta"] == before["beta"] + 1.0
+    assert after["attempts"] == before["attempts"] + 1
+    assert len(tools.executed_specs) == 1
+    assert tools.executed_specs[0].name != class_spec.name
+
+    steps = [
+        (item.payload["attempt"], item.payload["path_mode"], item.payload["step"],
+         item.payload["status"])
+        for item in events.events
+        if item.event_type == "workflow.step"
+    ]
+    assert (1, "fast_path", "security.gate", "rejected") in steps
+    assert (1, "fast_path", "persist.class_memory", "failure") in steps
+    assert (1, "fast_path", "attempt.result", "failed") in steps
+    # EngineTools.monitor_health is always unhealthy, so the post-recovery ping turns the
+    # verified recovery into a retry; verification + success persistence is what matters.
+    assert (2, "full_loop", "verification.result", "ok") in steps
+    assert (2, "full_loop", "persist.class_memory", "ok") in steps

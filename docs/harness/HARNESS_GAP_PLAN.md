@@ -17,7 +17,7 @@ Conventions for every checkpoint:
 
 | ID | Decision | Blocks | Options |
 | --- | --- | --- | --- |
-| D1 | What should a security-gate rejection do? Today it raises: `agent.loop_error`, no `attempt.result`, attempt counter unchanged, so JEV can pick the same rejected action again. | CP1 | (a) keep raising; (b) treat as a failed attempt: `attempt.result=failed`, add action key to `failed_action_keys`, `persist.policy_store=failure`; (c) as (b) but no policy penalty |
+| D1 | What should a security-gate rejection do? | CP1 | **Decided: (b)** — failed attempt with learning penalties (policy −1, class-memory failure), action excluded for the incident, retry from step 5. Rejected alternatives: (a) keep raising; (c) failed attempt without penalties |
 | D2 | Where does the live E2E fault-injection regression run? It needs OpenAI, Pinecone, and the local JEV server (`.local/jev`). | CP7 | (a) self-hosted runner with JEV; (b) nightly on a dev host via cron, results committed to `results/`; (c) manual `workflow_dispatch` only |
 | D3 | Where does continuous surveillance run? GitHub Actions cannot read a host's `state/`. | CP9 | (a) `harness-watch` service in `docker-compose.yml` sharing the `state` volume; (b) host cron; (c) Claude Code scheduled routine on the host |
 | D4 | Which model judges diagnosis/action quality, and who approves the rubric? | CP12 | OpenAI (same provider as runtime) or Claude; rubric owner |
@@ -58,13 +58,16 @@ Done when: `make check` green after each commit.
 
 ## Phase 1 — Runtime hardening and repo hygiene
 
-### CP1 — Gate-rejection semantics + benchmark repair (risky if D1 = b/c)
-- Implement D1 in `RecoveryAgent._execute_selected_action`.
-- If (b)/(c): `security_gate_before_registration` stays; extend
-  `failure_learning_only_on_failed_attempts` to accept attempts ending after
-  `security.gate=rejected`; add a runtime test and a harness scenario `gate_rejected_then_success`.
-- Fix the pre-existing break in `scripts/classmem_stage_benchmark.py`: `BenchTools` has no
-  `monitor_health` (broken since the post-recovery ping was added).
+### CP1 — Gate-rejection semantics + benchmark repair (risky; D1 = b approved) — done
+- `RecoveryAgent._handle_gate_rejection`: rejection → failed attempt with
+  `persist.policy_store` / `persist.class_memory` = `failure`, `incident.recovery_failed`,
+  `attempt.result` = `failed`; action excluded; reason fed to HOW. Policy key is the shared
+  `base_tool_name(spec)` (`mi_agent.tools.executor`). Non-gate exceptions still propagate.
+- Harness: `decision_trace` outcome `gate_rejected`; `security_gate_before_registration`
+  also requires a rejection to end the attempt `failed` with no action after it; KPI
+  `decision.gate_rejected`; scenario `gate_rejected_then_success`.
+- Fixed the pre-existing break in `scripts/classmem_stage_benchmark.py` (`BenchTools`
+  lacked `monitor_health` since the post-recovery ping was added).
 - Done when: `make check`; `PYTHONPATH=src python scripts/classmem_stage_benchmark.py --incidents 6` exits 0.
 - Commit: `fix(runtime): <D1 outcome> on security-gate rejection; repair classmem benchmark`
 

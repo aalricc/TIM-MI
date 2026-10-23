@@ -6,7 +6,7 @@ derivations: `docs/harness/HARNESS_RUNTIME_MAPPING.md`.
 | Contract | One record per | Built from |
 | --- | --- | --- |
 | `workflow_step.schema.v1.json` | `workflow.step` event | event payload + `ts` + `readme_step` |
-| `decision_trace.schema.v1.json` | JEV arbitration outcome (`selected` / `unusable` / `fast_path_fallback`) | `planning.how` + `decision.selected`, `decision.unusable`, `class_memory.fast_path_skipped` |
+| `decision_trace.schema.v1.json` | JEV arbitration outcome (`selected` / `gate_rejected` / `unusable` / `fast_path_fallback`) | `planning.how` + `decision.selected`, `security.gate=rejected` + `decision.selected`, `decision.unusable`, `class_memory.fast_path_skipped` |
 | `incident_signature.schema.v1.json` | incident | `incident.started`, `monitor.unhealthy_detected`, first `diagnosis.why`, first `class_memory.decision` |
 | `problem_class.schema.v1.json` | class in `state/class_store.json` | `classes.<class_id>` |
 | `class_action_stats.schema.v1.json` | class action | `classes.<class_id>.actions.<action_key>` |

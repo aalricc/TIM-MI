@@ -156,6 +156,35 @@ def decision_traces(events: Iterable[RuntimeEvent]) -> list[dict[str, Any]]:
                     source_by_incident[incident_id] = source
                 count = payload.get("candidate_count")
                 evaluated_by_incident[incident_id] = count if _is_int(count) else None
+            elif step == "security.gate" and payload.get("status") == "rejected":
+                selected = selected_by_incident.pop(incident_id, None)
+                decision = selected.get("decision") if selected is not None else None
+                traces.append(
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "ts": event.get("ts"),
+                        "incident_id": incident_id,
+                        "attempt": attempt_by_incident.get(incident_id),
+                        "source": source_by_incident.get(incident_id),
+                        "outcome": "gate_rejected",
+                        "reason": payload.get("error_type"),
+                        "candidates_origin": "not_emitted",
+                        "candidates": [],
+                        "evaluated_count": evaluated_by_incident.get(incident_id),
+                        "selected_candidate": {
+                            "name": selected.get("selected_candidate") if selected else None,
+                            "operation": payload.get("operation"),
+                            "executed_candidate": (
+                                selected.get("executed_candidate") if selected else None
+                            ),
+                            "executed_tool_name": None,
+                        },
+                        "decision": dict(decision) if isinstance(decision, Mapping) else decision,
+                        "action_key": None,
+                        "class_id": None,
+                        "source_event": "security.gate",
+                    }
+                )
             continue
 
         base: dict[str, Any] = {

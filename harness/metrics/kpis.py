@@ -46,6 +46,7 @@ def compute_kpis(events: Iterable[RuntimeEvent]) -> dict[str, Any]:
     attempt_outcomes: Counter[str] = Counter()
     jev_status: Counter[str] = Counter()
     unusable_reasons: Counter[str] = Counter()
+    gate_rejected = 0
     selected_total = 0
     selected_with_scores = 0
     winners_by_class: dict[str, set[str]] = {}
@@ -84,6 +85,8 @@ def compute_kpis(events: Iterable[RuntimeEvent]) -> dict[str, Any]:
             status = payload.get("status")
             if step == "attempt.result" and isinstance(status, str):
                 attempt_outcomes[status] += 1
+            elif step == "security.gate" and status == "rejected":
+                gate_rejected += 1
             elif step == "jev.result" and isinstance(status, str):
                 jev_status[status] += 1
                 if status == "unusable":
@@ -132,6 +135,7 @@ def compute_kpis(events: Iterable[RuntimeEvent]) -> dict[str, Any]:
             "unusable_reasons": dict(sorted(unusable_reasons.items())),
             "jev_request_error_rate": _ratio(request_errors, jev_total),
             "selected": selected_total,
+            "gate_rejected": gate_rejected,
             "selected_with_scores_rate": _ratio(selected_with_scores, selected_total),
         },
         "fast_path": {

@@ -113,6 +113,30 @@ async def test_gate_sensor_flags_rejected_gate(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_gate_sensor_flags_action_after_rejection(tmp_path: Path) -> None:
+    events = (await SCENARIOS["gate_rejected_then_success"](tmp_path)).events
+    rejected = _index(events, "security.gate", status="rejected")
+    registered = copy.deepcopy(events[_index(events, "dynamic_tool.registered")])
+    registered["payload"].update({"attempt": 1, "path_mode": "fast_path"})
+    events.insert(rejected + 1, registered)
+
+    result = _assert_fails(security_gate_before_registration, events)
+    details = {v["detail"] for v in result["violations"]}
+    assert "action ran after security.gate=rejected" in details
+
+
+@pytest.mark.asyncio
+async def test_gate_sensor_flags_rejection_without_failed_attempt(tmp_path: Path) -> None:
+    events = (await SCENARIOS["gate_rejected_then_success"](tmp_path)).events
+    del events[_index(events, "attempt.result", attempt=1)]
+
+    result = _assert_fails(security_gate_before_registration, events)
+    assert result["violations"][0]["detail"] == (
+        "security.gate=rejected without attempt.result=failed"
+    )
+
+
+@pytest.mark.asyncio
 async def test_failure_learning_sensor_flags_writes_on_recovered_attempt(
     tmp_path: Path,
 ) -> None:

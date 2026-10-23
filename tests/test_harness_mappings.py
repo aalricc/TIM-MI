@@ -106,6 +106,39 @@ async def test_decision_traces_record_fast_path_fallback_then_full_loop(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_decision_traces_record_gate_rejection(tmp_path: Path) -> None:
+    run = await SCENARIOS["gate_rejected_then_success"](tmp_path)
+
+    traces = decision_traces(run.events)
+
+    assert [(t["attempt"], t["source"], t["outcome"]) for t in traces] == [
+        (1, "class_memory", "gate_rejected"),
+        (2, "full_loop", "selected"),
+    ]
+    rejected = traces[0]
+    assert rejected["reason"] == "SecurityGateError"
+    assert rejected["decision"]["usable"] is True
+    assert rejected["selected_candidate"] == {
+        "name": "class_memory_recreate",
+        "operation": "run_sql",
+        "executed_candidate": "primary",
+        "executed_tool_name": None,
+    }
+    assert rejected["evaluated_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_gate_rejection_penalises_learned_template(tmp_path: Path) -> None:
+    run = await SCENARIOS["gate_rejected_then_success"](tmp_path)
+
+    stats = {row["action_name"]: row for row in class_action_stats(run.class_store)}
+
+    # Seeded with 8 successes; the gate rejection records one failure.
+    template = stats["class_memory_recreate"]
+    assert (template["successes"], template["failures"]) == (8, 1)
+
+
+@pytest.mark.asyncio
 async def test_fast_path_selection_trace_carries_class_context(tmp_path: Path) -> None:
     run = await SCENARIOS["fast_path_failure_then_full_loop"](tmp_path)
 

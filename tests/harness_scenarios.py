@@ -17,6 +17,7 @@ from harness.mappings.runtime import load_event_log
 from mi_agent.agent.engine import RecoveryAgent
 from mi_agent.class_memory import ClassMemory, ClassMemoryConfig
 from mi_agent.decision.client import JevDecision
+from mi_agent.errors import SecurityGateError
 from mi_agent.events import EventLog
 from mi_agent.workflow.models import (
     Diagnosis,
@@ -131,7 +132,9 @@ class ScriptedTools:
         monitor: list[bool],
         execute_ok: list[bool],
         rag_meta: list[dict[str, Any]] | None = None,
+        gate_rejects: set[str] | None = None,
     ) -> None:
+        self._gate_rejects = set(gate_rejects or ())
         self._monitor = list(monitor)
         self._execute_ok = list(execute_ok)
         self._rag_meta = list(rag_meta or [])
@@ -160,7 +163,8 @@ class ScriptedTools:
         return meta
 
     def security_gate(self, spec: DynamicToolSpec) -> None:
-        del spec
+        if spec.name in self._gate_rejects:
+            raise SecurityGateError(f"path escapes app root: {spec.name}")
 
     def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
         del incident_id
@@ -265,9 +269,12 @@ async def run_scenario(
     class_memory: bool = False,
     seed_successes: int = 0,
     rag_meta: list[dict[str, Any]] | None = None,
+    gate_rejects: set[str] | None = None,
 ) -> ScenarioRun:
     state_dir.mkdir(parents=True, exist_ok=True)
-    tools = ScriptedTools(monitor=monitor, execute_ok=execute_ok, rag_meta=rag_meta)
+    tools = ScriptedTools(
+        monitor=monitor, execute_ok=execute_ok, rag_meta=rag_meta, gate_rejects=gate_rejects
+    )
     memory = _class_memory(state_dir, seed_successes=seed_successes) if class_memory else None
     agent = RecoveryAgent(
         llm=ScriptedLLM(),  # type: ignore[arg-type]
@@ -383,6 +390,23 @@ async def class_memory_cold_start(root: Path) -> ScenarioRun:
     )
 
 
+async def gate_rejected_then_success(root: Path) -> ScenarioRun:
+    # The learned fast-path template fails the security gate; the retry excludes it and
+    # the full loop recovers.
+    return await run_scenario(
+        root / "gate_rejected_then_success",
+        name="gate_rejected_then_success",
+        iterations=2,
+        monitor=[False, True],
+        execute_ok=[True],
+        verify=[True],
+        jev=[select_first, select_first],
+        class_memory=True,
+        seed_successes=8,
+        gate_rejects={FAST_PATH_SPEC.name},
+    )
+
+
 SCENARIOS: dict[str, ScenarioFactory] = {
     "full_loop_success": full_loop_success,
     "unusable_decisions_then_success": unusable_decisions_then_success,
@@ -390,4 +414,5 @@ SCENARIOS: dict[str, ScenarioFactory] = {
     "fast_path_failure_then_full_loop": fast_path_failure_then_full_loop,
     "fast_path_rejected_falls_back": fast_path_rejected_falls_back,
     "class_memory_cold_start": class_memory_cold_start,
+    "gate_rejected_then_success": gate_rejected_then_success,
 }

@@ -17,8 +17,8 @@ Baseline vs post-change KPIs for the same scenario set and configuration as
 
 ## 2. Summary table
 
-Delta = post-change − baseline. For TTR, attempts, request-error rate, and winning actions
-per class, lower is better.
+Delta = post-change − baseline. For TTR, attempts, request-error rate, gate rejections,
+and winning actions per class, lower is better.
 
 | KPI | Field | Baseline | Post-change | Delta |
 | --- | --- | --- | --- | --- |
@@ -30,6 +30,7 @@ per class, lower is better.
 | JEV usable rate | `decision.usable_rate` | TBD | TBD | TBD |
 | JEV request-error rate | `decision.jev_request_error_rate` | TBD | TBD | TBD |
 | Selected with scores | `decision.selected_with_scores_rate` | TBD | TBD | TBD |
+| Security-gate rejections | `decision.gate_rejected` | TBD | TBD | TBD |
 | Fast-path recovery share | `fast_path.fast_path_recovery_share` | TBD | TBD | TBD |
 | Winning actions per class (max) | `winning_actions_per_class` | TBD | TBD | TBD |
 

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from mi_agent.class_memory import (
     ClassMatch,
     ClassMemory,
@@ -19,6 +21,7 @@ from mi_agent.class_memory import (
     dedupe_candidates_by_action_key,
 )
 from mi_agent.decision.client import JevDecision, JevDecisionClient
+from mi_agent.errors import SecurityGateError
 from mi_agent.events import EventLog
 from mi_agent.llm.client import LLMClient
 from mi_agent.observability import sanitize_payload
@@ -28,7 +31,7 @@ from mi_agent.rag_query import (
     cap_chunks_per_source,
     prepare_retrieval_query,
 )
-from mi_agent.tools.executor import ToolExecutor
+from mi_agent.tools.executor import ToolExecutor, base_tool_name
 from mi_agent.verifier.verifier import Verifier
 from mi_agent.workflow.models import (
     AttemptFeedback,
@@ -462,7 +465,7 @@ class RecoveryAgent:
         path_mode = self._path_mode_for_source(source)
         try:
             self._tools.security_gate(selected_how)
-        except Exception as exc:
+        except (SecurityGateError, ValidationError) as exc:
             await self._publish_workflow_step(
                 incident_id=incident.incident_id,
                 attempt=attempt,
@@ -473,7 +476,17 @@ class RecoveryAgent:
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
-            raise
+            await self._handle_gate_rejection(
+                incident=incident,
+                selected_how=selected_how,
+                error=exc,
+                source=source,
+                attempt=attempt,
+                class_match=class_match,
+                action_key=action_key,
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+            )
+            return
         await self._publish_workflow_step(
             incident_id=incident.incident_id,
             attempt=attempt,
@@ -839,6 +852,91 @@ class RecoveryAgent:
             step="attempt.result",
             status="failed",
             tool_name=tool_name,
+            reason=incident.last_tool_error,
+        )
+
+    async def _handle_gate_rejection(
+        self,
+        *,
+        incident: IncidentContext,
+        selected_how: DynamicToolSpec,
+        error: Exception,
+        source: str,
+        attempt: int,
+        class_match: ClassMatch | None,
+        action_key: str,
+        latency_ms: float,
+    ) -> None:
+        """A security-gate rejection is a failed attempt: nothing executes, the action is
+        excluded for this incident and penalised in learning state (the gate's verdict for
+        a spec is deterministic), and the loop retries from step 5."""
+        path_mode = self._path_mode_for_source(source)
+        policy_key = base_tool_name(selected_how)
+        incident.attempts += 1
+        incident.state_fingerprint = self._tools.state_fingerprint()
+        incident.last_tool_error = f"security_gate_rejected:{type(error).__name__}: {error}"
+        incident.prior_attempts.append(
+            AttemptFeedback(
+                tool_name=policy_key,
+                operation=selected_how.operation,
+                tool_error=incident.last_tool_error,
+                verifier_details={"security_gate": "rejected"},
+            )
+        )
+        if self._classmem_enabled:
+            incident.failed_action_keys.add(action_key)
+
+        self._update_policy(policy_key, reward=-1.0)
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="persist.policy_store",
+            status="failure",
+            action_key=policy_key,
+            reward=-1.0,
+        )
+        if self._classmem_enabled and self._class_memory is not None and class_match is not None:
+            self._class_memory.record_outcome(
+                match=class_match,
+                spec=selected_how,
+                latency_ms=latency_ms,
+                success=False,
+                source=source,
+            )
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="persist.class_memory",
+                status="failure",
+                class_id=class_match.class_id,
+            )
+
+        self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_FAILED)
+        failed_payload: dict[str, Any] = {
+            "incident_id": incident.incident_id,
+            "tool_name": policy_key,
+            "error": incident.last_tool_error,
+            "attempts": incident.attempts,
+        }
+        if self._classmem_enabled:
+            failed_payload.update(
+                {
+                    "latency_ms": latency_ms,
+                    "source": source,
+                    "action_key": action_key,
+                    "class_id": class_match.class_id if class_match is not None else None,
+                }
+            )
+        await self._events.publish("incident.recovery_failed", failed_payload)
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="attempt.result",
+            status="failed",
+            tool_name=policy_key,
             reason=incident.last_tool_error,
         )
 

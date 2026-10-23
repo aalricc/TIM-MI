@@ -10,6 +10,7 @@ from mi_agent.decision.client import JevDecision
 from mi_agent.errors import SecurityGateError
 from mi_agent.events import EventLog
 from mi_agent.rag_query import apply_query_prefix_and_cap
+from mi_agent.tools.executor import ToolExecutor, base_tool_name
 from mi_agent.workflow.models import (
     Diagnosis,
     DynamicToolSpec,
@@ -709,7 +710,7 @@ async def test_security_gate_step_runs_before_registration(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_security_gate_rejection_blocks_registration(tmp_path: Path) -> None:
+async def test_security_gate_rejection_is_a_failed_attempt(tmp_path: Path) -> None:
     tools = RejectingGateTools(unhealthy=True, execution_ok=True)
     events = EventLog(tmp_path / "events.jsonl")
     agent = RecoveryAgent(
@@ -722,15 +723,68 @@ async def test_security_gate_rejection_blocks_registration(tmp_path: Path) -> No
         jev=_primary_jev(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(SecurityGateError):
-        await agent.run_iteration()
+    await agent.run_iteration()
 
     assert tools.registered_tools == []
     assert tools.executions == 0
-    gate_rows = [row for row in _steps(events) if row.get("step") == "security.gate"]
-    assert [(row["status"], row["error_type"]) for row in gate_rows] == [
-        ("rejected", "SecurityGateError")
+    tail = [(r["step"], r["status"]) for r in _steps(events)][-4:]
+    assert tail == [
+        ("jev.result", "usable"),
+        ("security.gate", "rejected"),
+        ("persist.policy_store", "failure"),
+        ("attempt.result", "failed"),
     ]
+    snapshot = agent.snapshot
+    assert snapshot.incident is not None
+    assert snapshot.incident.attempts == 1
+    assert snapshot.incident.last_tool_error is not None
+    assert snapshot.incident.last_tool_error.startswith("security_gate_rejected:SecurityGateError")
+    assert snapshot.incident.prior_attempts[-1].tool_name == "restore"
+    assert agent.policy["restore"] == {"attempts": 1.0, "reward_total": -1.0}
+    assert not [item for item in events.events if item.event_type == "agent.loop_error"]
+
+    # Next iteration retries from step 5 with the rejection fed back to HOW.
+    await agent.run_iteration()
+    retry_steps = [r for r in _steps(events) if r["attempt"] == 2]
+    assert [r["step"] for r in retry_steps[:2]] == ["context.reused", "class_memory.lookup"]
+
+
+class ExplodingGateTools(FakeTools):
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        raise RuntimeError("gate bug")
+
+
+@pytest.mark.asyncio
+async def test_unexpected_gate_error_still_propagates(tmp_path: Path) -> None:
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=ExplodingGateTools(unhealthy=True, execution_ok=True),  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="gate bug"):
+        await agent.run_iteration()
+
+    assert agent.policy == {}
+    assert not [r for r in _steps(events) if r["step"] in {"security.gate", "attempt.result"}]
+
+
+def test_gate_rejection_policy_key_matches_registered_tool_name(settings) -> None:  # type: ignore[no-untyped-def]
+    spec = DynamicToolSpec(
+        name="  Restore latest backup ",
+        rationale="r",
+        operation="request_backup_restore",
+        params={"backup_id": "latest"},
+    )
+    executor = ToolExecutor(settings)
+
+    assert base_tool_name(spec) == executor.register_temporary_dynamic_tool("inc-1", spec)
+    assert base_tool_name(spec.model_copy(update={"name": "  "})) == "dynamic_tool"
 
 
 @pytest.mark.asyncio

@@ -60,6 +60,7 @@ python -m harness.sensors.runtime_invariants <log-slice>.jsonl > <log-slice>.sen
 | JEV request-error rate | `decision.jev_request_error_rate` | TBD |
 | Top unusable reasons | `decision.unusable_reasons` | TBD |
 | Selected decisions with scores | `decision.selected_with_scores_rate` | TBD |
+| Security-gate rejections | `decision.gate_rejected` | TBD |
 | Fast-path recovery share | `fast_path.fast_path_recovery_share` | TBD |
 | Distinct winning actions per class | `winning_actions_per_class` | TBD |
 
@@ -82,4 +83,6 @@ separate windows): TBD
 
 - Keep environment and configuration constant between baseline and comparison runs.
 - Use canonical runtime events only (`workflow.step`, `incident.*`, `decision.*`).
-- Record any `agent.loop_error` events (e.g. `SecurityGateError`) here: TBD
+- Security-gate rejections are failed attempts (`decision.gate_rejected`); list the
+  rejected actions and reasons here: TBD
+- Record any `agent.loop_error` events (unexpected runtime exceptions) here: TBD

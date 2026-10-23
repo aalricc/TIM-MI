@@ -45,7 +45,7 @@ values).
 | 6 | `rag.repair` (`ok`/`empty`/`skipped`/`error`) | `rag.call` (`phase=repair`) | `workflow_step` |
 | 7 | `llm.how` (`ok`) | — (proposal published later in `planning.how`) | `decision_trace.candidates` |
 | 8 | `jev.requested` (`started`), `jev.result` (`usable`/`unusable`), `path.fallback` (`fallback`) | `decision.selected`, `decision.unusable`, `class_memory.fast_path_skipped` | `decision_trace` |
-| 9 | `security.gate` (`ok`/`rejected`) | — (on `rejected` the runtime raises → `agent.loop_error`) | `workflow_step` |
+| 9 | `security.gate` (`ok`/`rejected`) | on `rejected`: `incident.recovery_failed` | `workflow_step`; `decision_trace` (`gate_rejected`) |
 | 10 | `dynamic_tool.registered` (`ok`) | `planning.how` | `decision_trace.selected_candidate` |
 | 11 | `dynamic_tool.executed` (`ok`/`error`) | `dynamic_tool.executed` (`operation`, `ok`, `error`, executor output nested under `result`) | `workflow_step` |
 | 12 | `verification.result` (`ok`/`failed`) | `verification.result` | `workflow_step` |
@@ -74,6 +74,7 @@ step), `source` (`path.selected` path mode, overridden by `jev.requested.source`
 | Trigger event | `outcome` | `candidates` / `candidates_origin` | `selected_candidate` | `decision` |
 | --- | --- | --- | --- | --- |
 | `planning.how` (preceded by `decision.selected`) | `selected` | `primary` + `alternatives` / `how_proposal` | name+operation from `decision.selected`; `executed_candidate`, `executed_tool_name` from `planning.how` | `decision.selected.decision` |
+| `workflow.step:security.gate` = `rejected` (preceded by `decision.selected`) | `gate_rejected` | `[]` / `not_emitted` (`evaluated_count` from `jev.requested`) | name + `executed_candidate` from `decision.selected`, `operation` from the gate step, `executed_tool_name` = `null`; `reason` = gate `error_type` | `decision.selected.decision` |
 | `decision.unusable` | `unusable` | `candidate_actions` / `jev_evaluated` | `null` | `decision.unusable.decision` |
 | `class_memory.fast_path_skipped` | `fast_path_fallback` | `[]` / `not_emitted` (`evaluated_count` = payload `candidate_count`) | `null` | payload `decision` |
 
@@ -100,14 +101,22 @@ the data.
 1. **Security gate (step 9).** The engine calls `ToolExecutor.security_gate` and emits
    `security.gate` before registration (step 10), matching `README.md`. The executor
    re-runs the same gate inside `execute_dynamic_tool` so no caller can execute an ungated
-   spec. On rejection the engine emits `security.gate` = `rejected` (`error_type`, `error`)
-   and re-raises: the iteration ends as `agent.loop_error`, with no `attempt.result` and
-   no attempt-counter increment.
+   spec. A rejection (`SecurityGateError`, or pydantic `ValidationError` for bad params) is
+   a failed attempt (decision D1 = b): `security.gate` = `rejected` (`error_type`,
+   `error`), `persist.policy_store` = `failure` (−1 on `base_tool_name(spec)`, the key a
+   success would use), `persist.class_memory` = `failure` when class memory is on,
+   `incident.recovery_failed`, `attempt.result` = `failed`. The action key joins
+   `failed_action_keys`, the rejection reason (`security_gate_rejected:<ErrorType>: …`)
+   feeds the next HOW call, and the loop retries from step 5. Nothing is registered or
+   executed. Any other exception from the gate is a bug and still propagates
+   (`agent.loop_error`).
 2. **Persistence events on both outcomes.** Success persistence is steps 13–16 with status
-   `ok`/`skipped`. A failed attempt (verification failed, or unusable decision) also
+   `ok`/`skipped`. A failed attempt (verification failed, unusable decision, or gate
+   rejection) also
    writes learning state and emits `persist.policy_store` = `failure` (`reward` −1) and,
    when class memory recorded the failed action, `persist.class_memory` = `failure`, in
-   that order and before `attempt.result` = `failed`. `jev_request_error` (transport
+   that order and before `attempt.result` = `failed`. Security-gate rejections follow the
+   same pattern (item 1). `jev_request_error` (transport
    failure) writes nothing and emits no persist step. A rejected fast path that falls
    back to the full loop writes nothing.
 3. **Skills on first success.** Step 15 renders the class section with the pending

@@ -37,6 +37,7 @@ async def test_kpis_for_unusable_decisions_then_success(tmp_path: Path) -> None:
         },
         "jev_request_error_rate": 0.25,
         "selected": 1,
+        "gate_rejected": 0,
         "selected_with_scores_rate": 1.0,
     }
     # Class memory disabled: recoveries carry no source, so fast-path share is undefined.
@@ -65,6 +66,17 @@ async def test_kpis_fast_path_recovery_share_counts_class_memory_wins(tmp_path: 
             event["payload"]["source"] = "class_memory"
 
     assert compute_kpis(events)["fast_path"]["fast_path_recovery_share"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_kpis_count_gate_rejections(tmp_path: Path) -> None:
+    run = await SCENARIOS["gate_rejected_then_success"](tmp_path)
+
+    kpis = compute_kpis(run.events)
+
+    assert kpis["decision"]["gate_rejected"] == 1
+    assert kpis["attempt_outcomes"] == {"failed": 1, "recovered": 1}
+    assert kpis["recovery_rate"] == 1.0
 
 
 def test_kpis_cohort_classification_and_distribution() -> None:

@@ -107,11 +107,23 @@ def security_gate_before_registration(
     events: Iterable[RuntimeEvent], *, stage: str = "ci", now: float | None = None
 ) -> dict[str, Any]:
     """Every dynamic_tool.registered is immediately preceded, in the same attempt and
-    path mode, by security.gate=ok (README step 9 before step 10)."""
+    path mode, by security.gate=ok (README step 9 before step 10). A rejected gate ends
+    the attempt as attempt.result=failed with nothing registered or executed after it."""
     violations: list[Violation] = []
     checked = 0
     for key, steps in _attempt_timelines(events).items():
         for index, step in enumerate(steps):
+            if step["step"] == "security.gate" and step["status"] == "rejected":
+                checked += 1
+                after = [(s["step"], s["status"]) for s in steps[index + 1 :]]
+                names = [name for name, _ in after]
+                if "dynamic_tool.registered" in names or "dynamic_tool.executed" in names:
+                    violations.append(_violation(key, "action ran after security.gate=rejected"))
+                if ("attempt.result", "failed") not in after:
+                    violations.append(
+                        _violation(key, "security.gate=rejected without attempt.result=failed")
+                    )
+                continue
             if step["step"] != "dynamic_tool.registered":
                 continue
             checked += 1
