@@ -172,11 +172,14 @@ Fixed (pre-CP7 batch):
   `test_runtime_written_exemptions_are_gitignored` keeps the exemption honest. Each
   pre-CP7 commit was replayed in a clean worktree.
 
-Open, need a decision:
-- **Manual repairs are credited to MI.** Fixing it means re-checking health before a
-  retry, which changes the README retry rule ("loop back to step 5") that
-  `docs/harness/HARNESS_IMPLEMENTATION_WORKFLOW.md` § 9 lists as an invariant. Until
-  decided, the runbooks require stopping `mi-agent` before a manual repair.
+Decided 2026-10-23:
+- **Manual repairs credited to MI — fixed.** `RecoveryAgent.run_iteration` re-checks health
+  before each retry; a healthy target closes the incident (`monitor.healthy_before_retry`,
+  `incident.closed.resolution` = `healthy_before_retry`) with nothing persisted. README,
+  `docs/ARCHITECTURE.md`, and the workflow doc's retry rule and § 9 invariants amended
+  (approved). New sensor `external_recovery_not_credited`; scenario
+  `repaired_before_retry`. Remaining window: a repair landing during an attempt is still
+  credited, so runbooks keep "stop MI before a manual repair".
 - **Bad learned state** cleared (decision 2026-10-23): `state/` archived to
   `results/state-archive-2026-10-23.tar.gz` (gitignored, verified byte-identical) and
   emptied; MI relearns from harness-driven runs. The archive keeps the pre-harness event

@@ -34,13 +34,13 @@ EOF
 | `verification.result` `failed` with the same `failure_type` every attempt | MI's actions do not fix this fault | manual takeover with the fault runbook (`docs/runbooks/drop_widgets_table.md`, `docs/runbooks/delete_db.md`, `docs/runbooks/corrupt_db.md`) |
 | `attempt.result` `failed`, reason `all_candidates_previously_failed` | every proposed action already failed in this incident | manual takeover |
 | `security.gate` `rejected` repeatedly | see `docs/runbooks/security-gate-rejection.md` | — |
-| `attempt.result` `recovered`, but `GET /widgets` fails | repair passed `/health/deep` with a wrong schema | manual takeover (`docs/runbooks/drop_widgets_table.md`), then remove the bad learned action (risky change) |
+| `attempt.result` `recovered`, but `GET /widgets` fails | the repair satisfied `/health/deep` (integrity, table, columns) but the endpoint still fails for a reason it does not check | manual takeover with the fault runbook, then remove the learned action (risky change) and add the missing check to `target/app/main.py::db_status` |
 
 ## Take over
 
 Use "Manual takeover" in `docs/runbooks/README.md`. Stop `mi-agent` **before** repairing:
-retries do not re-check health, so a repair made while MI runs is credited to MI's next
-action and persisted as a learned success.
+MI re-checks health before each retry, but a repair that lands during an attempt is
+credited to that attempt's action and persisted as a learned success.
 
 ## Afterwards
 

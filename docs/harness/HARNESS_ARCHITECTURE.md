@@ -70,6 +70,7 @@ harness/mappings ──▶ contract records ──▶ harness/sensors, harness/m
 | Exactly one dynamic action per attempt | `test_engine_executes_and_verifies_once_per_attempt_structurally` | `one_action_per_attempt` |
 | Verifier independent and always run after execution | same structural test | `verification_follows_execution` |
 | Retry loops back to step 5 | — | `retry_resumes_at_step5` |
+| Repairs outside MI between attempts are not credited | — | `external_recovery_not_credited` |
 | Success persistence only in steps 13–16, in order | — | `persistence_only_after_verified_recovery` |
 | Failure-path learning writes only on failed attempts, policy before class memory | — | `failure_learning_only_on_failed_attempts` |
 | Fast path does not bypass JEV / gate / verifier | covered by the rows above (fast path uses the same `_select_candidate_with_jev` → `_execute_selected_action` path) | path-mode-aware `jev_selects_before_registration` |

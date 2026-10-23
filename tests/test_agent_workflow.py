@@ -882,3 +882,70 @@ async def test_jev_request_error_emits_no_persist_event(tmp_path: Path) -> None:
     await agent.run_iteration()
 
     assert not [row for row in _steps(events) if str(row.get("step")).startswith("persist.")]
+
+
+@pytest.mark.asyncio
+async def test_retry_closes_incident_without_learning_when_target_already_healthy(
+    tmp_path: Path,
+) -> None:
+    # Attempt 1 fails verification; the target is repaired outside MI before the retry.
+    tools = FakeTools(unhealthy=True, execution_ok=True, monitor_health_sequence=[False, True])
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+    policy_after_failure = agent.policy
+    await agent.run_iteration()
+
+    assert tools.executions == 1  # no second action
+    assert tools.persisted == []
+    assert agent.policy == policy_after_failure  # no reward for the external repair
+    assert not (tmp_path / "skills.md").exists()
+    snapshot = agent.snapshot
+    assert snapshot.incident is None
+    assert snapshot.workflow_state.value == "recovered"
+    closed = [item.payload for item in events.events if item.event_type == "incident.closed"]
+    assert [row.get("resolution") for row in closed] == ["healthy_before_retry"]
+    assert not [item for item in events.events if item.event_type == "incident.recovered"]
+    last_step = _steps(events)[-1]
+    assert (last_step["step"], last_step["status"], last_step["attempt"]) == (
+        "monitor.healthy_before_retry",
+        "healthy",
+        1,
+    )
+
+    # The next healthy check settles into the steady state.
+    await agent.run_iteration()
+    assert agent.snapshot.workflow_state.value == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_retry_still_runs_when_target_remains_unhealthy(tmp_path: Path) -> None:
+    tools = FakeTools(unhealthy=True, execution_ok=True)
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+    await agent.run_iteration()
+
+    assert tools.executions == 2
+    retry = [row for row in _steps(events) if row["attempt"] == 2]
+    assert [row["step"] for row in retry[:2]] == ["context.reused", "class_memory.lookup"]
+    monitors = [item for item in events.events if item.event_type == "monitor.health"]
+    assert len(monitors) == 2  # detection + pre-retry check

@@ -28,6 +28,7 @@
       "type": "string",
       "enum": [
         "monitor.unhealthy_detected",
+        "monitor.healthy_before_retry",
         "context.reused",
         "diagnostics.collected",
         "rag.symptom",

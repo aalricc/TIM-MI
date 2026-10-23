@@ -37,7 +37,7 @@ values).
 
 | README step | Runtime `workflow.step` (statuses) | Other runtime events | Harness record |
 | --- | --- | --- | --- |
-| 1 | `monitor.unhealthy_detected` (`detected`) | `monitor.health`, `incident.started` | `incident_signature` (`started_at`, `monitor_detail`) |
+| 1 | `monitor.unhealthy_detected` (`detected`); `monitor.healthy_before_retry` (`healthy`, retries only) | `monitor.health`, `incident.started`; `incident.closed` (`resolution` = `healthy_before_retry`) | `incident_signature` (`started_at`, `monitor_detail`) |
 | 2 | `diagnostics.collected` (`ok`) | — | `workflow_step` |
 | 3 | `rag.symptom` (`ok`/`empty`/`skipped`/`error`) | `rag.call` (`phase=symptom`), `rag.empty`/`rag.skipped`/`rag.error` | `workflow_step` |
 | 4 | `llm.why` (`ok`) | `diagnosis.why` | `incident_signature` (`failure_type`, `hypotheses`, `evidence`) |
@@ -59,7 +59,9 @@ Markers outside the numbered loop (`readme_step = null`):
 - `post_recovery.ping` (`healthy`/`unhealthy`): monitor re-check after steps 13–16. If
   `unhealthy`, the attempt ends `retry` even though persistence already ran.
 - `attempt.result` (`recovered`/`retry`/`failed`): attempt outcome. `retry`/`failed` →
-  next iteration re-enters at step 5 with `context.reused` (`retry_from_step5`).
+  the next iteration first re-checks health: still unhealthy → re-enters at step 5 with
+  `context.reused` (`retry_from_step5`); already healthy → `monitor.healthy_before_retry`
+  (recorded under the last attempt number) and the incident closes.
 
 ## Record derivations
 
@@ -135,7 +137,11 @@ the data.
    attempt can contain two `jev.requested` steps but still at most one execution.
 7. **`decision.unusable` has no `class_id`** and `decision.selected` has no `source`; the
    harness takes them from context, never invents them.
-8. **Step 5 also writes `state/class_store.json`** (`ClassMemory.assign_class` updates the
+8. **Pre-retry health check.** Each retry starts with `monitor_health`. If the target is
+   healthy, the engine emits `monitor.healthy_before_retry`, publishes `incident.closed`
+   with `resolution` = `healthy_before_retry` (no `incident.recovered`), and persists
+   nothing. KPIs count such incidents as `self_resolved`.
+9. **Step 5 also writes `state/class_store.json`** (`ClassMemory.assign_class` updates the
    class centroid and may create a class). Its event is `class_memory.lookup`.
 
 ## Alignment constraints

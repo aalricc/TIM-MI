@@ -314,7 +314,8 @@ async def unusable_decisions_then_success(root: Path) -> ScenarioRun:
         root / "unusable_decisions_then_success",
         name="unusable_decisions_then_success",
         iterations=4,
-        monitor=[False, True],
+        # detect, pre-retry x3 (still unhealthy), post-recovery ping
+        monitor=[False, False, False, False, True],
         execute_ok=[True],
         verify=[True],
         jev=[
@@ -331,7 +332,8 @@ async def failure_then_unhealthy_ping_then_success(root: Path) -> ScenarioRun:
         root / "failure_then_unhealthy_ping_then_success",
         name="failure_then_unhealthy_ping_then_success",
         iterations=3,
-        monitor=[False, False, True],
+        # detect, pre-retry, ping (unhealthy), pre-retry, ping (healthy)
+        monitor=[False, False, False, False, True],
         execute_ok=[False, True, True],
         verify=[False, True, True],
         jev=[select_first, select_first, select_first],
@@ -354,7 +356,8 @@ async def fast_path_failure_then_full_loop(root: Path) -> ScenarioRun:
         root / "fast_path_failure_then_full_loop",
         name="fast_path_failure_then_full_loop",
         iterations=2,
-        monitor=[False, True],
+        # detect, pre-retry, post-recovery ping
+        monitor=[False, False, True],
         execute_ok=[False, True],
         verify=[False, True],
         jev=[select_first, select_first],
@@ -397,13 +400,29 @@ async def gate_rejected_then_success(root: Path) -> ScenarioRun:
         root / "gate_rejected_then_success",
         name="gate_rejected_then_success",
         iterations=2,
-        monitor=[False, True],
+        # detect, pre-retry, post-recovery ping
+        monitor=[False, False, True],
         execute_ok=[True],
         verify=[True],
         jev=[select_first, select_first],
         class_memory=True,
         seed_successes=8,
         gate_rejects={FAST_PATH_SPEC.name},
+    )
+
+
+async def repaired_before_retry(root: Path) -> ScenarioRun:
+    # Attempt 1 fails; the target is repaired outside MI before the retry, so the
+    # pre-retry health check closes the incident and MI records nothing.
+    return await run_scenario(
+        root / "repaired_before_retry",
+        name="repaired_before_retry",
+        iterations=2,
+        monitor=[False, True],  # detect, pre-retry (healthy)
+        execute_ok=[True],
+        verify=[False],
+        jev=[select_first],
+        class_memory=True,
     )
 
 
@@ -415,4 +434,5 @@ SCENARIOS: dict[str, ScenarioFactory] = {
     "fast_path_rejected_falls_back": fast_path_rejected_falls_back,
     "class_memory_cold_start": class_memory_cold_start,
     "gate_rejected_then_success": gate_rejected_then_success,
+    "repaired_before_retry": repaired_before_retry,
 }

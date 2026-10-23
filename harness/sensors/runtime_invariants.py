@@ -310,6 +310,46 @@ def retry_resumes_at_step5(
     )
 
 
+def external_recovery_not_credited(
+    events: Iterable[RuntimeEvent], *, stage: str = "ci", now: float | None = None
+) -> dict[str, Any]:
+    """monitor.healthy_before_retry closes the incident: it follows a failed or retried
+    attempt, and nothing (no execution, no persistence) follows it for that incident."""
+    violations: list[Violation] = []
+    checked = 0
+    by_incident: dict[str, list[dict[str, Any]]] = {}
+    for step in workflow_steps(events):
+        incident_id = step.get("incident_id")
+        if isinstance(incident_id, str):
+            by_incident.setdefault(incident_id, []).append(step)
+    for incident_id, steps in by_incident.items():
+        for index, step in enumerate(steps):
+            if step["step"] != "monitor.healthy_before_retry":
+                continue
+            checked += 1
+            key = (incident_id, int(step["attempt"]))
+            later = [s["step"] for s in steps[index + 1 :]]
+            if later:
+                violations.append(_violation(key, f"steps after healthy_before_retry: {later}"))
+            outcomes = [
+                s["status"]
+                for s in steps[:index]
+                if s["step"] == "attempt.result" and s["attempt"] == step["attempt"]
+            ]
+            if outcomes[-1:] not in (["failed"], ["retry"]):
+                violations.append(
+                    _violation(key, f"healthy_before_retry after attempt outcome {outcomes}")
+                )
+    return _result(
+        name="external_recovery_not_credited",
+        stage=stage,
+        violations=violations,
+        checked=checked,
+        ok_message="incidents repaired between attempts closed without crediting MI",
+        now=now,
+    )
+
+
 SENSORS: tuple[Callable[..., dict[str, Any]], ...] = (
     jev_selects_before_registration,
     security_gate_before_registration,
@@ -318,6 +358,7 @@ SENSORS: tuple[Callable[..., dict[str, Any]], ...] = (
     persistence_only_after_verified_recovery,
     failure_learning_only_on_failed_attempts,
     retry_resumes_at_step5,
+    external_recovery_not_credited,
 )
 
 

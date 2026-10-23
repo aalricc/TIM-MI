@@ -22,6 +22,7 @@ SCHEMA_VERSION = "v1"
 # Runtime `workflow.step` name -> README.md loop step (1-16).
 README_STEP: dict[str, int | None] = {
     "monitor.unhealthy_detected": 1,
+    "monitor.healthy_before_retry": 1,
     "diagnostics.collected": 2,
     "rag.symptom": 3,
     "llm.why": 4,

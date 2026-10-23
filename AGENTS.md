@@ -56,6 +56,7 @@ active.
 | Security gate (step 9) before registration (10) and execution (11) | `tests/test_harness_architecture.py::test_security_gate_runs_before_registration_and_execution`, `harness/sensors/runtime_invariants.py::security_gate_before_registration` |
 | Exactly one dynamic action per attempt; verifier always runs after it | `tests/test_harness_architecture.py::test_engine_executes_and_verifies_once_per_attempt_structurally`, `harness/sensors/runtime_invariants.py::one_action_per_attempt` |
 | Retry loops back to step 5 with retained context | `harness/sensors/runtime_invariants.py::retry_resumes_at_step5` |
+| A target repaired between attempts closes the incident without learning (pre-retry health check) | `harness/sensors/runtime_invariants.py::external_recovery_not_credited` |
 | Success persistence only in steps 13–16, in order | `harness/sensors/runtime_invariants.py::persistence_only_after_verified_recovery` |
 | Failure-path learning writes only on failed attempts | `harness/sensors/runtime_invariants.py::failure_learning_only_on_failed_attempts` |
 

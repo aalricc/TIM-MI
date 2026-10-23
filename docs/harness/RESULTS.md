@@ -46,6 +46,7 @@ and in CI (`tests/test_harness_architecture.py`).
 | Security gate preserved (step 9 before 10) | `security_gate_before_registration`, `test_security_gate_runs_before_registration_and_execution` | TBD |
 | Verifier gate preserved | `verification_follows_execution` | TBD |
 | Retry loops back to step 5 | `retry_resumes_at_step5` | TBD |
+| Repairs between attempts not credited | `external_recovery_not_credited` | TBD |
 | Success persistence only in steps 13–16 | `persistence_only_after_verified_recovery` | TBD |
 | Failure-path writes only on failed attempts | `failure_learning_only_on_failed_attempts` | TBD |
 

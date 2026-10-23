@@ -13,7 +13,7 @@ several `incident.recovered` events, the first one counts.
 | Bucket | Definition |
 | --- | --- |
 | recovered | cohort incident with `incident.recovered` |
-| self_resolved | cohort incident with `incident.closed` but no `incident.recovered` (monitor saw healthy before MI recovered it) |
+| self_resolved | cohort incident with `incident.closed` but no `incident.recovered`: the target became healthy without an MI recovery, before the first attempt or between attempts (`incident.closed.resolution` = `healthy_before_retry`) |
 | open | cohort incident with neither (still active, or the process stopped) |
 
 ## KPIs

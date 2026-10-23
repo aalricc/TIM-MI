@@ -34,8 +34,9 @@
   endpoints themselves. Learned state recorded before the column check contains a tool and
   class template that create `widgets` with the wrong columns, and SQL templates that
   create unrelated tables.
-- Retries do not re-check health; a human repair made while an incident is open is
-  credited to MI's next action and persisted.
+- A repair made outside MI during an attempt (after the pre-retry health check, before
+  verification) is credited to that attempt's action and persisted. Repairs between
+  attempts close the incident without learning.
 - The backup job validates each copy before keeping it and retains the newest 360, but a
   database that passes validation while logically wrong (bad data) is still backed up.
 

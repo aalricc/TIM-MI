@@ -78,6 +78,7 @@ separate windows): TBD
 | `persistence_only_after_verified_recovery` | TBD | TBD | TBD |
 | `failure_learning_only_on_failed_attempts` | TBD | TBD | TBD |
 | `retry_resumes_at_step5` | TBD | TBD | TBD |
+| `external_recovery_not_credited` | TBD | TBD | TBD |
 
 ## 7. Notes
 

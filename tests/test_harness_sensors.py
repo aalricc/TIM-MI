@@ -10,6 +10,7 @@ import pytest
 
 from harness.contracts import contract_errors
 from harness.sensors.runtime_invariants import (
+    external_recovery_not_credited,
     failure_learning_only_on_failed_attempts,
     jev_selects_before_registration,
     main,
@@ -75,6 +76,7 @@ async def test_sensors_examine_the_expected_units(tmp_path: Path) -> None:
         "persistence_only_after_verified_recovery": 2,
         "failure_learning_only_on_failed_attempts": 1,
         "retry_resumes_at_step5": 2,
+        "external_recovery_not_credited": 0,
     }
 
 
@@ -219,6 +221,36 @@ async def test_retry_sensor_flags_retry_that_skips_class_memory_lookup(tmp_path:
     del events[_index(events, "class_memory.lookup", attempt=2)]
 
     _assert_fails(retry_resumes_at_step5, events)
+
+
+@pytest.mark.asyncio
+async def test_external_recovery_sensor_checks_repaired_incident(tmp_path: Path) -> None:
+    events = (await SCENARIOS["repaired_before_retry"](tmp_path)).events
+
+    result = external_recovery_not_credited(events, now=1.0)
+
+    assert (result["status"], result["checked"]) == ("pass", 1)
+
+
+@pytest.mark.asyncio
+async def test_external_recovery_sensor_flags_learning_after_close(tmp_path: Path) -> None:
+    events = (await SCENARIOS["repaired_before_retry"](tmp_path)).events
+    persist = copy.deepcopy(events[_index(events, "monitor.healthy_before_retry")])
+    persist["payload"].update({"step": "persist.tool_catalog", "status": "ok"})
+    events.append(persist)
+
+    result = _assert_fails(external_recovery_not_credited, events)
+    assert result["violations"][0]["detail"].startswith("steps after healthy_before_retry")
+
+
+@pytest.mark.asyncio
+async def test_external_recovery_sensor_flags_close_without_failed_attempt(
+    tmp_path: Path,
+) -> None:
+    events = (await SCENARIOS["repaired_before_retry"](tmp_path)).events
+    events[_index(events, "attempt.result")]["payload"]["status"] = "recovered"
+
+    _assert_fails(external_recovery_not_credited, events)
 
 
 def _write_log(path: Path, events: list[Event]) -> Path:

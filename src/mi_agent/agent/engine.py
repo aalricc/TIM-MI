@@ -174,6 +174,14 @@ class RecoveryAgent:
             and self._workflow_state == WorkflowState.INCIDENT_ACTIVE
             and self._incident.attempts > 0
         ):
+            # Re-check health before retrying: a target repaired outside MI (by an operator
+            # or on its own) closes the incident instead of crediting MI's next action.
+            retry_monitor = await self._tools.monitor_health()
+            self._last_monitor = retry_monitor
+            await self._events.publish("monitor.health", retry_monitor.model_dump())
+            if retry_monitor.healthy:
+                await self._close_healthy_before_retry(self._incident, retry_monitor)
+                return
             await self._attempt_recovery(self._incident, retry_from_step5=True)
             return
 
@@ -211,6 +219,32 @@ class RecoveryAgent:
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.UNHEALTHY_DETECTED)
 
         await self._attempt_recovery(self._incident, retry_from_step5=False)
+
+    async def _close_healthy_before_retry(
+        self,
+        incident: IncidentContext,
+        monitor: MonitorStatus,
+    ) -> None:
+        """Close an incident whose target became healthy between attempts. Nothing is
+        persisted: no tool, policy reward, skill, or class-memory outcome is recorded."""
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=incident.attempts,
+            path_mode="monitor",
+            step="monitor.healthy_before_retry",
+            status="healthy",
+            detail=monitor.detail,
+        )
+        self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_SUCCEEDED)
+        await self._events.publish(
+            "incident.closed",
+            {
+                "incident_id": incident.incident_id,
+                "attempts": incident.attempts,
+                "resolution": "healthy_before_retry",
+            },
+        )
+        self._incident = None
 
     async def _attempt_recovery(
         self,

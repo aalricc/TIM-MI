@@ -39,6 +39,8 @@ Use this exact runtime sequence (steps 1–16):
 
 Retry rule:
 - If not recovered at step 12, retain context and loop back to step 5 (no hard cap).
+- Before each retry, re-check health (step 1); if already healthy, close the incident
+  without persisting anything (amended 2026-10-23, approved).
 
 ## 3) Harness model from the diagram
 
@@ -175,5 +177,6 @@ Before starting harness implementation, confirm:
 - Security gate remains mandatory before execution.
 - Exactly one dynamic action executes per attempt.
 - Verifier remains independent.
-- Retry loops back to step 5 when not recovered.
+- Retry loops back to step 5 when not recovered (after the pre-retry health check).
+- A target repaired outside MI between attempts is never credited to MI.
 - Success persistence remains steps 13–16 only.

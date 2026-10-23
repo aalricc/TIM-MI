@@ -28,10 +28,11 @@ Policy context: `docs/THREAT_MODEL.md`, `harness/governance/README.md`.
 - **`restart_service` always fails here.** No restart hook is configured
   (`src/mi_agent/runtime.py::build_agent` builds `ToolExecutor` without hooks), so it returns
   `no_restart_hook_configured`. `request_backup_restore` works (built-in file copy).
-- **Retries skip the monitor.** Once an incident has an attempt, each iteration retries from
-  step 5 without re-checking health. If you repair the target while MI is mid-incident,
-  MI's next action passes verification and is persisted as a learned success. Stop MI
-  before any manual repair (procedure below).
+- **Retries re-check health first.** Before each retry MI checks the monitor; if the target
+  is already healthy it closes the incident (`incident.closed` with `resolution` =
+  `healthy_before_retry`) and records nothing. A repair that lands *during* an attempt
+  (after that check, before verification) can still be credited to the in-flight action,
+  so stopping MI before a manual repair remains the clean procedure.
 - **Startup.** The runtime refuses to start unless class memory, JEV, and RAG are enabled
   and their credentials set. Create `.env` from `.env.example` for the credentials.
 
@@ -61,8 +62,8 @@ healthy heartbeat that passes integrity and has `widgets(id, name, created_at)`.
 
 ## Manual takeover (all runbooks)
 
-1. `docker compose stop mi-agent` (prevents MI crediting your repair to itself; the open
-   incident is in memory only and is discarded).
+1. `docker compose stop mi-agent` (keeps your repair from overlapping an in-flight attempt,
+   which would credit it to MI; the open incident is in memory only and is discarded).
 2. Repair using the runbook's manual procedure.
 3. Post-check, both must succeed:
    ```bash

@@ -79,6 +79,17 @@ async def test_kpis_count_gate_rejections(tmp_path: Path) -> None:
     assert kpis["recovery_rate"] == 1.0
 
 
+@pytest.mark.asyncio
+async def test_kpis_count_repair_between_attempts_as_self_resolved(tmp_path: Path) -> None:
+    run = await SCENARIOS["repaired_before_retry"](tmp_path)
+
+    kpis = compute_kpis(run.events)
+
+    assert kpis["incidents"] == {"started": 1, "recovered": 0, "self_resolved": 1, "open": 0}
+    assert kpis["recovery_rate"] == 0.0
+    assert kpis["attempt_outcomes"] == {"failed": 1}
+
+
 def test_kpis_cohort_classification_and_distribution() -> None:
     events = [
         _event(0.0, "incident.started", incident_id="a"),

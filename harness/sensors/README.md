@@ -47,6 +47,7 @@ the listed stage; **manual** = command exists, run by a person; **gap** = not bu
 | `verification_follows_execution` | computational | ci, continuous | same | harness maintainer | as above |
 | `persistence_only_after_verified_recovery` | computational | ci, continuous | same | harness maintainer | as above |
 | `failure_learning_only_on_failed_attempts` | computational | ci, continuous | same | harness maintainer | as above |
+| `external_recovery_not_credited` (incident closed by the pre-retry health check is not followed by any execution or persistence) | computational | ci, continuous | same | harness maintainer | as above |
 | `retry_resumes_at_step5` (retry-loop check) | computational | ci, continuous | same | harness maintainer | as above |
 | Runtime budget (latency, token, rate) | computational | continuous | — (TTR covered by KPIs; no token/rate budget yet) | runtime maintainer | gap |
 | Architecture review agent / log-quality reflection after failed run | inferential | ci (selective) | — | harness maintainer | gap |
