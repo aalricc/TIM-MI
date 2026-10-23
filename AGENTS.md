@@ -9,8 +9,9 @@ Working agreement for coding agents and contributors in this repository. Every p
 The harness gap plan is being built checkpoint by checkpoint. Before doing harness work,
 read `docs/harness/HANDOFF.md` (status, next checkpoint, working method, gotchas).
 
-Current checkpoint status (2026-10-23): CP0–CP6 complete; CP7 is in progress with D2
-set to manual `workflow_dispatch` on a self-hosted runner.
+Current checkpoint status (2026-10-24): CP0–CP7 implemented and quality-audited in code;
+live acceptance is pending first full CP7 campaign pass in CP8 (then fill
+`docs/harness/BASELINE.md`). D2 is manual `workflow_dispatch` on a self-hosted runner.
 
 ## What this repo is
 

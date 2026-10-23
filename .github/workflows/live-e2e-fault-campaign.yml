@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: live-e2e-fault-campaign
+  cancel-in-progress: false
+
 jobs:
   campaign:
     # D2=(c): manual workflow_dispatch only, on a host that can reach local JEV.
