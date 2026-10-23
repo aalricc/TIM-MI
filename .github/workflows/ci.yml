@@ -33,5 +33,8 @@ jobs:
       - name: Mypy
         run: mypy --strict src
 
+      - name: Mypy (harness)
+        run: mypy --strict harness
+
       - name: Pytest
         run: pytest -q

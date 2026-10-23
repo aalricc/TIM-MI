@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mi-agent/harness/contracts/decision_trace.schema.v1.json",
+  "title": "DecisionTraceV1",
+  "description": "One action-selection outcome per JEV arbitration. Built from `planning.how` (preceded by `decision.selected`), `decision.unusable`, or `class_memory.fast_path_skipped`.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "ts",
+    "incident_id",
+    "attempt",
+    "source",
+    "outcome",
+    "reason",
+    "candidates_origin",
+    "candidates",
+    "evaluated_count",
+    "selected_candidate",
+    "decision",
+    "action_key",
+    "class_id",
+    "source_event"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "candidate": {
+      "description": "DynamicToolSpec row. `operation` is LLM-proposed free text; the security gate (not this contract) enforces the operation allowlist.",
+      "type": "object",
+      "required": ["name", "operation", "params"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"},
+        "operation": {"type": "string"},
+        "params": {"type": "object"},
+        "rationale": {"type": "string"}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "ts": {"type": "number"},
+    "incident_id": {"type": "string", "minLength": 1},
+    "attempt": {
+      "description": "Attempt number from the most recent workflow.step for this incident; null when the log has no workflow.step context.",
+      "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]
+    },
+    "source": {
+      "description": "Arbitration source from jev.requested / path.selected / planning.how; null when the log carries no such context.",
+      "type": ["string", "null"],
+      "enum": ["class_memory", "full_loop", null]
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["selected", "unusable", "fast_path_fallback"]
+    },
+    "reason": {"type": ["string", "null"]},
+    "candidates_origin": {
+      "description": "how_proposal = HOW proposal as published in planning.how (before dedupe/failed-key filtering); jev_evaluated = rows JEV was asked to evaluate; not_emitted = runtime published only a count.",
+      "type": "string",
+      "enum": ["how_proposal", "jev_evaluated", "not_emitted"]
+    },
+    "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
+    "evaluated_count": {
+      "description": "Number of candidates submitted to JEV arbitration (after dedupe/failed-key filtering); null when not recoverable from the log.",
+      "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]
+    },
+    "selected_candidate": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["name", "operation", "executed_candidate", "executed_tool_name"],
+          "additionalProperties": false,
+          "properties": {
+            "name": {"type": "string"},
+            "operation": {"type": "string"},
+            "executed_candidate": {
+              "description": "`primary` or `alternative:<name>`.",
+              "type": "string",
+              "pattern": "^(primary|alternative:.*)$"
+            },
+            "executed_tool_name": {"type": "string"}
+          }
+        },
+        {"type": "null"}
+      ]
+    },
+    "decision": {
+      "description": "Decision payload (RecoveryAgent._decision_payload) or the synthetic {usable:false, reason} payload for pre-JEV rejections.",
+      "type": "object",
+      "required": ["usable"],
+      "additionalProperties": true,
+      "properties": {
+        "usable": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]},
+        "selected_candidate_name": {"type": ["string", "null"]},
+        "selected_candidate_operation": {"type": ["string", "null"]},
+        "usable_probability": {"type": ["number", "null"]},
+        "risk_score": {"type": ["number", "null"]},
+        "model_version": {"type": ["string", "null"]},
+        "shadow": {"type": ["object", "string"]},
+        "raw": {"type": ["object", "string"]}
+      }
+    },
+    "action_key": {"type": ["string", "null"]},
+    "class_id": {"type": ["string", "null"]},
+    "source_event": {
+      "type": "string",
+      "enum": ["planning.how", "decision.unusable", "class_memory.fast_path_skipped"]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"outcome": {"const": "selected"}}},
+      "then": {
+        "properties": {
+          "selected_candidate": {"type": "object"},
+          "decision": {"properties": {"usable": {"const": true}}}
+        }
+      },
+      "else": {
+        "description": "decision.usable may still be true here (reason selected_candidate_not_found).",
+        "properties": {
+          "selected_candidate": {"type": "null"}
+        }
+      }
+    }
+  ]
+}

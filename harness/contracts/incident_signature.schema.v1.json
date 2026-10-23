@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mi-agent/harness/contracts/incident_signature.schema.v1.json",
+  "title": "IncidentSignatureV1",
+  "description": "Per-incident identity record built from `incident.started`, `workflow.step:monitor.unhealthy_detected`, the first `diagnosis.why`, and the first `class_memory.decision` of the incident. The class-memory IncidentSignature (template_ids/embedding/slots) is not emitted by the runtime and is therefore not part of this contract.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "incident_id",
+    "started_at",
+    "monitor_detail",
+    "failure_type",
+    "hypotheses",
+    "evidence",
+    "class_id",
+    "class_match"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "incident_id": {"type": "string", "minLength": 1},
+    "started_at": {"type": ["number", "null"]},
+    "monitor_detail": {"type": ["string", "null"]},
+    "failure_type": {"type": ["string", "null"]},
+    "hypotheses": {"type": "array", "items": {"type": "string"}},
+    "evidence": {"type": "array", "items": {"type": "string"}},
+    "class_id": {"type": ["string", "null"]},
+    "class_match": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "s1",
+            "s2",
+            "margin",
+            "new_class",
+            "fast_path_eligible",
+            "first_failing_gate_reason"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "s1": {"type": "number"},
+            "s2": {"type": "number"},
+            "margin": {"type": "number"},
+            "new_class": {"type": "boolean"},
+            "fast_path_eligible": {"type": "boolean"},
+            "first_failing_gate_reason": {"type": ["string", "null"]}
+          }
+        },
+        {"type": "null"}
+      ]
+    }
+  }
+}
