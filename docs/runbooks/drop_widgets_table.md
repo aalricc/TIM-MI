@@ -6,6 +6,8 @@ Injected with `curl -X POST http://localhost:8080/ops/fault/drop_widgets_table`.
 
 - `GET /health/deep` → 500, `detail.error` = `schema_invalid`,
   `detail.status.widgets_table_present` = `false`, `integrity` = `["ok"]`.
+- A table that exists with the wrong columns is also `schema_invalid`, with
+  `detail.status.widgets_columns_missing` naming them (for example after a bad repair).
 - `GET /widgets` and `POST /widgets` → 500 `schema_invalid` (`no such table: widgets`).
 - Target log: `"fault injected"` with `"fault": "drop_widgets_table"` (if injected), then
   `"heartbeat"` lines at level `error`.
@@ -25,12 +27,12 @@ action, so most recoveries are a single fast-path `run_sql`.
 | Rank | Action | Effect |
 | --- | --- | --- |
 | 1 | `run_sql` recreating `widgets` exactly as in `target/app/schema.sql` (`id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP`), idempotent (`CREATE TABLE IF NOT EXISTS`) | fast; **table is empty afterwards** (rows lost by the fault stay lost) |
-| 2 | `request_backup_restore` with `backup_id` of a backup taken before the fault (`app-<epoch>`, from `scripts/find_known_good_backup.py`) | restores rows as of that backup; loses writes between the backup and the fault |
+| 2 | `request_backup_restore` with `backup_id` `latest` (the last validated copy, from before the drop) or an explicit `app-<epoch>` | restores rows as of that backup; loses writes between the backup and the fault |
 
-Not approved: SQL that creates `widgets` with a different column set (passes `/health/deep`,
-breaks `GET /widgets`); SQL touching any other table (recorded runs show invented tables
-such as `fault_injection_config`); `request_backup_restore` with `latest` (the newest backup
-was usually copied after the drop); `restart_service` (always fails here).
+Not approved: SQL that creates `widgets` with a different column set (now fails
+`/health/deep` with `widgets_columns_missing`); SQL touching any other table (recorded runs
+show invented tables such as `fault_injection_config`); `restart_service` (always fails
+here).
 
 ## Manual recovery
 

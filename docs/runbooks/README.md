@@ -14,14 +14,17 @@ Policy context: `docs/THREAT_MODEL.md`, `harness/governance/README.md`.
 
 ## How this deployment behaves (applies to every runbook)
 
-- **Monitor and verifier both use `GET /health/deep`.** It checks only that `widgets`
-  exists and `PRAGMA integrity_check` is ok, not the column set. A repair that recreates
-  `widgets` without `created_at` passes verification but breaks `GET /widgets`. Always run
-  the post-check below.
-- **Backups.** `target/backup/backup.sh` copies `app.db` to `app-<epoch>.db` in the
-  `backups_data` volume every 10 s whatever its state, and never deletes old copies. After
-  `corrupt_db` or `drop_widgets_table` the newest backup usually contains the fault; after
-  `delete_db` copying stops, so the newest backup predates the fault.
+- **Monitor and verifier both use `GET /health/deep`.** It checks integrity, that
+  `widgets` exists, and that it has the columns the widget endpoints read
+  (`target/app/main.py::REQUIRED_WIDGET_COLUMNS`); a missing column is `schema_invalid`
+  with `widgets_columns_missing` listing it. Still run the post-check below: it exercises
+  the real endpoint.
+- **Backups.** `target/backup/backup.sh` copies `app.db` every 10 s to a temporary file,
+  validates the copy (`scripts/find_known_good_backup.py --check`), and keeps it as
+  `app-<epoch>.db` in the `backups_data` volume only if it passes; it keeps the newest 360
+  (`BACKUP_RETENTION`, about one hour). So `latest` is the last valid copy. Backups written
+  by the older job (before this change) were copied unvalidated and can contain faults;
+  `scripts/find_known_good_backup.py` skips those.
 - **`restart_service` always fails here.** No restart hook is configured
   (`src/mi_agent/runtime.py::build_agent` builds `ToolExecutor` without hooks), so it returns
   `no_restart_hook_configured`. `request_backup_restore` works (built-in file copy).
@@ -30,8 +33,8 @@ Policy context: `docs/THREAT_MODEL.md`, `harness/governance/README.md`.
   step 5 without re-checking health. If you repair the target while MI is mid-incident,
   MI's next action passes verification and is persisted as a learned success. Stop MI
   before any manual repair (procedure below).
-- **Startup.** Compose defaults `MI_CLASSMEM_ENABLED` to `false`, but the runtime refuses to
-  start unless it is `true`. Create `.env` from `.env.example` (which sets it to `true`).
+- **Startup.** The runtime refuses to start unless class memory, JEV, and RAG are enabled
+  and their credentials set. Create `.env` from `.env.example` for the credentials.
 
 ## Common commands
 

@@ -106,16 +106,19 @@ Done when: `make check` green after each commit.
   only schedules or dispatches workflows that exist there).
 - Commit: `ci(harness): dependency vulnerability scan and weekly drift workflow`
 
-### Found during CP3 (pre-existing; schedule before CP7)
-- **`pydantic-settings` floor too low.** With `pydantic-settings==2.6.0` (the declared
-  floor) `tests/test_config.py` fails (`OPENAI_API_KEY` alias not populated). Raise the
-  floor to the first passing version and verify with exact-floor install. Runtime
-  dependency: normal review plus full checks.
-- **`mypy --strict src` fails when the `jev` extra is installed** (CI installs only
-  `.[dev]`, so it never sees this): unused `type: ignore` at
-  `src/mi_agent/decision/client.py:97` and an invariant `dict[str, str]` →
-  `dict[str, JsonValue]` argument at line 146. Fix, then run mypy in the `audit` job's
-  `.[dev,jev,rag]` environment too. Risky path (JEV integration): approval required.
+### Found during CP3 — fixed (pre-CP7 batch)
+- **`pydantic-settings` floor** raised to `>=2.15` (bisected: 2.6.0–2.14.0 fail
+  `tests/test_config.py`, 2.15.0 is the first passing). Verified with a lowest-direct
+  install of every direct dependency (all tests pass).
+- **JEV client SDK.** JEV is a self-hosted open-source model; MI reaches it through the
+  third-party alpha SDK `langchain-typesafe`. Pinned exactly (`==0.0.1a3`); CI's test job
+  now installs `.[dev,jev,rag]`, so `tests/test_jev_client.py` (previously skipped in CI)
+  runs and mypy checks the client against the real SDK. The two type errors are fixed
+  (`# type: ignore[import-not-found, unused-ignore]`, `criteria: dict[str, Any]`); mypy is
+  clean with and without the extra.
+- **Open decision:** replace the SDK with a direct `httpx` client for `jev serve`'s API
+  (removes the vendor-alpha dependency and its global `TYPESAFE_*` environment writes).
+  Needs the server's API; changes the mandatory JEV path (risky).
 
 ## Phase 2 — Guides
 
@@ -149,27 +152,36 @@ Done when: `make check` green after each commit.
 - Linked from `harness/guides/README.md` and `docs/THREAT_MODEL.md` (three new residual
   risks).
 
-### Found during CP5 (deployment problems; fix before CP7 campaigns)
-- **Verifier accepts wrong schemas.** `/health/deep` checks table presence and integrity
-  only. `state/tool_catalog.json` holds a winning tool creating `widgets(id, name)` and
-  class memory holds the same template (`f38576b9…`); both break `GET /widgets`. Fix:
-  make the target's deep health (or the verifier) check the columns `GET /widgets`
-  reads. Risky (verification).
-- **Manual repairs are credited to MI.** `RecoveryAgent.run_iteration` retries without a
-  monitor check. Fix: re-check health before a retry and close the incident without
-  persisting if already healthy. Risky (control flow); add a sensor case.
-- **Backups copy faulty state, no retention.** `target/backup/backup.sh` copies every 10 s
-  regardless of health; `inc-00e04644b7` restored a corrupt `latest` 17 times. Fix: copy
-  only when the database passes the same checks as `scripts/find_known_good_backup.py`;
-  add retention.
-- **Compose default contradicts the runtime.** `docker-compose.yml` defaults
-  `MI_CLASSMEM_ENABLED` to `false`; the runtime refuses to start unless `true`. Fix the
-  default.
-- **Bad learned state.** Remove the wrong-schema tool and templates that write invented
-  tables (`fault_injection_config`, `app_runtime_flags`). Hand edit of runtime state:
-  risky.
-- **`target/last_resort` is unused** (not in compose). Remove or wire in.
-- Commit: `docs(harness): fault runbooks and policy links`
+### Found during CP5 — status
+Fixed (pre-CP7 batch):
+- **Verifier accepted wrong schemas.** The target's deep health now requires the columns
+  the widget endpoints read (`target/app/main.py::REQUIRED_WIDGET_COLUMNS`; reports
+  `widgets_columns_missing`, error `schema_invalid`). Monitor and verifier both use it, so a
+  mis-shaped table now opens an incident and fails verification. Tests pin the column set
+  to every `SELECT … FROM widgets` and to the backup finder.
+- **Backups copied faulty state, no retention.** `target/backup/backup.sh` copies to a temp
+  file, validates the copy with `scripts/find_known_good_backup.py --check`, renames it
+  only if valid, and keeps the newest `BACKUP_RETENTION` (360). The backup job runs on
+  `python:3.12-slim` with `./scripts` mounted read-only. Tested under `sh` and `dash`
+  (the container's `/bin/sh`); not yet run in a container (Docker daemon was not running).
+- **Compose default** `MI_CLASSMEM_ENABLED` is now `true` (verified with
+  `docker compose config` and no `.env`).
+- **CP5 broke CI in a fresh clone.** A runbook cited the gitignored, runtime-written
+  `target/app/app.log`, so `test_agent_guides_reference_existing_code` failed outside a
+  machine that had run the stack. Runtime-written paths are now exempt, and
+  `test_runtime_written_exemptions_are_gitignored` keeps the exemption honest. Each
+  pre-CP7 commit was replayed in a clean worktree.
+
+Open, need a decision:
+- **Manual repairs are credited to MI.** Fixing it means re-checking health before a
+  retry, which changes the README retry rule ("loop back to step 5") that
+  `docs/harness/HARNESS_IMPLEMENTATION_WORKFLOW.md` § 9 lists as an invariant. Until
+  decided, the runbooks require stopping `mi-agent` before a manual repair.
+- **Bad learned state** (local, gitignored `state/`): the wrong-schema tool and templates
+  that write invented tables. The new health check stops them from verifying again, but
+  they can still be proposed. Removing them is a hand edit of runtime state (risky; back up
+  `state/` first).
+- **`target/last_resort`** is unused (not in compose): remove or wire in.
 
 ## Phase 3 — Behaviour lane
 
