@@ -4,6 +4,11 @@ Working agreement for coding agents and contributors in this repository. Every p
 `path::Symbol` reference below is checked by
 `tests/test_harness_architecture.py::test_agent_guides_reference_existing_code`.
 
+## Work in progress
+
+The harness gap plan is being built checkpoint by checkpoint. Before doing harness work,
+read `docs/harness/HANDOFF.md` (status, next checkpoint, working method, gotchas).
+
 ## What this repo is
 
 MI is a diagnostics-first recovery agent for a SQLite-backed target service. The runtime
