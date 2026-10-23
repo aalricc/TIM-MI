@@ -28,7 +28,6 @@ Policy context: `docs/THREAT_MODEL.md`, `harness/governance/README.md`.
 - **`restart_service` always fails here.** No restart hook is configured
   (`src/mi_agent/runtime.py::build_agent` builds `ToolExecutor` without hooks), so it returns
   `no_restart_hook_configured`. `request_backup_restore` works (built-in file copy).
-- **`target/last_resort` is not part of the compose stack.** Do not rely on it.
 - **Retries skip the monitor.** Once an incident has an attempt, each iteration retries from
   step 5 without re-checking health. If you repair the target while MI is mid-incident,
   MI's next action passes verification and is persisted as a learned success. Stop MI

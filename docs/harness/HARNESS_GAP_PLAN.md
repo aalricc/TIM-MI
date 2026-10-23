@@ -177,11 +177,11 @@ Open, need a decision:
   retry, which changes the README retry rule ("loop back to step 5") that
   `docs/harness/HARNESS_IMPLEMENTATION_WORKFLOW.md` § 9 lists as an invariant. Until
   decided, the runbooks require stopping `mi-agent` before a manual repair.
-- **Bad learned state** (local, gitignored `state/`): the wrong-schema tool and templates
-  that write invented tables. The new health check stops them from verifying again, but
-  they can still be proposed. Removing them is a hand edit of runtime state (risky; back up
-  `state/` first).
-- **`target/last_resort`** is unused (not in compose): remove or wire in.
+- **Bad learned state** cleared (decision 2026-10-23): `state/` archived to
+  `results/state-archive-2026-10-23.tar.gz` (gitignored, verified byte-identical) and
+  emptied; MI relearns from harness-driven runs. The archive keeps the pre-harness event
+  log for baseline comparison.
+- **`target/last_resort`** removed (decision 2026-10-23: unused, never in compose).
 
 ## Phase 3 — Behaviour lane
 
