@@ -1324,7 +1324,7 @@ class RecoveryAgent:
         for row in candidate_rows:
             try:
                 normalized.append(DynamicToolSpec.model_validate(row))
-            except Exception:
+            except Exception:  # noqa: S112 - malformed candidate rows are skipped by design
                 continue
 
         if isinstance(selected_name, str) and selected_name:

@@ -181,7 +181,7 @@ def test_canonical_action_key_normalizes_replace_file_aliases() -> None:
         rationale="r",
         operation="replace_file",
         params={
-            "source_path": "/tmp/backup/latest.db",
+            "source_path": "/tmp/backup/latest.db",  # noqa: S108 - literal, no file access
             "destination_path": "data/app.db",
             "backup_current": True,
         },

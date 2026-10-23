@@ -22,6 +22,7 @@ dev = [
   "ruff>=0.8,<1",
   "mypy>=1.13,<2",
   "jsonschema>=4.23,<5",
+  "pre-commit>=3.7,<5",
 ]
 rag = [
   "pinecone>=6,<7",
@@ -47,7 +48,11 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest uses bare asserts.
+"tests/**" = ["S101"]
 
 [tool.mypy]
 python_version = "3.12"

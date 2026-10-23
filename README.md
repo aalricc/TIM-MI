@@ -160,6 +160,13 @@ recovery loop if the LLM endpoint or credentials are invalid.
 ruff check .
 pytest -q
 mypy --strict src
+mypy --strict harness
+```
+
+Run the same checks automatically before every commit (once per clone):
+
+```bash
+pre-commit install
 ```
 
 By default, `pytest -q` excludes `live` tests. To run real OpenAI integration tests:

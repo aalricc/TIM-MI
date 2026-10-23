@@ -52,7 +52,7 @@ def _result(
     stage: str,
     violations: list[Violation],
     checked: int,
-    pass_message: str,
+    ok_message: str,
     now: float | None,
 ) -> dict[str, Any]:
     failed = bool(violations)
@@ -64,7 +64,7 @@ def _result(
         "stage": stage,
         "status": "fail" if failed else "pass",
         "severity": "error" if failed else "info",
-        "message": f"{len(violations)} violation(s)" if failed else pass_message,
+        "message": f"{len(violations)} violation(s)" if failed else ok_message,
         "violations": violations,
         "checked": checked,
         "ts": time.time() if now is None else now,
@@ -98,7 +98,7 @@ def jev_selects_before_registration(
         stage=stage,
         violations=violations,
         checked=checked,
-        pass_message="every registered action was selected by a usable JEV decision",
+        ok_message="every registered action was selected by a usable JEV decision",
         now=now,
     )
 
@@ -142,7 +142,7 @@ def security_gate_before_registration(
         stage=stage,
         violations=violations,
         checked=checked,
-        pass_message="every registered action passed the security gate first",
+        ok_message="every registered action passed the security gate first",
         now=now,
     )
 
@@ -167,7 +167,7 @@ def one_action_per_attempt(
         stage=stage,
         violations=violations,
         checked=len(timelines),
-        pass_message="no attempt executed more than one dynamic action",
+        ok_message="no attempt executed more than one dynamic action",
         now=now,
     )
 
@@ -192,7 +192,7 @@ def verification_follows_execution(
         stage=stage,
         violations=violations,
         checked=checked,
-        pass_message="every executed action was independently verified",
+        ok_message="every executed action was independently verified",
         now=now,
     )
 
@@ -229,7 +229,7 @@ def persistence_only_after_verified_recovery(
         stage=stage,
         violations=violations,
         checked=checked,
-        pass_message="success persistence ran only after verified recovery, in step order",
+        ok_message="success persistence ran only after verified recovery, in step order",
         now=now,
     )
 
@@ -264,7 +264,7 @@ def failure_learning_only_on_failed_attempts(
         stage=stage,
         violations=violations,
         checked=checked,
-        pass_message="failure-path learning writes only on failed attempts, in step order",
+        ok_message="failure-path learning writes only on failed attempts, in step order",
         now=now,
     )
 
@@ -305,7 +305,7 @@ def retry_resumes_at_step5(
         stage=stage,
         violations=violations,
         checked=checked,
-        pass_message="every retry resumed at step 5 with retained context",
+        ok_message="every retry resumed at step 5 with retained context",
         now=now,
     )
 

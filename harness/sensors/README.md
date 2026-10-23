@@ -6,7 +6,8 @@ and never mutate runtime control flow.
 
 Run stages (placement rationale: `harness/governance/README.md`):
 
-- **pre_commit** — fast computational checks on every change (`make check`).
+- **pre_commit** — fast computational checks on every change (`.pre-commit-config.yaml`,
+  same commands as `make check`).
 - **ci** — everything in pre_commit again, plus costlier checks after integration.
 - **continuous** — outside the change lifecycle, against live runtime artifacts.
 
@@ -23,7 +24,7 @@ the listed stage; **manual** = command exists, run by a person; **gap** = not bu
 | Unit tests | computational | pre_commit, ci | `pytest -q` (excludes `live`) | runtime maintainer | wired |
 | Contract validity + runtime grammar equality | computational | pre_commit, ci | `tests/test_harness_contracts.py` | harness maintainer | wired |
 | Contract shape vs runtime output | computational | pre_commit, ci | `tests/test_harness_mappings.py` | harness maintainer | wired |
-| Basic security scan (static) | computational | pre_commit, ci | — (candidate: ruff `S` rules or bandit) | runtime maintainer | gap |
+| Basic security scan (static) | computational | pre_commit, ci | ruff `S` (flake8-bandit) rules in `ruff check .`; suppressions are inline with a reason, plus `S101` in `tests/**` | runtime maintainer | wired |
 | Dependency vulnerability scan | computational | ci, continuous | — (candidate: pip-audit) | runtime maintainer | gap |
 | LLM code review (duplication, over-engineering) | inferential | ci (selective) | — | harness maintainer | gap |
 | PR review | human | ci | GitHub pull request review | change author's reviewer | manual |

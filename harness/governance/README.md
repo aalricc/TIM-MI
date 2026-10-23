@@ -7,8 +7,8 @@ runtime-written artifacts are governed. Governance never relaxes a runtime invar
 
 | Stage | Runs | Command | Status |
 | --- | --- | --- | --- |
-| **Pre-commit / every change** | lint, type checks (runtime + harness), unit tests, contract validation, structural architecture checks, scripted recovery regression | `make check` | wired as a make target; no git pre-commit hook installed |
-| | basic security scan | — | gap |
+| **Pre-commit / every change** | lint, type checks (runtime + harness), unit tests, contract validation, structural architecture checks, scripted recovery regression | `.pre-commit-config.yaml` (same commands as `make check`) | wired; each clone runs `pre-commit install` once |
+| | basic security scan | ruff `S` (flake8-bandit) rules, part of `ruff check .` | wired (pre-commit + CI) |
 | **CI/CD after integration** | everything above again | `.github/workflows/ci.yml` (`ruff`, `mypy --strict src`, `mypy --strict harness`, `pytest -q`) | wired |
 | | full E2E fault-injection recovery regression | `README.md` quick live recovery test | manual |
 | | costlier inferential review (LLM code / architecture review) | — | gap |

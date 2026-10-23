@@ -71,13 +71,16 @@ Done when: `make check` green after each commit.
 - Done when: `make check`; `PYTHONPATH=src python scripts/classmem_stage_benchmark.py --incidents 6` exits 0.
 - Commit: `fix(runtime): <D1 outcome> on security-gate rejection; repair classmem benchmark`
 
-### CP2 — Pre-commit hook + basic security scan
-- Enable ruff `S` (flake8-bandit) rules in `pyproject.toml`; triage existing findings with
-  narrow `per-file-ignores` (each with a one-line reason, e.g. `S101` in `tests/`, SQL
-  `executescript` in `executor.py` is the gated `run_sql` operation).
-- Add `.pre-commit-config.yaml` running `ruff check`, `mypy --strict src harness`, and the
-  fast harness tests (`make harness`); add `pre-commit` to dev extras; document
-  `pre-commit install` in `README.md` § Validation.
+### CP2 — Pre-commit hook + basic security scan — done
+- ruff `S` (flake8-bandit) rules enabled. Triage of the 681 initial findings:
+  `S101` (668 asserts, all in `tests/`) ignored for `tests/**`; `S106` false positive on
+  harness param `pass_message` fixed by renaming to `ok_message`; `S324` sha1 content IDs
+  in `rag_ingest.py` fixed with `usedforsecurity=False` (digests unchanged); `S104`
+  (`main.py` binds `0.0.0.0` for Docker), `S112` (engine skips malformed candidate rows),
+  `S311` (seeded report sampling), `S108` (test literal) suppressed inline with reasons.
+- `.pre-commit-config.yaml`: local hooks running `ruff check .`, `mypy --strict src`,
+  `mypy --strict harness`, `pytest -q` (same as `make check`/CI); `pre-commit` in dev
+  extras; `pre-commit install` documented in `README.md` § Validation.
 - Done when: `pre-commit run --all-files` and `make check` pass.
 - Flip: sensors "Basic security scan" → wired; governance pre-commit row → wired.
 - Commit: `chore(harness): pre-commit hook and ruff security rules`
