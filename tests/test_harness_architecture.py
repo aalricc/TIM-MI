@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import ast
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 SRC = Path("src/mi_agent")
@@ -157,6 +159,8 @@ GUIDE_DOCS = [
     *sorted(Path("docs/runbooks").glob("*.md")),
 ]
 _PATH_EXTENSIONS = (".py", ".md", ".json", ".jsonl", ".yml", ".yaml", ".toml", ".html", ".sh")
+# Written at runtime and gitignored, so absent from a fresh clone (CI).
+RUNTIME_WRITTEN = ("state/", "target/app/app.log", "target/app/data/")
 
 
 def _guide_references(text: str) -> list[tuple[str, str | None]]:
@@ -164,8 +168,8 @@ def _guide_references(text: str) -> list[tuple[str, str | None]]:
     refs: list[tuple[str, str | None]] = []
     for span in re.findall(r"`([^`\s]+)`", text):
         path, _, symbol = span.partition("::")
-        if "<" in path or path.startswith(("http", "state/", "/")):
-            continue  # placeholders, URLs, runtime state (gitignored), container/URL paths
+        if "<" in path or path.startswith(("http", "/", *RUNTIME_WRITTEN)):
+            continue  # placeholders, URLs, container/URL paths, runtime-written files
         if "/" not in path and not path.endswith(_PATH_EXTENSIONS):
             continue
         if "*" in path and "/" not in path:
@@ -214,11 +218,24 @@ def test_agent_guides_reference_existing_code() -> None:
     assert paths >= 80 and symbols >= 25, (paths, symbols)
 
 
+def test_runtime_written_exemptions_are_gitignored() -> None:
+    # The exemption must not hide a genuinely missing tracked file.
+    probes = ["state/events.jsonl", "target/app/app.log", "target/app/data/app.db"]
+    assert all(any(p.startswith(prefix) for prefix in RUNTIME_WRITTEN) for p in probes)
+    git = shutil.which("git")
+    assert git is not None
+    # Fixed git binary and repo-relative probe paths; no untrusted input.
+    result = subprocess.run(  # noqa: S603
+        [git, "check-ignore", *probes], capture_output=True, text=True, check=False
+    )
+    assert sorted(result.stdout.split()) == sorted(probes), result.stdout
+
+
 def test_guide_reference_extractor_handles_forms() -> None:
     refs = _guide_references(
         "`src/a.py::B.c` `pyproject.toml` `harness/` `state/skills.md` `<name>.schema.v2.json` "
         "`workflow.step` `make check` `*.schema.v1.json` `S101` `/target/app/app.log` "
-        "`/health/deep` `MI_LLM_*`"
+        "`/health/deep` `MI_LLM_*` `target/app/app.log` `target/app/data/app.db`"
     )
     assert refs == [("src/a.py", "B.c"), ("pyproject.toml", None), ("harness/", None)]
     assert _resolve_symbol(EXECUTOR, "ToolExecutor.security_gate")
