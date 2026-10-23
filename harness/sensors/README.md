@@ -39,6 +39,8 @@ the listed stage; **manual** = command exists, run by a person; **gap** = not bu
 | JEV is the only path to execution | computational | pre_commit, ci | `test_jev_is_the_only_path_to_execution` | runtime maintainer | wired |
 | One execution + one verification call site | computational | pre_commit, ci | `test_engine_executes_and_verifies_once_per_attempt_structurally` | runtime maintainer | wired |
 | README loop (16 steps, step-5 retry) ↔ mapping doc drift | computational | pre_commit, ci | `test_readme_loop_has_sixteen_steps_and_step5_retry_rule`, `test_mapping_doc_covers_every_readme_step` | harness maintainer | wired |
+| Operation allowlist consistency (gate = LLM HOW schema = LLM prompt = test copies = `docs/ARCHITECTURE.md`) | computational | pre_commit, ci | `test_operation_allowlist_is_consistent` | runtime maintainer | wired |
+| Guide reference integrity (every path and `path::Symbol` in `AGENTS.md` and `docs/harness/skills/` exists) | computational | pre_commit, ci | `test_agent_guides_reference_existing_code` | harness maintainer | wired |
 | `jev_selects_before_registration` | computational | ci, continuous | `harness/sensors/runtime_invariants.py` | harness maintainer | wired (ci, via `tests/test_harness_sensors.py`); manual (continuous) |
 | `security_gate_before_registration` | computational | ci, continuous | same | harness maintainer | as above |
 | `one_action_per_attempt` | computational | ci, continuous | same | harness maintainer | as above |

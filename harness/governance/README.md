@@ -85,7 +85,7 @@ Run whenever an issue occurs more than once.
 | S2 Triage patterns | human | Group repeated failures, find root causes | group by `incident_signature.failure_type` / `class_id`, `decision_trace.reason`, sensor violations |
 | S3 Draft a better control | LLM / coding agent | Propose a guide, sensor, test, or skill change | a PR that changes one guide/sensor/test/skill |
 | S4 Validate | MI / CI | Run tests, contract, security, regression checks | `make check` locally, CI green |
-| S5 Review & approve | human | Sign-off, mandatory for risky changes (list above) | PR approval |
+| S5 Review & approve | human | Sign-off, mandatory for risky changes (list above), using `docs/harness/skills/review-checklist.md` | PR approval |
 | S6 Promote | CI/CD | Merge and deploy runtime and harness together | merge to `main` |
 
 A repeated issue is closed only when a guide or sensor exists that would have prevented

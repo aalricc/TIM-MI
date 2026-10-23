@@ -149,3 +149,120 @@ def test_mapping_doc_covers_every_readme_step() -> None:
     text = MAPPING_DOC.read_text(encoding="utf-8")
     rows = [int(n) for n in re.findall(r"^\| (\d+) \|", text, flags=re.MULTILINE)]
     assert rows == list(range(1, 17))
+
+
+GUIDE_DOCS = [Path("AGENTS.md"), *sorted(Path("docs/harness/skills").glob("*.md"))]
+_PATH_EXTENSIONS = (".py", ".md", ".json", ".jsonl", ".yml", ".yaml", ".toml", ".html", ".sh")
+
+
+def _guide_references(text: str) -> list[tuple[str, str | None]]:
+    """Backticked repo paths, optionally `path::Symbol.attr`, in a guide document."""
+    refs: list[tuple[str, str | None]] = []
+    for span in re.findall(r"`([^`\s]+)`", text):
+        path, _, symbol = span.partition("::")
+        if "<" in path or path.startswith(("http", "state/")):
+            continue  # placeholders, URLs, runtime-written (gitignored) state
+        if "/" not in path and not path.endswith(_PATH_EXTENSIONS):
+            continue
+        if "*" in path and "/" not in path:
+            continue
+        refs.append((path, symbol or None))
+    return refs
+
+
+def _resolve_symbol(path: Path, symbol: str) -> bool:
+    body: list[ast.stmt] = ast.parse(path.read_text(encoding="utf-8")).body
+    for part in symbol.split("."):
+        found: ast.stmt | None = None
+        for node in body:
+            names: list[str] = []
+            if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+                names = [node.name]
+            elif isinstance(node, ast.Assign):
+                names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names = [node.target.id]
+            if part in names:
+                found = node
+                break
+        if found is None:
+            return False
+        body = found.body if isinstance(found, ast.ClassDef) else []
+    return True
+
+
+def test_agent_guides_reference_existing_code() -> None:
+    paths = 0
+    symbols = 0
+    for doc in GUIDE_DOCS:
+        for raw_path, symbol in _guide_references(doc.read_text(encoding="utf-8")):
+            path = Path(raw_path)
+            if "*" in raw_path:
+                assert list(Path().glob(raw_path)), f"{doc}: `{raw_path}` matches nothing"
+                continue
+            assert path.exists(), f"{doc}: `{raw_path}` does not exist"
+            paths += 1
+            if symbol is not None:
+                assert path.suffix == ".py", f"{doc}: symbol on non-Python `{raw_path}`"
+                assert _resolve_symbol(path, symbol), f"{doc}: `{raw_path}::{symbol}` not found"
+                symbols += 1
+    # Guard against the extractor silently matching nothing.
+    assert paths >= 40 and symbols >= 20, (paths, symbols)
+
+
+def test_guide_reference_extractor_handles_forms() -> None:
+    refs = _guide_references(
+        "`src/a.py::B.c` `pyproject.toml` `harness/` `state/skills.md` `<name>.schema.v2.json` "
+        "`workflow.step` `make check` `*.schema.v1.json` `S101`"
+    )
+    assert refs == [("src/a.py", "B.c"), ("pyproject.toml", None), ("harness/", None)]
+    assert _resolve_symbol(EXECUTOR, "ToolExecutor.security_gate")
+    assert _resolve_symbol(Path("harness/mappings/runtime.py"), "README_STEP")
+    assert not _resolve_symbol(EXECUTOR, "ToolExecutor.no_such_method")
+
+
+def _gate_operations() -> set[str]:
+    gate = _function(EXECUTOR, "security_gate")
+    for node in ast.walk(gate):
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "allowed_operations" for t in node.targets)
+            and isinstance(node.value, ast.Set)
+        ):
+            return {e.value for e in node.value.elts if isinstance(e, ast.Constant)}
+    raise AssertionError("allowed_operations set not found in security_gate")
+
+
+def test_operation_allowlist_is_consistent() -> None:
+    operations = _gate_operations()
+    assert operations == {"request_backup_restore", "restart_service", "run_sql", "replace_file"}
+
+    # Any string collection naming two or more operations is a copy of the allowlist.
+    copies: dict[str, int] = {}
+    for root in ("src", "tests", "scripts", "harness"):
+        for path in sorted(Path(root).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Set | ast.List | ast.Tuple) or not node.elts:
+                    continue
+                if not all(
+                    isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts
+                ):
+                    continue
+                values = {e.value for e in node.elts if isinstance(e, ast.Constant)}
+                if len(values & operations) >= 2:
+                    assert values == operations, f"{path}:{node.lineno} {sorted(values)}"
+                    copies[path.as_posix()] = copies.get(path.as_posix(), 0) + 1
+    assert copies == {
+        "src/mi_agent/tools/executor.py": 1,
+        "src/mi_agent/llm/client.py": 3,  # two HOW schema enums + allowed_operations
+        "tests/harness_scenarios.py": 1,
+        "tests/test_live_llm_integration.py": 1,
+        "tests/test_harness_architecture.py": 1,  # the pinned expectation above
+    }
+
+    safety_line = next(
+        line
+        for line in Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8").splitlines()
+        if line.startswith("- Allowed dynamic operations are explicit")
+    )
+    assert set(re.findall(r"`([a-z_]+)`", safety_line)) == operations

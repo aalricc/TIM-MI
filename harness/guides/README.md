@@ -19,8 +19,9 @@ Owner roles: **runtime maintainer** (owns `src/mi_agent`), **harness maintainer*
 | Typed harness contracts | computational | `harness/contracts/*.schema.v1.json` | harness maintainer | in place |
 | Lint / format / type policy | computational | `[tool.ruff]`, `[tool.mypy] strict` in `pyproject.toml` | runtime maintainer | in place |
 | Dynamic-tool template | computational | `DynamicToolSpec` + per-operation params models; allowlist in `ToolExecutor.security_gate` | runtime maintainer | in place |
-| Coding conventions for agents (AGENTS.md) | inferential | — | harness maintainer | gap |
-| "How to add a tool / step / contract field" skill | inferential | this catalogue + `harness/contracts/README.md` rules | harness maintainer | partial |
+| Coding conventions for agents | inferential | `AGENTS.md` (setup, commands, invariants, boundaries, risky paths, conventions) | harness maintainer | in place |
+| Contributor skills: add a dynamic tool operation / workflow step / contract field | inferential | `docs/harness/skills/add-dynamic-tool-operation.md`, `add-workflow-step.md`, `add-contract-field.md` | harness maintainer | in place |
+| Review checklist | inferential | `docs/harness/skills/review-checklist.md` | harness maintainer | in place |
 
 ## Architecture guides
 

@@ -119,14 +119,20 @@ Done when: `make check` green after each commit.
 
 ## Phase 2 — Guides
 
-### CP4 — AGENTS.md and contributor skills
-- `AGENTS.md`: repo map, runtime invariants, harness boundary, commands, risky-path list,
-  "contracts change in the same commit as the runtime".
-- `docs/harness/skills/`: `add-dynamic-tool-operation.md` (schema model + gate allowlist +
-  tests + contract enums), `add-workflow-step.md` (engine + contract + `README_STEP` +
-  mapping doc), `review-checklist.md`.
-- Test: `tests/test_harness_architecture.py` asserts every path referenced in `AGENTS.md`
-  exists (prevents guide rot).
+### CP4 — AGENTS.md and contributor skills — done
+- `AGENTS.md`: setup/commands, repo map, invariants with their enforcing tests/sensors,
+  boundaries, risky-change list, conventions, links to skills.
+- `docs/harness/skills/`: `add-dynamic-tool-operation.md`, `add-workflow-step.md`,
+  `add-contract-field.md`, `review-checklist.md`; every step names the exact code
+  location (`path::Symbol`) and the test that catches a missed step.
+- `test_agent_guides_reference_existing_code`: every backticked path and `path::Symbol`
+  in `AGENTS.md` and the skills must exist (symbols resolved by AST).
+- `test_operation_allowlist_is_consistent`: the operation allowlist was duplicated in six
+  places (gate, two LLM HOW schema enums, LLM `allowed_operations`, two test sets) plus
+  `docs/ARCHITECTURE.md`, with nothing keeping them in sync; any string collection naming
+  two or more operations must now equal the gate's set.
+- Both tests were mutation-checked (renamed symbol, missing file, operation added to the
+  gate only, and gate + pin updated with a stale LLM copy): each fails as intended.
 - Commit: `docs(harness): AGENTS.md and contributor skills`
 
 ### CP5 — Runbooks and policy links
