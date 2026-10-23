@@ -1,5 +1,32 @@
 # Rewrite Worklog
 
+## 2026-10-23 — Harness foundation, runtime-step hardening, and campaign automation
+
+**Problem.** After the workflow-first rewrite, the project needed a diagnostics harness with enforceable runtime invariants, stronger security/retry semantics in the engine, safer infra/dependency posture, and repeatable end-to-end campaign coverage.
+**Approach.** Added harness contracts/mappings/sensors/KPIs and governance docs, enforced step ordering and failure semantics in runtime (gate/registration/execution/verify/persistence), hardened infra around backup/deep-health behavior and dependency pinning/scans, expanded contributor runbooks/architecture notes, and added scenario fixtures plus automated fault-injection campaign scripts.
+**Impact.** Runtime behavior is now more observable and structurally constrained, harness outputs are schema-backed and testable, CI/security posture is tighter, and E2E fault validation is reproducible with less manual effort.
+
+**Commits included (2026-10-23).**
+- `bc6cafe4` Updated 22nd Oct worklog.
+- `8c8ca5ef` Updated architecture diagram with harness addition.
+- `b3ca2d56` Fix runtime: gate as step 9, failure persist events, first-success skills, nested executed payload.
+- `b7c20611` Feat harness: contracts, read-model mappings, invariant sensors, KPIs, governance docs.
+- `6249d9be` Fix runtime: security-gate rejection treated as failed attempt with learning penalties; repair classmem benchmark.
+- `7566b343` Chore harness: pre-commit hook and ruff security rules.
+- `32fcd5a6` CI harness: dependency vulnerability scan and weekly drift workflow; raise pypdf/pytest floors.
+- `585f7d62` Docs harness: AGENTS.md, contributor skills, and guide/allowlist consistency tests.
+- `dcb86ba4` Docs harness: fault runbooks, known-good backup finder, threat-model residual risks.
+- `ebd39786` Test harness: exempt runtime-written paths from guide reference check (fresh-clone CI fix).
+- `e2643724` Fix deps: pin JEV client SDK, raise pydantic-settings floor, run JEV tests and mypy in CI.
+- `f6eca3bb` Fix target: deep health requires widget columns read by endpoints.
+- `d7c77be2` Fix infra: validate backups before keeping them, add retention; default class memory on.
+- `0ed94ad5` Docs harness: update runbooks, threat model, and plan for pre-CP7 fixes.
+- `5728a607` Chore: remove unused target/last_resort; record state reset in plan.
+- `a98d4ff1` Fix runtime: re-check health before each retry; close externally repaired incidents without learning.
+- `56150113` Docs harness: handoff brief for continuing the gap plan.
+- `dc1ee294` Feat harness: scenario fixtures, event slicing, outcome checker.
+- `31729d94` Feat harness: automated E2E fault-injection campaign.
+
 ## 2026-10-22 — Post-recovery close behavior and workflow timeline stabilization
 
 **Problem.** Incidents were not consistently closed immediately after a healthy post-recovery ping, and dashboard/test visibility needed a more stable, workflow-native event stream across local/CI runs.
