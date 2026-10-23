@@ -69,8 +69,8 @@ slice the campaign window first (`docs/harness/BASELINE.md` § 4).
 | --- | --- | --- | --- | --- | --- |
 | Scripted recovery regression (full loop, unusable decisions, failure + unhealthy ping, fast path fail/fallback, cold start) | computational | pre_commit, ci | `tests/harness_scenarios.py` driven by `tests/test_harness_*.py`; `tests/test_agent_workflow.py`, `tests/test_class_memory_engine.py` | runtime maintainer | wired |
 | Approved outcome checker (fixture + log slice) | computational | ci, continuous | `python -m harness.scenarios.check [--stage ci|continuous] harness/scenarios/<fault>.json <log-slice>.jsonl`; uses `harness.events.slice`, `decision_trace`, KPIs, and invariant sensors | operator | wired (ci via tests); manual (continuous) |
-| E2E fault injection (inject → recover → verify via `/health/deep`) | computational | ci | Quick live recovery test in `README.md` (docker compose + live LLM/JEV/Pinecone) | operator | manual |
-| Live LLM integration | computational | ci (opt-in) | `pytest -m live` | runtime maintainer | manual |
+| E2E fault injection (inject → recover → verify via `/health/deep`) | computational | ci | `python scripts/e2e_fault_campaign.py --stage ci` in `.github/workflows/live-e2e-fault-campaign.yml` (`workflow_dispatch` on self-hosted runner) | operator | wired (`workflow_dispatch`) |
+| Live LLM integration | computational | ci (opt-in) | `pytest -m live` in `.github/workflows/live-e2e-fault-campaign.yml` | runtime maintainer | wired (`workflow_dispatch`) |
 | Recovery KPIs (recovery rate, TTR, attempts, decision telemetry) | computational | continuous | `python -m harness.metrics.kpis state/events.jsonl` | operator | manual |
 | LLM-as-judge on diagnosis quality and action choice | inferential | continuous (sampled) | — (input: `decision_trace` + `incident_signature` records) | harness maintainer | gap |
 | Decision-log sampling and review | human | continuous | sample `decision_trace` records weekly | operator | manual |

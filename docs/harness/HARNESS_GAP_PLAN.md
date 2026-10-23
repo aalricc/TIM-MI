@@ -18,7 +18,7 @@ Conventions for every checkpoint:
 | ID | Decision | Blocks | Options |
 | --- | --- | --- | --- |
 | D1 | What should a security-gate rejection do? | CP1 | **Decided: (b)** — failed attempt with learning penalties (policy −1, class-memory failure), action excluded for the incident, retry from step 5. Rejected alternatives: (a) keep raising; (c) failed attempt without penalties |
-| D2 | Where does the live E2E fault-injection regression run? It needs OpenAI, Pinecone, and the local JEV server (`.local/jev`). | CP7 | (a) self-hosted runner with JEV; (b) nightly on a dev host via cron, results committed to `results/`; (c) manual `workflow_dispatch` only |
+| D2 | Where does the live E2E fault-injection regression run? It needs OpenAI, Pinecone, and the local JEV server (`.local/jev`). | CP7 | **Decided: (c)** — manual `workflow_dispatch` only via a self-hosted runner (no schedule) |
 | D3 | Where does continuous surveillance run? GitHub Actions cannot read a host's `state/`. | CP9 | (a) `harness-watch` service in `docker-compose.yml` sharing the `state` volume; (b) host cron; (c) Claude Code scheduled routine on the host |
 | D4 | Which model judges diagnosis/action quality, and who approves the rubric? | CP12 | OpenAI (same provider as runtime) or Claude; rubric owner |
 | D5 | Which agent runs LLM code/architecture review on PRs? | CP13 | GitHub Action with an LLM reviewer; selective on risky paths only |
@@ -209,10 +209,17 @@ Done notes:
 ### CP7 — Live E2E fault-injection runner (depends on D2)
 - `scripts/e2e_fault_campaign.py`: for each fixture, wait healthy → `POST /ops/fault/{fault}`
   → wait `incident.closed` (timeout) → slice → check → KPIs; writes `results/<run>/`.
-- Workflow per D2 (also runs `pytest -m live`).
+- Workflow per D2 (also runs `pytest -m live`):
+  `.github/workflows/live-e2e-fault-campaign.yml` (`workflow_dispatch` only).
 - Done when: one full campaign passes on the chosen runner.
 - Flip: sensors "E2E fault injection", "Live LLM integration" → wired.
 - Commit: `feat(harness): automated E2E fault-injection campaign`
+
+Implementation notes:
+- Campaign script implemented: `scripts/e2e_fault_campaign.py`.
+- Manual workflow implemented for D2=(c):
+  `.github/workflows/live-e2e-fault-campaign.yml`.
+- First full live campaign pass remains the acceptance gate for closing CP7.
 
 ### CP8 — Baseline collection (operator)
 - Run CP7 campaign on `main`; fill `docs/harness/BASELINE.md` (no TBD left).
