@@ -14,6 +14,7 @@ from mi_agent.class_memory import (
     ClassMatch,
     ClassMemory,
     FastPathDecision,
+    OutcomeUpdate,
     canonical_action_key,
     dedupe_candidates_by_action_key,
 )
@@ -459,6 +460,28 @@ class RecoveryAgent:
         started = time.perf_counter()
         action_key = selected_action_key or canonical_action_key(selected_how)
         path_mode = self._path_mode_for_source(source)
+        try:
+            self._tools.security_gate(selected_how)
+        except Exception as exc:
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="security.gate",
+                status="rejected",
+                operation=selected_how.operation,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="security.gate",
+            status="ok",
+            operation=selected_how.operation,
+        )
         tool_name = self._tools.register_temporary_dynamic_tool(incident.incident_id, selected_how)
         await self._publish_workflow_step(
             incident_id=incident.incident_id,
@@ -516,7 +539,10 @@ class RecoveryAgent:
         executed_payload: dict[str, Any] = {
             "incident_id": incident.incident_id,
             "tool_name": tool_name,
-            **action_result,
+            "operation": selected_how.operation,
+            "ok": bool(action_result.get("ok", False)),
+            "error": action_result.get("error"),
+            "result": action_result,
         }
         if self._classmem_enabled:
             executed_payload.update(
@@ -572,6 +598,7 @@ class RecoveryAgent:
         latency_ms = (time.perf_counter() - started) * 1000.0
 
         if verification.healthy:
+            outcome_ts = time.time()
             self._tools.persist_dynamic_tool(incident.incident_id, tool_name)
             self._tools.discard_incident_tools(incident.incident_id, keep=tool_name)
             await self._publish_workflow_step(
@@ -591,6 +618,7 @@ class RecoveryAgent:
                 step="persist.policy_store",
                 status="ok",
                 action_key=tool_name,
+                reward=1.0,
             )
 
             if (
@@ -598,7 +626,19 @@ class RecoveryAgent:
                 and self._class_memory is not None
                 and class_match is not None
             ):
-                section = self._class_memory.render_skills_section(class_id=class_match.class_id)
+                # Render with the pending success so a new class gets its skill on the
+                # first recovery, before step 16 persists the same outcome.
+                section = self._class_memory.render_skills_section(
+                    class_id=class_match.class_id,
+                    pending=OutcomeUpdate(
+                        match=class_match,
+                        spec=selected_how,
+                        latency_ms=latency_ms,
+                        success=True,
+                        source=source,
+                        ts=outcome_ts,
+                    ),
+                )
                 if section:
                     self._class_memory.upsert_skills_section(
                         Path(self._skills_path),
@@ -648,6 +688,7 @@ class RecoveryAgent:
                     latency_ms=latency_ms,
                     success=True,
                     source=source,
+                    ts=outcome_ts,
                 )
                 await self._publish_workflow_step(
                     incident_id=incident.incident_id,
@@ -744,6 +785,17 @@ class RecoveryAgent:
         )
         if self._classmem_enabled:
             incident.failed_action_keys.add(action_key)
+        self._tools.discard_incident_tools(incident.incident_id)
+        self._update_policy(tool_name, reward=-1.0)
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="persist.policy_store",
+            status="failure",
+            action_key=tool_name,
+            reward=-1.0,
+        )
         if self._classmem_enabled and self._class_memory is not None and class_match is not None:
             self._class_memory.record_outcome(
                 match=class_match,
@@ -752,8 +804,14 @@ class RecoveryAgent:
                 success=False,
                 source=source,
             )
-        self._tools.discard_incident_tools(incident.incident_id)
-        self._update_policy(tool_name, reward=-1.0)
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="persist.class_memory",
+                status="failure",
+                class_id=class_match.class_id,
+            )
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_FAILED)
         failed_payload: dict[str, Any] = {
             "incident_id": incident.incident_id,
@@ -1038,21 +1096,10 @@ class RecoveryAgent:
             decision_payload=decision_payload,
         )
         selected_action_key: str | None = None
+        transport_error = reason.startswith("jev_request_error")
         if selected_spec is not None and self._classmem_enabled:
             selected_action_key = canonical_action_key(selected_spec)
             incident.failed_action_keys.add(selected_action_key)
-            if (
-                self._class_memory is not None
-                and class_match is not None
-                and not reason.startswith("jev_request_error")
-            ):
-                self._class_memory.record_outcome(
-                    match=class_match,
-                    spec=selected_spec,
-                    latency_ms=0.0,
-                    success=False,
-                    source=source,
-                )
 
         incident.attempts += 1
         incident.state_fingerprint = self._tools.state_fingerprint()
@@ -1069,8 +1116,39 @@ class RecoveryAgent:
                 },
             )
         )
-        if not reason.startswith("jev_request_error"):
+        if not transport_error:
             self._update_policy("decision_unusable", reward=-1.0)
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="persist.policy_store",
+                status="failure",
+                action_key="decision_unusable",
+                reward=-1.0,
+            )
+        if (
+            selected_spec is not None
+            and self._classmem_enabled
+            and self._class_memory is not None
+            and class_match is not None
+            and not transport_error
+        ):
+            self._class_memory.record_outcome(
+                match=class_match,
+                spec=selected_spec,
+                latency_ms=0.0,
+                success=False,
+                source=source,
+            )
+            await self._publish_workflow_step(
+                incident_id=incident.incident_id,
+                attempt=attempt,
+                path_mode=path_mode,
+                step="persist.class_memory",
+                status="failure",
+                class_id=class_match.class_id,
+            )
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_FAILED)
         await self._events.publish(
             "decision.unusable",

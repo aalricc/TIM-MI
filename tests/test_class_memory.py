@@ -8,6 +8,7 @@ from mi_agent.class_memory import (
     ClassMatch,
     ClassMemory,
     ClassMemoryConfig,
+    OutcomeUpdate,
     canonical_action_key,
     dedupe_candidates_by_action_key,
 )
@@ -464,3 +465,32 @@ def test_concurrent_writers_do_not_corrupt_store_or_skills(tmp_path: Path) -> No
     assert isinstance(parsed.get("classes"), dict)
     content = skills_path.read_text(encoding="utf-8")
     assert "<!-- class:" in content
+
+
+def test_render_with_pending_outcome_matches_render_after_recording(tmp_path: Path) -> None:
+    mem = ClassMemory(_config(tmp_path))
+    signature = mem.build_signature(
+        diagnostics=_diagnostics_with_log("table widgets missing"),
+        diagnosis=_diagnosis(),
+        attempts=0,
+    )
+    match = mem.assign_class(signature)
+    spec = _run_sql_spec("recreate", "CREATE TABLE IF NOT EXISTS widgets(id INTEGER);")
+    pending = OutcomeUpdate(
+        match=match, spec=spec, latency_ms=4.0, success=True, source="full_loop", ts=123.5
+    )
+
+    # Brand-new class: nothing recorded yet, so only the pending view has a section.
+    assert mem.render_skills_section(class_id=match.class_id) is None
+    projected = mem.render_skills_section(class_id=match.class_id, pending=pending)
+    store_before = (tmp_path / "class_store.json").read_text(encoding="utf-8")
+    assert projected is not None
+    assert (tmp_path / "class_store.json").read_text(encoding="utf-8") == store_before
+
+    mem.record_outcome(
+        match=match, spec=spec, latency_ms=4.0, success=True, source="full_loop", ts=123.5
+    )
+
+    assert mem.render_skills_section(class_id=match.class_id) == projected
+    assert "- attempts: 1" in projected
+    assert "- last_verified_ts: 123.5" in projected

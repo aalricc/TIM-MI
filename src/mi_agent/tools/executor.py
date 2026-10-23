@@ -189,7 +189,8 @@ class ToolExecutor:
         spec = self._session_tools.get(incident_id, {}).get(tool_name)
         if spec is None:
             raise ToolExecutionError(f"dynamic tool not found: {tool_name}")
-        self._security_gate(spec)
+        # Re-checked at execution time so no caller can execute an ungated spec.
+        self.security_gate(spec)
         return await self._execute_operation(spec.operation, spec.params)
 
     def discard_incident_tools(self, incident_id: str, *, keep: str | None = None) -> None:
@@ -251,7 +252,8 @@ class ToolExecutor:
         blob = json.dumps(payload, sort_keys=True).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()
 
-    def _security_gate(self, spec: DynamicToolSpec) -> None:
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        """README step 9: schema/path/sandbox checks. Raises on rejection."""
         allowed_operations = {
             "request_backup_restore",
             "restart_service",

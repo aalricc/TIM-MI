@@ -7,6 +7,7 @@ import pytest
 
 from mi_agent.agent.engine import RecoveryAgent
 from mi_agent.decision.client import JevDecision
+from mi_agent.errors import SecurityGateError
 from mi_agent.events import EventLog
 from mi_agent.rag_query import apply_query_prefix_and_cap
 from mi_agent.workflow.models import (
@@ -103,6 +104,9 @@ class FakeTools:
     async def retrieve_rag_chunks(self, query: str, *, k: int) -> list[Any]:
         del query, k
         return []
+
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        del spec
 
     def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
         del incident_id
@@ -670,3 +674,157 @@ async def test_rag_query_rewrite_off_uses_top_k_for_retrieval(tmp_path: Path) ->
     )
 
     assert tools.calls == [3]
+
+
+class RejectingGateTools(FakeTools):
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        raise SecurityGateError(f"operation not allowed by security gate: {spec.operation}")
+
+
+def _steps(events: EventLog) -> list[dict[str, Any]]:
+    return [item.payload for item in events.events if item.event_type == "workflow.step"]
+
+
+@pytest.mark.asyncio
+async def test_security_gate_step_runs_before_registration(tmp_path: Path) -> None:
+    tools = FakeTools(unhealthy=True, execution_ok=True, monitor_health_sequence=[False, True])
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    names = [str(row.get("step")) for row in _steps(events)]
+    gate = names.index("security.gate")
+    assert names[gate - 1] == "jev.result"
+    assert names[gate + 1] == "dynamic_tool.registered"
+    assert _steps(events)[gate]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_security_gate_rejection_blocks_registration(tmp_path: Path) -> None:
+    tools = RejectingGateTools(unhealthy=True, execution_ok=True)
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(SecurityGateError):
+        await agent.run_iteration()
+
+    assert tools.registered_tools == []
+    assert tools.executions == 0
+    gate_rows = [row for row in _steps(events) if row.get("step") == "security.gate"]
+    assert [(row["status"], row["error_type"]) for row in gate_rows] == [
+        ("rejected", "SecurityGateError")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_tool_executed_payload_nests_action_result(tmp_path: Path) -> None:
+    tools = FakeTools(unhealthy=True, execution_ok=True, monitor_health_sequence=[False, True])
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    executed = [
+        item.payload for item in events.events if item.event_type == "dynamic_tool.executed"
+    ]
+    assert executed == [
+        {
+            "incident_id": executed[0]["incident_id"],
+            "tool_name": "restore",
+            "operation": "request_backup_restore",
+            "ok": True,
+            "error": None,
+            "result": {"ok": True, "tool": "restore", "error": None},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_verification_emits_failure_persist_event(tmp_path: Path) -> None:
+    tools = FakeTools(unhealthy=True, execution_ok=True)
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    persist = [row for row in _steps(events) if str(row.get("step")).startswith("persist.")]
+    assert [(r["step"], r["status"], r["action_key"], r["reward"]) for r in persist] == [
+        ("persist.policy_store", "failure", "restore", -1.0)
+    ]
+    assert agent.policy["restore"] == {"attempts": 1.0, "reward_total": -1.0}
+    names = [str(row.get("step")) for row in _steps(events)]
+    assert names.index("persist.policy_store") < names.index("attempt.result")
+
+
+@pytest.mark.asyncio
+async def test_unusable_decision_emits_failure_persist_event(tmp_path: Path) -> None:
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=FakeTools(unhealthy=True, execution_ok=True),  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=FakeJev(JevDecision(usable=False, reason="timeout")),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    persist = [row for row in _steps(events) if str(row.get("step")).startswith("persist.")]
+    assert [(r["step"], r["status"], r["action_key"]) for r in persist] == [
+        ("persist.policy_store", "failure", "decision_unusable")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_jev_request_error_emits_no_persist_event(tmp_path: Path) -> None:
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=FakeLLM(),
+        tools=FakeTools(unhealthy=True, execution_ok=True),  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=FakeJev(
+            JevDecision(usable=False, reason="jev_request_error:TypeSafeAPITimeoutError")
+        ),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    assert not [row for row in _steps(events) if str(row.get("step")).startswith("persist.")]

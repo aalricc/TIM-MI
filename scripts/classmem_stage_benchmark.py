@@ -143,6 +143,9 @@ class BenchTools:
         del query, k
         return []
 
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        del spec
+
     def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
         del incident_id
         self._catalog[spec.name] = spec

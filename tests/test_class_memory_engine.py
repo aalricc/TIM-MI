@@ -91,6 +91,9 @@ class EngineTools:
         del query, k
         return []
 
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        del spec
+
     def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
         del incident_id
         self.catalog[spec.name] = spec.model_dump()
@@ -488,3 +491,81 @@ async def test_flag_off_keeps_baseline_event_shape(tmp_path: Path) -> None:
         "executed_candidate",
         "jev_decision",
     }
+
+
+@pytest.mark.asyncio
+async def test_failed_fast_path_emits_class_memory_failure_persist(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    memory, match, _ = _class_memory(tmp_path, llm)
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=EngineTools(execute_ok_sequence=[False]),  # type: ignore[arg-type]
+        verifier=EngineVerifier(healthy_sequence=[False]),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=EngineJev(),  # type: ignore[arg-type]
+        class_memory=memory,
+        classmem_enabled=True,
+        classmem_dedupe_enabled=True,
+        classmem_fastpath_enabled=True,
+    )
+
+    await agent.run_iteration()
+
+    persist = [
+        item.payload
+        for item in events.events
+        if item.event_type == "workflow.step"
+        and str(item.payload.get("step")).startswith("persist.")
+    ]
+    assert [(row["step"], row["status"], row["path_mode"]) for row in persist] == [
+        ("persist.policy_store", "failure", "fast_path"),
+        ("persist.class_memory", "failure", "fast_path"),
+    ]
+    assert persist[1]["class_id"] == match.class_id
+
+
+@pytest.mark.asyncio
+async def test_first_success_for_new_class_writes_skill_section(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    memory = ClassMemory(
+        ClassMemoryConfig(
+            store_path=tmp_path / "class_store.json",
+            join_threshold=0.82,
+            margin_delta=0.08,
+            tau_conf=0.80,
+            n_min=3,
+            cooldown_seconds=2.0,
+            embedding_dim=64,
+            min_similarity_for_id=0.2,
+        )
+    )
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=EngineTools(execute_ok_sequence=[True]),  # type: ignore[arg-type]
+        verifier=EngineVerifier(healthy_sequence=[True]),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=EngineJev(),  # type: ignore[arg-type]
+        class_memory=memory,
+        classmem_enabled=True,
+        classmem_dedupe_enabled=True,
+        classmem_fastpath_enabled=True,
+    )
+
+    await agent.run_iteration()
+
+    skills_rows = [
+        item.payload
+        for item in events.events
+        if item.event_type == "workflow.step" and item.payload.get("step") == "persist.skills"
+    ]
+    assert [row["status"] for row in skills_rows] == ["ok"]
+    class_id = skills_rows[0]["class_id"]
+    skills_text = (tmp_path / "skills.md").read_text(encoding="utf-8")
+    assert f"<!-- class:{class_id} begin -->" in skills_text
+    assert memory.render_skills_section(class_id=class_id) in skills_text
