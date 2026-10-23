@@ -94,7 +94,8 @@ class JevDecisionClient:
         candidates: list[dict[str, Any]],
     ) -> JevDecision:
         try:
-            from langchain_typesafe import (  # type: ignore[import-not-found]
+            # Optional `jev` extra: missing in dev-only installs, typed when installed.
+            from langchain_typesafe import (  # type: ignore[import-not-found, unused-ignore]
                 Choice,
                 Noul,
                 Score,
@@ -108,7 +109,7 @@ class JevDecisionClient:
             )
 
         option_to_candidate: dict[str, dict[str, Any]] = {}
-        criteria: dict[str, str] = {}
+        criteria: dict[str, Any] = {}
         for index, candidate in enumerate(candidates, start=1):
             option = f"option_{index}"
             option_to_candidate[option] = candidate
