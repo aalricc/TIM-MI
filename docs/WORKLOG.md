@@ -1,5 +1,20 @@
 # Rewrite Worklog
 
+## 2026-10-25 — CP8 baseline, data-loss reward, and comparison campaign
+
+**Problem.** The first full 15-run campaign passed (run `40111431118`) and gave the CP8 baseline, but it showed two gaps. Learning could not see data loss: nothing wrote to the target, so a restore and a table recreate looked equally good, even though a recreate leaves an empty table. And one WHY call timed out with an empty `LLMError` message. The first comparison run then exposed a campaign pacing problem: each fault came about 1 s after the previous recovery, so traffic and backups barely ran and restores looked far more lossy than they would in practice.
+**Approach.** Recorded the baseline in `docs/harness/BASELINE.md`. LLM transport errors now name their type, and timeouts, connection errors, 429 and 5xx get one retry. The target reports `widget_rows`, and a compose `traffic` service writes a widget every 2 s; widget endpoints no longer recreate a deleted database. MI records the row count at each healthy check, computes `rows_lost` after a verified recovery, and grades the success reward `1 − lost/before` for the policy store and the class-memory Beta update. A new `data_loss` KPI and per-run `rows_lost` are in the campaign report. The campaign keeps the target healthy for 30 s before each fault. The first comparison run (`40127112134`, no settle time) was discarded.
+**Impact.** The comparison run (`40130194856`) passed 15/15 with no invariant violations or loop errors. Every recovery was a restore, losing at most 5 rows. The fast path still took over from run 9 (7/15). Learning now prefers the fix that loses the least data, using evidence from the system and no hard-coded rule. Baseline and comparison are both recorded in `BASELINE.md`.
+
+**Commits included (2026-10-25).**
+- `a315d0e` Test live: pass backup catalog to propose_how (PR #3).
+- `a41e770` Docs harness: baseline 2026-10-24 (PR #4).
+- `04f88fd` Fix llm: name the error type and retry transient failures once.
+- `170cdb5` Feat target: widget row count in db status and simulated traffic.
+- `0c1acc0` Feat runtime: grade recovery reward by rows lost.
+- `2286f33` Feat harness: data-loss KPI and rows_lost in campaign report (PR #5).
+- `71b5121` Feat harness: 30 s healthy settle before each campaign fault (PR #6).
+
 ## 2026-10-24 — First live CP7 campaign, self-hosted runner, and backup catalog API
 
 **Problem.** CP1–CP7 were merged to `main` (PR #1), but the first live E2E campaign never got going: no self-hosted runner was registered, `setup-python` failed on macOS, the secrets were missing (then uploaded with quotes), the LLM endpoint defaulted to OpenAI instead of Azure, another local service held port 8080, and the campaign script could not import `harness`. Once it ran (run `40106026091`), all 3 scenarios failed. On `corrupt_db` MI chose a backup restore but could not see which backups existed, so it invented ids (`latest_pre_fault_injection`, …) and hit `backup_not_found` for 22 attempts until the 420 s timeout. The later scenarios then failed because the target was still broken.
