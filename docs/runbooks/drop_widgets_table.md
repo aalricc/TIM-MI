@@ -1,6 +1,7 @@
 # Runbook: widgets table missing (`schema_invalid`)
 
-Injected with `curl -X POST http://localhost:8080/ops/fault/drop_widgets_table`.
+Injected with `curl -X POST http://localhost:8080/ops/fault/drop_widgets_table` (stack started with
+`TARGET_TEST_HOOKS=1`).
 
 ## Symptoms
 
@@ -27,7 +28,7 @@ action, so most recoveries are a single fast-path `run_sql`.
 | Rank | Action | Effect |
 | --- | --- | --- |
 | 1 | `run_sql` recreating `widgets` exactly as in `target/app/schema.sql` (`id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP`), idempotent (`CREATE TABLE IF NOT EXISTS`) | fast; **table is empty afterwards** (rows lost by the fault stay lost) |
-| 2 | `request_backup_restore` with `backup_id` `latest` (the last validated copy, from before the drop) or an explicit `app-<epoch>` | restores rows as of that backup; loses writes between the backup and the fault |
+| 2 | `request_backup_restore` with a `backup_id` from the target's catalog (`GET /ops/backups`) taken before the drop | restores rows as of that backup; loses writes between the backup and the fault |
 
 Not approved: SQL that creates `widgets` with a different column set (now fails
 `/health/deep` with `widgets_columns_missing`); SQL touching any other table (recorded runs
@@ -40,9 +41,9 @@ Follow "Manual takeover" in `docs/runbooks/README.md`. Choose one:
 
 ```bash
 # Keep data: restore the newest valid pre-fault backup
-backup="$(docker compose exec -T mi-agent python - < scripts/find_known_good_backup.py)"
-echo "$backup"                                          # check before copying
-docker compose exec mi-agent cp "$backup" /target/app/data/app.db
+backup="$(docker compose exec -T backup-job python /scripts/find_known_good_backup.py)"
+echo "$backup"                                          # check before restoring
+curl -s -X POST "http://localhost:8080/ops/backups/$(basename "$backup" .db)/restore"
 
 # Or recreate an empty table from the schema
 docker compose exec -T mi-agent python - <<'EOF'

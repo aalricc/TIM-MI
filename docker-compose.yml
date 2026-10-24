@@ -14,8 +14,11 @@ services:
       start_period: 5s
     environment:
       TARGET_HEARTBEAT_INTERVAL_SECONDS: ${TARGET_HEARTBEAT_INTERVAL_SECONDS:-3}
+      # 1 registers POST /ops/fault/{fault} and POST /ops/reset (harness campaign only).
+      TARGET_TEST_HOOKS: ${TARGET_TEST_HOOKS:-0}
     volumes:
       - ./target/app:/target/app
+      - backups_data:/target/backups:ro
 
   backup-job:
     # python image: the job validates each copy with scripts/find_known_good_backup.py.
@@ -47,11 +50,11 @@ services:
       MI_MONITOR_HEALTH_PATH: /health/deep
       MI_LOGS_ENDPOINT_PATH: /ops/logs
       MI_DB_STATUS_ENDPOINT_PATH: /ops/db/status
+      MI_BACKUPS_ENDPOINT_PATH: /ops/backups
       MI_MONITOR_INTERVAL_SECONDS: "1"
       MI_REQUEST_TIMEOUT_SECONDS: "5"
       MI_APP_ROOT: /target/app
       MI_SANDBOX_ROOT: /target
-      MI_BACKUPS_ROOT: /target/backups
       MI_DB_FILE: /target/app/data/app.db
       MI_APP_LOG: /target/app/app.log
       MI_SCHEMA_FILE: /target/app/schema.sql
@@ -86,8 +89,8 @@ services:
       MI_CLASSMEM_COOLDOWN_SECONDS: ${MI_CLASSMEM_COOLDOWN_SECONDS:-30}
       MI_CLASSMEM_EMBEDDING_DIM: ${MI_CLASSMEM_EMBEDDING_DIM:-96}
     volumes:
+      # No backups volume: MI lists and restores backups through the target's API.
       - ./target/app:/target/app
-      - backups_data:/target/backups
       - ./state:/state
 
 volumes:

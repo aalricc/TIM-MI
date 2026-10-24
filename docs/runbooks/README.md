@@ -22,12 +22,15 @@ Policy context: `docs/THREAT_MODEL.md`, `harness/governance/README.md`.
 - **Backups.** `target/backup/backup.sh` copies `app.db` every 10 s to a temporary file,
   validates the copy (`scripts/find_known_good_backup.py --check`), and keeps it as
   `app-<epoch>.db` in the `backups_data` volume only if it passes; it keeps the newest 360
-  (`BACKUP_RETENTION`, about one hour). So `latest` is the last valid copy. Backups written
+  (`BACKUP_RETENTION`, about one hour). The target serves them as a catalog
+  (`GET /ops/backups`, newest first) and restores one with
+  `POST /ops/backups/{backup_id}/restore`; MI uses only these endpoints. Backups written
   by the older job (before this change) were copied unvalidated and can contain faults;
   `scripts/find_known_good_backup.py` skips those.
 - **`restart_service` always fails here.** No restart hook is configured
   (`src/mi_agent/runtime.py::build_agent` builds `ToolExecutor` without hooks), so it returns
-  `no_restart_hook_configured`. `request_backup_restore` works (built-in file copy).
+  `no_restart_hook_configured`. `request_backup_restore` works (calls the target's restore
+  endpoint).
 - **Retries re-check health first.** Before each retry MI checks the monitor; if the target
   is already healthy it closes the incident (`incident.closed` with `resolution` =
   `healthy_before_retry`) and records nothing. A repair that lands *during* an attempt
@@ -50,15 +53,15 @@ tail -n 20 target/app/app.log                      # JSON lines; "fault injected
 curl -s http://localhost:8090/agent/status         # workflow_state, incident (attempts, last_tool_error)
 docker compose logs --tail 50 mi-agent
 
-# Backups (inside the mi-agent container, which mounts the backups volume)
-docker compose exec mi-agent ls -lt /target/backups | head
-docker compose exec -T mi-agent python - < scripts/find_known_good_backup.py
+# Backups
+curl -s 'http://localhost:8080/ops/backups?limit=5'
+docker compose exec -T backup-job python /scripts/find_known_good_backup.py
 ```
 
 `scripts/find_known_good_backup.py` prints the newest backup taken at or before the last
 healthy heartbeat that passes integrity and has `widgets(id, name, created_at)`. Use
 `--before <ISO-8601 with offset | epoch>` to set the cutoff yourself:
-`docker compose exec -T mi-agent python - --before 1792603000 < scripts/find_known_good_backup.py`.
+`docker compose exec -T backup-job python /scripts/find_known_good_backup.py --before 1792603000`.
 
 ## Manual takeover (all runbooks)
 

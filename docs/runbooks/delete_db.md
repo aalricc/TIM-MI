@@ -1,6 +1,7 @@
 # Runbook: database file missing (`db_missing`)
 
-Injected with `curl -X POST http://localhost:8080/ops/fault/delete_db`.
+Injected with `curl -X POST http://localhost:8080/ops/fault/delete_db` (stack started with
+`TARGET_TEST_HOOKS=1`).
 
 ## Symptoms
 
@@ -24,8 +25,7 @@ Recorded run (`inc-a20e7ee26b`): WHY `database_file_deleted`; attempt 1 chose `r
 
 | Rank | Action | Effect |
 | --- | --- | --- |
-| 1 | `request_backup_restore` with `backup_id` `latest` | the backup job stops copying while the file is missing, so `latest` normally predates the fault; check its time against the fault if a previous incident is still open |
-| 2 | `replace_file` with `"source_path": "backups/app-<epoch>.db"` and `"destination_path": "data/app.db"` (paths are relative to `/target` and `/target/app`) | same result with an explicit backup |
+| 1 | `request_backup_restore` with a `backup_id` from the target's catalog (`GET /ops/backups`) | the backup job stops copying while the file is missing, so the newest backup normally predates the fault; check its `created_at` against the fault if a previous incident is still open |
 
 Not approved: `run_sql` (fails on a missing file); `restart_service` (always fails here).
 Data written after the restored backup's time is lost in every option.
@@ -35,9 +35,9 @@ Data written after the restored backup's time is lost in every option.
 Follow "Manual takeover" in `docs/runbooks/README.md`, then:
 
 ```bash
-backup="$(docker compose exec -T mi-agent python - < scripts/find_known_good_backup.py)"
+backup="$(docker compose exec -T backup-job python /scripts/find_known_good_backup.py)"
 echo "$backup"
-docker compose exec mi-agent cp "$backup" /target/app/data/app.db
+curl -s -X POST "http://localhost:8080/ops/backups/$(basename "$backup" .db)/restore"
 ```
 
 Last resort when no valid backup exists (creates an **empty** database from
