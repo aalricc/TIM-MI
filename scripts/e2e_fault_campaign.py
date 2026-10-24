@@ -179,8 +179,10 @@ def _prepare_target(
     ready_timeout_seconds: float,
     healthy_timeout_seconds: float,
     poll_seconds: float,
+    settle_seconds: float = 0.0,
 ) -> bool:
-    """Make the target healthy and MI idle before a run; True if the target was reset."""
+    """Make the target healthy and MI idle before a run, then keep it healthy for
+    `settle_seconds`; True if the target was reset."""
     reset = False
     try:
         _wait_for_target_healthy(
@@ -203,6 +205,10 @@ def _prepare_target(
         timeout_seconds=healthy_timeout_seconds,
         poll_seconds=poll_seconds,
     )
+    # Healthy time before the next fault, as in a real deployment: the backup job takes a
+    # fresh backup and traffic writes rows, so data loss is measured against real history.
+    if settle_seconds > 0:
+        time.sleep(settle_seconds)
     return reset
 
 
@@ -310,6 +316,7 @@ def _run_scenario(
     incident_timeout_seconds: float,
     poll_seconds: float,
     ready_timeout_seconds: float = 10.0,
+    settle_seconds: float = 0.0,
 ) -> dict[str, Any]:
     scenario_id = str(fixture["scenario_id"])
     fault = str(fixture["fault"])
@@ -323,6 +330,7 @@ def _run_scenario(
         ready_timeout_seconds=ready_timeout_seconds,
         healthy_timeout_seconds=healthy_timeout_seconds,
         poll_seconds=poll_seconds,
+        settle_seconds=settle_seconds,
     )
     injected_at = time.time()
     since_ts = injected_at
@@ -458,6 +466,7 @@ def run_campaign(
     poll_seconds: float,
     repetitions_override: int | None = None,
     ready_timeout_seconds: float = 10.0,
+    settle_seconds: float = 0.0,
 ) -> dict[str, Any]:
     fixtures = _resolve_fixtures(fixtures_dir, selected_fixtures)
     if not fixtures:
@@ -532,6 +541,7 @@ def run_campaign(
                     incident_timeout_seconds=incident_timeout_seconds,
                     poll_seconds=poll_seconds,
                     ready_timeout_seconds=ready_timeout_seconds,
+                    settle_seconds=settle_seconds,
                 )
             except Exception as exc:
                 rows.append(
@@ -581,6 +591,12 @@ def _parser() -> argparse.ArgumentParser:
             raise argparse.ArgumentTypeError("must be >= 1")
         return number
 
+    def _non_negative_float(value: str) -> float:
+        number = float(value)
+        if number < 0:
+            raise argparse.ArgumentTypeError("must be >= 0")
+        return number
+
     def _positive_float(value: str) -> float:
         number = float(value)
         if number <= 0:
@@ -610,6 +626,12 @@ def _parser() -> argparse.ArgumentParser:
         type=_positive_float,
         default=10.0,
         help="how long to wait for a healthy target before a run; then POST /ops/reset",
+    )
+    parser.add_argument(
+        "--settle-seconds",
+        type=_non_negative_float,
+        default=30.0,
+        help="healthy time before each fault; longer than the 10 s backup interval",
     )
     parser.add_argument(
         "--repetitions",
@@ -645,6 +667,7 @@ def main(argv: list[str] | None = None) -> int:
             poll_seconds=args.poll_seconds,
             repetitions_override=args.repetitions,
             ready_timeout_seconds=args.ready_timeout_seconds,
+            settle_seconds=args.settle_seconds,
         )
 
     print(f"campaign report: {args.results_root / run_id / 'campaign.json'}")
