@@ -225,6 +225,11 @@
       </section>
 
       <section>
+        <h2>Surveillance</h2>
+        <div id="harness"></div>
+      </section>
+
+      <section>
         <h2>WHY Diagnosis</h2>
         <div id="why"></div>
       </section>
@@ -309,6 +314,37 @@
           <div class="small">attempts: ${esc(incident ? incident.attempts : 0)}</div>
           <div class="small">last_error: ${esc(incident ? (incident.last_error || 'none') : 'none')}</div>
         `;
+      }
+
+      function harnessMarkup(data) {
+        if (!data || !data.available) {
+          return '<div class="small">No harness-watch results yet.</div>';
+        }
+        const cls = data.status === 'fail' ? 'bad' : 'ok';
+        const rows = (data.results || []).map((row) => {
+          const rowCls = row.status === 'fail' ? 'bad' : (row.status === 'pass' ? 'ok' : 'warn');
+          return `<tr><td class="mono">${esc(row.sensor_name)}</td><td class="${rowCls}">${esc(row.status)}</td><td class="small">${esc(row.message)}</td></tr>`;
+        }).join('');
+        return `
+          <div class="pill ${cls}">last 24 h: ${esc(data.status)}</div>
+          <div class="small">checked ${esc(new Date(data.ts * 1000).toLocaleString())}</div>
+          <table>${rows}</table>
+        `;
+      }
+
+      let lastHarnessFetch = 0;
+      async function refreshHarness() {
+        // harness-watch runs every few minutes; poll it far less often than the live view.
+        if (Date.now() - lastHarnessFetch < 15000) {
+          return;
+        }
+        lastHarnessFetch = Date.now();
+        try {
+          const response = await fetch('/agent/harness', { cache: 'no-store' });
+          byId('harness').innerHTML = harnessMarkup(response.ok ? await response.json() : null);
+        } catch (error) {
+          byId('harness').innerHTML = `<div class="small">Surveillance error: ${esc(error)}</div>`;
+        }
       }
 
       function renderAgentState(data) {
@@ -639,6 +675,7 @@
           latestDashboard = dashboard;
 
           renderAgentState(dashboard);
+          await refreshHarness();
           renderWhy(dashboard);
           renderHow(dashboard);
           renderIncidentRl('rl', dashboard.live_incident_view || null, '');

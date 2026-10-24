@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib
+import json
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
@@ -342,6 +343,31 @@ def _build_history_incident_views(
     return views
 
 
+def latest_harness_results(path: Path, *, tail_lines: int = 200) -> dict[str, Any]:
+    """The newest harness-watch run: the records that share the latest `ts`."""
+    if not path.exists():
+        return {"available": False, "ts": None, "status": None, "results": []}
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-tail_lines:]:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and isinstance(record.get("ts"), int | float):
+            records.append(record)
+    if not records:
+        return {"available": False, "ts": None, "status": None, "results": []}
+    latest_ts = max(float(record["ts"]) for record in records)
+    latest = [record for record in records if float(record["ts"]) == latest_ts]
+    failed = any(record.get("status") == "fail" for record in latest)
+    return {
+        "available": True,
+        "ts": latest_ts,
+        "status": "fail" if failed else "pass",
+        "results": latest,
+    }
+
+
 def create_api(context: MIContext, agent: RecoveryAgent) -> FastAPI:
     app = FastAPI(title="MI Recovery Agent", version="2.0")
     loop_task: asyncio.Task[None] | None = None
@@ -540,5 +566,9 @@ def create_api(context: MIContext, agent: RecoveryAgent) -> FastAPI:
     @app.get("/agent/policy")
     async def policy() -> dict[str, Any]:
         return {"policy": agent.policy}
+
+    @app.get("/agent/harness")
+    async def harness_status() -> dict[str, Any]:
+        return latest_harness_results(context.settings.harness_results_path)
 
     return app

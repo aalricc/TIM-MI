@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import types
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from mi_agent.agent.engine import RecoveryAgent
-from mi_agent.api.server import create_api
+from mi_agent.api.server import create_api, latest_harness_results
 from mi_agent.decision.client import JevDecision
 from mi_agent.events import EventLog
 from mi_agent.runtime import MIContext
@@ -543,3 +544,52 @@ def test_history_incident_view_is_scoped_per_incident(tmp_path: Path) -> None:
         and row["payload"].get("incident_id") == alpha_id
         for row in alpha_detail["timeline"]
     )
+
+
+def test_latest_harness_results_returns_the_newest_watch_run(tmp_path: Path) -> None:
+    path = tmp_path / "sensor_results.jsonl"
+    rows = [
+        {"ts": 100.0, "sensor_name": "kpi_thresholds", "status": "fail"},
+        {"ts": 200.0, "sensor_name": "one_action_per_attempt", "status": "pass"},
+        {"ts": 200.0, "sensor_name": "kpi_thresholds", "status": "pass"},
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\nnot-json\n", encoding="utf-8")
+
+    latest = latest_harness_results(path)
+
+    assert latest["available"] is True
+    assert latest["ts"] == 200.0
+    assert latest["status"] == "pass"
+    assert [r["sensor_name"] for r in latest["results"]] == [
+        "one_action_per_attempt",
+        "kpi_thresholds",
+    ]
+
+
+def test_latest_harness_results_flags_any_failing_sensor(tmp_path: Path) -> None:
+    path = tmp_path / "sensor_results.jsonl"
+    rows = [
+        {"ts": 5.0, "sensor_name": "a", "status": "pass"},
+        {"ts": 5.0, "sensor_name": "b", "status": "fail"},
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+
+    assert latest_harness_results(path)["status"] == "fail"
+
+
+def test_latest_harness_results_without_file(tmp_path: Path) -> None:
+    assert latest_harness_results(tmp_path / "missing.jsonl") == {
+        "available": False,
+        "ts": None,
+        "status": None,
+        "results": [],
+    }
+
+
+def test_agent_harness_route_serves_latest_results(tmp_path: Path) -> None:
+    client, _ = _build_client(tmp_path)
+    with client:
+        response = client.get("/agent/harness")
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"available", "ts", "status", "results"}

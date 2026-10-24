@@ -29,6 +29,8 @@ class MISettings(BaseSettings):
     policy_store_path: Path = Path("./state/policy_store.json")
     tool_catalog_path: Path = Path("./state/tool_catalog.json")
     classmem_store_path: Path = Path("./state/class_store.json")
+    # sensor_result records appended by the harness-watch service (dashboard reads only).
+    harness_results_path: Path = Path("./results/harness/sensor_results.jsonl")
 
     llm_model: str = "gpt-5.3-codex"
     llm_endpoint: str = "https://api.openai.com/v1/responses"
