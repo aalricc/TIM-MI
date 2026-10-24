@@ -58,7 +58,7 @@ jobs:
         run: pytest -q -m live
 
       - name: Run fault campaign
-        run: python scripts/e2e_fault_campaign.py --stage ci
+        run: PYTHONPATH=. python scripts/e2e_fault_campaign.py --stage ci
 
       - name: Capture compose logs
         if: always()
