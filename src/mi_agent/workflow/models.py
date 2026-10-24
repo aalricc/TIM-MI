@@ -56,6 +56,7 @@ class AttemptFeedback(BaseModel):
 class IncidentContext:
     incident_id: str
     detected_at: float = field(default_factory=time.time)
+    widget_rows_before: int | None = None
     attempts: int = 0
     last_tool_error: str | None = None
     state_fingerprint: str | None = None

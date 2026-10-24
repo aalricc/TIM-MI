@@ -95,6 +95,9 @@ class RecoveryAgent:
         self._workflow_state = WorkflowState.HEALTHY
         self._incident: IncidentContext | None = None
         self._last_monitor: MonitorStatus | None = None
+        # Widget row count at the last healthy check: the data-loss reference for the
+        # next incident.
+        self._last_healthy_widget_rows: int | None = None
         self._policy: dict[str, dict[str, float]] = self._load_policy()
         self._llm_traces: dict[str, dict[str, Any]] = {}
         self._llm_trace_order: list[str] = []
@@ -190,6 +193,7 @@ class RecoveryAgent:
         await self._events.publish("monitor.health", monitor.model_dump())
 
         if monitor.healthy:
+            self._last_healthy_widget_rows = self._widget_rows(monitor.payload.get("health"))
             self._workflow_state = transition(self._workflow_state, WorkflowEvent.STABLE)
             if self._incident is not None:
                 await self._events.publish(
@@ -203,7 +207,10 @@ class RecoveryAgent:
             return
 
         if self._incident is None:
-            self._incident = IncidentContext(incident_id=f"inc-{uuid.uuid4().hex[:10]}")
+            self._incident = IncidentContext(
+                incident_id=f"inc-{uuid.uuid4().hex[:10]}",
+                widget_rows_before=self._last_healthy_widget_rows,
+            )
             await self._events.publish(
                 "incident.started",
                 {"incident_id": self._incident.incident_id},
@@ -660,6 +667,10 @@ class RecoveryAgent:
 
         if verification.healthy:
             outcome_ts = time.time()
+            widget_rows_after = self._widget_rows(verification.details.get("payload"))
+            rows_lost, reward = self._data_loss_reward(
+                incident.widget_rows_before, widget_rows_after
+            )
             self._tools.persist_dynamic_tool(incident.incident_id, tool_name)
             self._tools.discard_incident_tools(incident.incident_id, keep=tool_name)
             await self._publish_workflow_step(
@@ -671,7 +682,7 @@ class RecoveryAgent:
                 tool_name=tool_name,
             )
 
-            self._update_policy(tool_name, reward=1.0)
+            self._update_policy(tool_name, reward=reward)
             await self._publish_workflow_step(
                 incident_id=incident.incident_id,
                 attempt=attempt,
@@ -679,7 +690,7 @@ class RecoveryAgent:
                 step="persist.policy_store",
                 status="ok",
                 action_key=tool_name,
-                reward=1.0,
+                reward=reward,
             )
 
             if (
@@ -698,6 +709,7 @@ class RecoveryAgent:
                         success=True,
                         source=source,
                         ts=outcome_ts,
+                        reward=reward,
                     ),
                 )
                 if section:
@@ -750,6 +762,7 @@ class RecoveryAgent:
                     success=True,
                     source=source,
                     ts=outcome_ts,
+                    reward=reward,
                 )
                 await self._publish_workflow_step(
                     incident_id=incident.incident_id,
@@ -794,6 +807,10 @@ class RecoveryAgent:
                     "incident_id": incident.incident_id,
                     "tool_name": tool_name,
                     "attempts": incident.attempts,
+                    "widget_rows_before": incident.widget_rows_before,
+                    "widget_rows_after": widget_rows_after,
+                    "rows_lost": rows_lost,
+                    "reward": reward,
                 }
                 if self._classmem_enabled:
                     recovered_payload.update(
@@ -1407,6 +1424,27 @@ class RecoveryAgent:
         if spec.operation == "request_backup_restore":
             return f"{key}|backup_id={spec.params.get('backup_id')}"
         return key
+
+    @staticmethod
+    def _widget_rows(health: Any) -> int | None:
+        if not isinstance(health, dict):
+            return None
+        status = health.get("status")
+        rows = status.get("widget_rows") if isinstance(status, dict) else None
+        if isinstance(rows, int) and not isinstance(rows, bool) and rows >= 0:
+            return rows
+        return None
+
+    @staticmethod
+    def _data_loss_reward(before: int | None, after: int | None) -> tuple[int | None, float]:
+        """Rows lost against the last healthy count, and the success reward 1 - lost/before.
+        Without both counts the loss is unknown and the reward stays 1.0."""
+        if before is None or after is None:
+            return None, 1.0
+        lost = max(0, before - after)
+        if before == 0:
+            return lost, 1.0
+        return lost, 1.0 - lost / before
 
     @staticmethod
     def _backup_catalog(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:

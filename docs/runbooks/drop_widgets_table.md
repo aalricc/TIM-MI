@@ -23,6 +23,11 @@ the most practised fault (41 of 46 injections in `target/app/app.log`); class me
 usually has a confident
 action, so most recoveries are a single fast-path `run_sql`.
 
+Since the data-loss reward (`docs/harness/HARNESS_RUNTIME_MAPPING.md` item 11), a
+recreate that leaves the table empty earns reward 0, while a restore earns about
+`1 − rows written since the backup / rows before the fault`. With traffic running, MI
+learns to prefer the restore.
+
 ## Approved recovery actions
 
 | Rank | Action | Effect |

@@ -50,7 +50,7 @@ values).
 | 11 | `dynamic_tool.executed` (`ok`/`error`) | `dynamic_tool.executed` (`operation`, `ok`, `error`, executor output nested under `result`) | `workflow_step` |
 | 12 | `verification.result` (`ok`/`failed`) | `verification.result` | `workflow_step` |
 | 13 | `persist.tool_catalog` (`ok`) | — | `workflow_step` (governance audit) |
-| 14 | `persist.policy_store` (`ok` = +1 on success; `failure` = −1 on a failed attempt) | — | `workflow_step` (governance audit) |
+| 14 | `persist.policy_store` (`ok` = success `reward` in [0, 1], see item 11; `failure` = −1 on a failed attempt) | — | `workflow_step` (governance audit) |
 | 15 | `persist.skills` (`ok`/`skipped`) | — | `skill_entry` (parsed from `state/skills.md`) |
 | 16 | `persist.class_memory` (`ok`/`skipped`; `failure` = failed outcome recorded) | — | `problem_class`, `class_action_stats` (from `state/class_store.json`) |
 
@@ -152,6 +152,17 @@ the data.
     there is none, or that restore already failed in this incident, `path.selected`
     (`full_loop`) carries `reason` = `fast_path_params_unbound` or
     `fast_path_action_already_failed`.
+11. **Data-loss reward.** The target's `db_status` (also inside `/health/deep`) reports
+    `widget_rows` (`null` when the table is missing). Each healthy monitor tick records it;
+    an incident keeps the last value as `widget_rows_before`. On verified recovery the
+    engine reads `widget_rows_after` from the verifier payload, computes
+    `rows_lost = max(0, before − after)` and `reward = 1 − rows_lost / before` (1.0 when
+    either count is unknown or `before` is 0), and uses that reward for step 14 and for
+    the class-memory Beta update (`alpha += reward`, `beta += 1 − reward`). Rows written
+    between recovery and verification can hide a small loss. `incident.recovered` carries
+    `widget_rows_before`, `widget_rows_after`, `rows_lost` and `reward`. The compose
+    `traffic` service writes a widget every `TRAFFIC_INTERVAL_SECONDS` (default 2) so
+    there are rows to lose.
 
 ## Alignment constraints
 
