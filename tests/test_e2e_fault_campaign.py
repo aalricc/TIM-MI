@@ -551,3 +551,158 @@ def test_live_campaign_workflow_is_manual_dispatch_only() -> None:
     assert "pull_request:" not in workflow
     assert "runs-on: self-hosted" in workflow
     assert "pytest -q -m live" in workflow
+
+
+def _passing_row(**kwargs: object) -> dict[str, object]:
+    prefix = str(kwargs["artifact_prefix"])
+    return {
+        "scenario_id": str(kwargs["fixture_path"].stem),  # type: ignore[attr-defined]
+        "repetition": int(kwargs["repetition"]),  # type: ignore[call-overload]
+        "fault": "drop_widgets_table",
+        "fixture": str(kwargs["fixture_path"]),
+        "incident_id": f"inc-{prefix}",
+        "status": "pass",
+        "violations": 0,
+        "reset_before": prefix == "b.r2",
+        "recovered_via": "fast_path" if prefix.endswith("r2") else "full_loop",
+        "slice": "missing.slice.jsonl",
+    }
+
+
+def test_run_campaign_runs_fixtures_round_robin_and_summarises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    _write_fixture(fixtures / "a.json", scenario_id="a")
+    _write_fixture(fixtures / "b.json", scenario_id="b")
+    seen: list[str] = []
+
+    def _fake_run_scenario(**kwargs: object) -> dict[str, object]:
+        seen.append(str(kwargs["artifact_prefix"]))
+        return _passing_row(**kwargs)
+
+    monkeypatch.setattr(script, "_run_scenario", _fake_run_scenario)
+
+    report = script.run_campaign(
+        fixtures_dir=fixtures,
+        selected_fixtures=[],
+        results_root=tmp_path / "results",
+        run_id="rr",
+        stage="ci",
+        events_log=tmp_path / "events.jsonl",
+        target_client=object(),
+        agent_client=object(),
+        healthy_timeout_seconds=1.0,
+        incident_timeout_seconds=1.0,
+        poll_seconds=0.1,
+        repetitions_override=2,
+    )
+
+    assert seen == ["a.r1", "b.r1", "a.r2", "b.r2"]
+    assert report["overall_status"] == "pass"
+    assert report["summary"] == {
+        "drop_widgets_table": {
+            "runs": 4, "passed": 4, "fast_path": 2, "full_loop": 2, "resets": 1,
+        }
+    }
+    kpis = json.loads(Path(report["kpis"]).read_text(encoding="utf-8"))
+    assert kpis["incidents"]["started"] == 0
+
+
+@pytest.mark.parametrize("healthy_first", [True, False])
+def test_prepare_target_resets_only_when_unhealthy(
+    monkeypatch: pytest.MonkeyPatch, healthy_first: bool
+) -> None:
+    script = _load_script()
+    health_checks: list[float] = []
+    requests: list[tuple[str, str]] = []
+    idle_waits: list[float] = []
+
+    def _fake_healthy(_client: object, *, timeout_seconds: float, poll_seconds: float) -> None:
+        del poll_seconds
+        health_checks.append(timeout_seconds)
+        if len(health_checks) == 1 and not healthy_first:
+            raise RuntimeError("target did not become healthy")
+
+    def _fake_request(_client: object, method: str, path: str) -> dict[str, object]:
+        requests.append((method, path))
+        return {"ok": True}
+
+    def _fake_idle(_client: object, *, timeout_seconds: float, poll_seconds: float) -> None:
+        del poll_seconds
+        idle_waits.append(timeout_seconds)
+
+    monkeypatch.setattr(script, "_wait_for_target_healthy", _fake_healthy)
+    monkeypatch.setattr(script, "_request_json", _fake_request)
+    monkeypatch.setattr(script, "_wait_for_agent_idle", _fake_idle)
+
+    reset = script._prepare_target(
+        object(),
+        object(),
+        ready_timeout_seconds=5.0,
+        healthy_timeout_seconds=90.0,
+        poll_seconds=0.1,
+    )
+
+    assert reset is (not healthy_first)
+    assert requests == ([] if healthy_first else [("POST", "/ops/reset")])
+    assert health_checks == ([5.0] if healthy_first else [5.0, 90.0])
+    assert idle_waits == [90.0]
+
+
+def test_wait_for_agent_idle_waits_for_open_incident_to_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    started = {"ts": 1.0, "event_type": "incident.started", "payload": {"incident_id": "inc-1"}}
+    closed = {"ts": 2.0, "event_type": "incident.closed", "payload": {"incident_id": "inc-1"}}
+    polls = [[started], [started, closed]]
+    monkeypatch.setattr(script, "_agent_events", lambda *_a, **_k: polls.pop(0))
+    monkeypatch.setattr(script.time, "sleep", lambda _s: None)
+
+    script._wait_for_agent_idle(object(), timeout_seconds=10.0, poll_seconds=0.1)
+
+    assert polls == []
+
+
+def test_wait_for_agent_idle_times_out_on_stuck_incident(monkeypatch: pytest.MonkeyPatch) -> None:
+    script = _load_script()
+    started = {"ts": 1.0, "event_type": "incident.started", "payload": {"incident_id": "inc-1"}}
+    monkeypatch.setattr(script, "_agent_events", lambda *_a, **_k: [started])
+    ticks = iter([0.0, 0.0, 100.0])
+    monkeypatch.setattr(script.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(script.time, "sleep", lambda _s: None)
+
+    with pytest.raises(RuntimeError, match="inc-1"):
+        script._wait_for_agent_idle(object(), timeout_seconds=10.0, poll_seconds=0.1)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [("class_memory", "fast_path"), ("full_loop", "full_loop"), (None, None)],
+)
+def test_recovery_outcome_reports_path(source: str | None, expected: str | None) -> None:
+    script = _load_script()
+    rows: list[dict[str, Any]] = [
+        {"ts": 10.0, "event_type": "incident.started", "payload": {"incident_id": "inc-1"}},
+    ]
+    if source is not None:
+        rows.append(
+            {
+                "ts": 14.5,
+                "event_type": "incident.recovered",
+                "payload": {"incident_id": "inc-1", "source": source, "attempts": 2},
+            }
+        )
+
+    outcome = script._recovery_outcome(rows, "inc-1")
+
+    assert outcome["recovered_via"] == expected
+    if expected is None:
+        assert outcome == {"recovered_via": None, "attempts": None, "ttr_seconds": None}
+    else:
+        assert outcome["attempts"] == 2
+        assert outcome["ttr_seconds"] == 4.5

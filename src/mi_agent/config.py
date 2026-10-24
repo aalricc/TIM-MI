@@ -15,11 +15,11 @@ class MISettings(BaseSettings):
     monitor_health_path: str = "/health/deep"
     logs_endpoint_path: str = "/ops/logs"
     db_status_endpoint_path: str = "/ops/db/status"
+    backups_endpoint_path: str = "/ops/backups"
     request_timeout_seconds: float = Field(default=5.0, gt=0.0, le=60.0)
 
     app_root: Path = Path("/target/app")
     sandbox_root: Path = Path("/target")
-    backups_root: Path = Path("/target/backups")
     db_file: Path = Path("/target/app/data/app.db")
     app_log: Path = Path("/target/app/app.log")
     schema_file: Path = Path("/target/app/schema.sql")

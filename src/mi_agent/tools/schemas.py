@@ -13,7 +13,8 @@ class SearchSQLiteDocsParams(BaseModel):
 
 
 class RequestBackupRestoreParams(BaseModel):
-    backup_id: str = Field(default="latest", min_length=1, max_length=120)
+    # An id from the target's backup catalog; sent as one URL path segment.
+    backup_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class RestartServiceParams(BaseModel):

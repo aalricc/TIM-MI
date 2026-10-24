@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,6 +55,7 @@ class AttemptFeedback(BaseModel):
 @dataclass(slots=True)
 class IncidentContext:
     incident_id: str
+    detected_at: float = field(default_factory=time.time)
     attempts: int = 0
     last_tool_error: str | None = None
     state_fingerprint: str | None = None

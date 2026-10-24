@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -88,6 +89,7 @@ class ToolExecutor:
         endpoint_log_tail = [str(line) for line in raw_lines] if isinstance(raw_lines, list) else []
         file_log_tail = self.read_app_log(lines=200)
         log_tail = endpoint_log_tail if endpoint_log_tail else file_log_tail
+        backups = await self.list_backups()
         db_integrity = self.check_db_integrity(self._settings.db_file)
         runtime_paths = {
             "db_file": self._settings.db_file.as_posix(),
@@ -104,7 +106,16 @@ class ToolExecutor:
             "runtime_paths": runtime_paths,
             "log_tail": log_tail,
             "log_endpoint": log_payload,
+            "backups": backups,
         }
+
+    async def list_backups(self) -> list[dict[str, Any]]:
+        """The target's backup catalog (newest first); empty if the target has none."""
+        payload = await self._get_json(self._settings.backups_endpoint_path)
+        rows = payload.get("backups")
+        if not isinstance(rows, list):
+            return []
+        return [dict(row) for row in rows if isinstance(row, dict)]
 
     async def retrieve_rag_chunks(self, query: str, *, k: int) -> list[RAGChunk]:
         query_used = str(query)[:1200]
@@ -296,27 +307,25 @@ class ToolExecutor:
         if self._request_backup_restore_hook is not None:
             return await self._request_backup_restore_hook(backup_id)
 
-        if backup_id == "latest":
-            candidates = sorted(
-                self._settings.backups_root.glob("*.db"),
-                key=lambda p: p.stat().st_mtime,
-            )
-            if not candidates:
-                return {"ok": False, "error": "no_backups_available"}
-            source = candidates[-1]
-        else:
-            source = self._settings.backups_root / f"{backup_id}.db"
-            if not source.exists():
-                return {"ok": False, "error": "backup_not_found", "backup_id": backup_id}
+        root = self._settings.backups_endpoint_path.rstrip("/")
+        path = f"{root}/{quote(backup_id, safe='')}/restore"
+        payload = await self._post_json(path)
+        if bool(payload.get("ok", False)):
+            return {"ok": True, "action": "request_backup_restore", "backup_id": backup_id}
 
-        self._settings.db_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, self._settings.db_file)
+        detail = payload.get("detail")
+        reason = detail if isinstance(detail, dict) else payload
+        error = str(reason.get("error") or f"restore_failed:{payload.get('status_code')}")
+        available = reason.get("available")
+        if error == "backup_not_found" and isinstance(available, list):
+            # The ids go into the error text because that is what the retry context keeps.
+            ids = ", ".join(str(item) for item in available) or "none"
+            error = f"backup_not_found: {backup_id!r}; available: {ids}"
         return {
-            "ok": True,
+            "ok": False,
             "action": "request_backup_restore",
             "backup_id": backup_id,
-            "source": source.as_posix(),
-            "destination": self._settings.db_file.as_posix(),
+            "error": error,
         }
 
     async def _restart_service(self, service_name: str) -> dict[str, Any]:
@@ -380,6 +389,19 @@ class ToolExecutor:
         async with httpx.AsyncClient(timeout=self._settings.request_timeout_seconds) as client:
             try:
                 response = await client.get(url)
+            except httpx.HTTPError as exc:
+                return {"ok": False, "error": str(exc)}
+        payload = self._json_or_default(response)
+        if "ok" not in payload:
+            payload["ok"] = response.status_code < 400
+        payload["status_code"] = response.status_code
+        return payload
+
+    async def _post_json(self, path: str) -> dict[str, Any]:
+        url = self._join_url(path)
+        async with httpx.AsyncClient(timeout=self._settings.request_timeout_seconds) as client:
+            try:
+                response = await client.post(url)
             except httpx.HTTPError as exc:
                 return {"ok": False, "error": str(exc)}
         payload = self._json_or_default(response)

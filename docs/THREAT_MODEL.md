@@ -4,7 +4,9 @@
 
 - Target SQLite data (`MI_DB_FILE`).
 - Schema and runtime files under `MI_APP_ROOT`.
-- Backup snapshots under `MI_BACKUPS_ROOT`.
+- Backup snapshots in the `backups_data` volume (read-only to the target, which lists and
+  restores them; MI reaches them only through `GET /ops/backups` and
+  `POST /ops/backups/{backup_id}/restore`).
 - Recovery policy and dynamic tool catalog in `state/`.
 
 ## Trust boundaries

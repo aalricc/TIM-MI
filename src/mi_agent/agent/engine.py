@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,6 @@ from mi_agent.class_memory import (
     FastPathDecision,
     OutcomeUpdate,
     canonical_action_key,
-    dedupe_candidates_by_action_key,
 )
 from mi_agent.decision.client import JevDecision, JevDecisionClient
 from mi_agent.errors import SecurityGateError
@@ -360,6 +360,7 @@ class RecoveryAgent:
                 reason="class_memory_disabled",
             )
 
+        fast_candidate: DynamicToolSpec | None = None
         if (
             self._classmem_enabled
             and self._classmem_fastpath_enabled
@@ -367,6 +368,18 @@ class RecoveryAgent:
             and fast_path_decision.eligible
             and fast_path_decision.candidate is not None
         ):
+            fast_candidate = self._bind_fast_path_candidate(
+                fast_path_decision.candidate,
+                diagnostics=diagnostics,
+                detected_at=incident.detected_at,
+            )
+            if fast_candidate is None:
+                full_loop_reason = "fast_path_params_unbound"
+            elif self._attempt_key(fast_candidate) in incident.failed_action_keys:
+                fast_candidate = None
+                full_loop_reason = "fast_path_action_already_failed"
+
+        if fast_path_decision is not None and fast_candidate is not None:
             await self._publish_workflow_step(
                 incident_id=incident.incident_id,
                 attempt=attempt,
@@ -396,7 +409,7 @@ class RecoveryAgent:
                 if stats is not None:
                     fast_path_context["champion_stats"] = stats
 
-            fast_how = HowProposal(primary=fast_path_decision.candidate, alternatives=[])
+            fast_how = HowProposal(primary=fast_candidate, alternatives=[])
             selected_how, executed_candidate, jev_decision = await self._select_candidate_with_jev(
                 incident=incident,
                 diagnosis=diagnosis,
@@ -447,6 +460,7 @@ class RecoveryAgent:
             prior_attempts=incident.prior_attempts,
             latest_tool_error=incident.last_tool_error,
             state_fingerprint=incident.state_fingerprint,
+            backup_catalog=self._backup_catalog(diagnostics),
         )
         how = self._normalize_how_proposal(raw_how)
         await self._publish_workflow_step(
@@ -814,7 +828,7 @@ class RecoveryAgent:
 
             incident.last_tool_error = "post_recovery_ping_unhealthy"
             if self._classmem_enabled:
-                incident.failed_action_keys.add(action_key)
+                incident.failed_action_keys.add(self._attempt_key(selected_how))
             self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_FAILED)
             await self._publish_workflow_step(
                 incident_id=incident.incident_id,
@@ -831,7 +845,7 @@ class RecoveryAgent:
             action_result.get("error") or verification.failure_type or "unknown"
         )
         if self._classmem_enabled:
-            incident.failed_action_keys.add(action_key)
+            incident.failed_action_keys.add(self._attempt_key(selected_how))
         self._tools.discard_incident_tools(incident.incident_id)
         self._update_policy(tool_name, reward=-1.0)
         await self._publish_workflow_step(
@@ -918,7 +932,7 @@ class RecoveryAgent:
             )
         )
         if self._classmem_enabled:
-            incident.failed_action_keys.add(action_key)
+            incident.failed_action_keys.add(self._attempt_key(selected_how))
 
         self._update_policy(policy_key, reward=-1.0)
         await self._publish_workflow_step(
@@ -989,11 +1003,12 @@ class RecoveryAgent:
         path_mode = self._path_mode_for_source(source)
         candidates = [how.primary, *how.alternatives]
         if self._classmem_enabled and self._classmem_dedupe_enabled:
-            candidates = dedupe_candidates_by_action_key(candidates)
+            # Dedupe on the attempt key so restores of different backups stay separate.
+            by_key: dict[str, DynamicToolSpec] = {}
+            for item in candidates:
+                by_key.setdefault(self._attempt_key(item), item)
             candidates = [
-                item
-                for item in candidates
-                if canonical_action_key(item) not in incident.failed_action_keys
+                by_key[key] for key in sorted(by_key) if key not in incident.failed_action_keys
             ]
             if not candidates:
                 if count_unusable_failure:
@@ -1140,7 +1155,7 @@ class RecoveryAgent:
                 selected_action_key = None
                 if self._classmem_enabled and selected_spec is not None:
                     selected_action_key = canonical_action_key(selected_spec)
-                    incident.failed_action_keys.add(selected_action_key)
+                    incident.failed_action_keys.add(self._attempt_key(selected_spec))
 
                 await self._publish_fast_path_skipped(
                     incident=incident,
@@ -1231,7 +1246,7 @@ class RecoveryAgent:
         transport_error = reason.startswith("jev_request_error")
         if selected_spec is not None and self._classmem_enabled:
             selected_action_key = canonical_action_key(selected_spec)
-            incident.failed_action_keys.add(selected_action_key)
+            incident.failed_action_keys.add(self._attempt_key(selected_spec))
 
         incident.attempts += 1
         incident.state_fingerprint = self._tools.state_fingerprint()
@@ -1380,6 +1395,59 @@ class RecoveryAgent:
         text = value.strip()
         return text == "" or bool(cls._PLACEHOLDER_RE.search(text))
 
+    @staticmethod
+    def _attempt_key(spec: DynamicToolSpec) -> str:
+        """Key that excludes a failed action for the rest of an incident.
+
+        Class memory learns a restore as one action whatever backup it used (backup ids
+        change every incident), but within an incident restoring a different backup is a
+        different attempt, so the backup id is part of this key.
+        """
+        key = canonical_action_key(spec)
+        if spec.operation == "request_backup_restore":
+            return f"{key}|backup_id={spec.params.get('backup_id')}"
+        return key
+
+    @staticmethod
+    def _backup_catalog(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = diagnostics.get("backups")
+        if not isinstance(rows, list):
+            return []
+        return [dict(row) for row in rows if isinstance(row, dict)]
+
+    @classmethod
+    def _bind_fast_path_candidate(
+        cls,
+        candidate: DynamicToolSpec,
+        *,
+        diagnostics: dict[str, Any],
+        detected_at: float,
+    ) -> DynamicToolSpec | None:
+        """Bind parameters that are only valid for the incident they were learned in.
+
+        A learned restore names the backup that fixed an earlier incident. Replaying that
+        id would roll back further than needed (or fail once the backup is rotated out),
+        so the fast path restores the newest catalog backup taken before this incident was
+        detected instead. None if the catalog has no such backup.
+        """
+        if candidate.operation != "request_backup_restore":
+            return candidate
+        newest: tuple[float, str] | None = None
+        for row in cls._backup_catalog(diagnostics):
+            backup_id = row.get("backup_id")
+            created_at = row.get("created_at")
+            if not isinstance(backup_id, str) or not isinstance(created_at, str):
+                continue
+            try:
+                created_ts = datetime.fromisoformat(created_at).timestamp()
+            except ValueError:
+                continue
+            if created_ts <= detected_at and (newest is None or created_ts > newest[0]):
+                newest = (created_ts, backup_id)
+        if newest is None:
+            return None
+        return candidate.model_copy(update={"params": {"backup_id": newest[1]}})
+
     @classmethod
     def _normalize_candidate(cls, candidate: DynamicToolSpec) -> DynamicToolSpec | None:
         params = dict(candidate.params)
@@ -1432,9 +1500,8 @@ class RecoveryAgent:
             if not isinstance(backup_id, str) or backup_id.strip() == "":
                 backup_id = params.get("selection") or params.get("restore_point")
             if not isinstance(backup_id, str) or cls._is_placeholder(backup_id):
-                backup_id = "latest"
-            normalized_backup = backup_id.strip() or "latest"
-            return candidate.model_copy(update={"params": {"backup_id": normalized_backup}})
+                return None
+            return candidate.model_copy(update={"params": {"backup_id": backup_id.strip()}})
 
         if operation == "restart_service":
             service_name = params.get("service_name")

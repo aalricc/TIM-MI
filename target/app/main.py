@@ -4,6 +4,8 @@ import asyncio
 import contextlib
 import json
 import os
+import re
+import shutil
 import sqlite3
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -16,7 +18,15 @@ APP_ROOT = Path(os.getenv("TARGET_APP_ROOT", "/target/app"))
 DB_PATH = Path(os.getenv("TARGET_DB_PATH", str(APP_ROOT / "data" / "app.db")))
 LOG_PATH = Path(os.getenv("TARGET_LOG_PATH", str(APP_ROOT / "app.log")))
 SCHEMA_PATH = Path(os.getenv("TARGET_SCHEMA_PATH", str(APP_ROOT / "schema.sql")))
+BACKUPS_DIR = Path(os.getenv("TARGET_BACKUPS_DIR", "/target/backups"))
 HEARTBEAT_INTERVAL_SECONDS = max(1.0, float(os.getenv("TARGET_HEARTBEAT_INTERVAL_SECONDS", "3")))
+# Fault injection and reset exist for the harness campaign only; a normal deployment
+# leaves this unset so the endpoints are not registered.
+TEST_HOOKS_ENABLED = os.getenv("TARGET_TEST_HOOKS", "0") == "1"
+
+# Names the backup job gives validated copies (target/backup/backup.sh).
+_BACKUP_NAME = re.compile(r"^app-(\d+)\.db$")
+_BACKUP_ID = re.compile(r"^app-\d+$")
 
 # Columns the widget endpoints read; deep health fails if any is missing so a repair
 # that recreates the table with the wrong shape is not reported healthy.
@@ -47,6 +57,33 @@ def ensure_db() -> None:
         with sqlite3.connect(DB_PATH) as conn:
             conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
             conn.commit()
+
+
+def reset_db() -> None:
+    """Replace the database with a fresh one built from the schema."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DB_PATH.unlink(missing_ok=True)
+    ensure_db()
+
+
+def list_backups() -> list[dict[str, object]]:
+    """Backups the backup job has kept, newest first."""
+    if not BACKUPS_DIR.is_dir():
+        return []
+    rows: list[tuple[int, Path]] = []
+    for path in BACKUPS_DIR.iterdir():
+        match = _BACKUP_NAME.match(path.name)
+        if match is not None and path.is_file():
+            rows.append((int(match.group(1)), path))
+    rows.sort(reverse=True)
+    return [
+        {
+            "backup_id": path.stem,
+            "created_at": datetime.fromtimestamp(epoch, tz=UTC).isoformat(),
+            "size_bytes": path.stat().st_size,
+        }
+        for epoch, path in rows
+    ]
 
 
 def sqlite_failure(exc: sqlite3.Error) -> str:
@@ -163,6 +200,30 @@ def ops_db_status() -> dict[str, object]:
     return db_status()
 
 
+@app.get("/ops/backups")
+def ops_backups(limit: int = Query(default=20, ge=1, le=500)) -> dict[str, object]:
+    return {"ok": True, "backups": list_backups()[:limit]}
+
+
+@app.post("/ops/backups/{backup_id}/restore")
+def restore_backup(backup_id: str) -> dict[str, object]:
+    source = BACKUPS_DIR / f"{backup_id}.db"
+    if _BACKUP_ID.match(backup_id) is None or not source.is_file():
+        available = [str(row["backup_id"]) for row in list_backups()[:10]]
+        write_log("warning", "backup restore failed", error="backup_not_found", backup_id=backup_id)
+        raise HTTPException(
+            status_code=404,
+            detail={"ok": False, "error": "backup_not_found", "available": available},
+        )
+
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    staged = DB_PATH.with_name(f".{DB_PATH.name}.restore")
+    shutil.copyfile(source, staged)
+    os.replace(staged, DB_PATH)
+    write_log("info", "backup restored", backup_id=backup_id)
+    return {"ok": True, "backup_id": backup_id}
+
+
 @app.post("/widgets")
 def create_widget(payload: WidgetCreateRequest) -> dict[str, object]:
     value = payload.value.strip()
@@ -208,7 +269,6 @@ def write_demo(value: str) -> dict[str, object]:
     return create_widget(WidgetCreateRequest(value=value))
 
 
-@app.post("/ops/fault/{fault}")
 def inject_fault(fault: str) -> dict[str, object]:
     if fault == "delete_db":
         if DB_PATH.exists():
@@ -230,3 +290,14 @@ def inject_fault(fault: str) -> dict[str, object]:
         return {"ok": True, "fault": fault}
 
     raise HTTPException(status_code=400, detail={"ok": False, "error": "unknown_fault"})
+
+
+def reset_target() -> dict[str, object]:
+    reset_db()
+    write_log("info", "target reset")
+    return {"ok": True}
+
+
+if TEST_HOOKS_ENABLED:
+    app.post("/ops/fault/{fault}")(inject_fault)
+    app.post("/ops/reset")(reset_target)

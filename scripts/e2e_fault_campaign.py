@@ -1,15 +1,20 @@
-"""Run a live fault-injection campaign and write per-scenario results.
+"""Run a live fault-injection campaign and write per-run results.
 
-For each fixture in `harness/scenarios/*.json`:
+Fixtures in `harness/scenarios/*.json` run round-robin: every fixture once, then every
+fixture again, up to its `repetitions` (or `--repetitions`). MI keeps its memory across
+runs, so later repetitions show whether it learned (fast path). For each run:
 
-1) wait for target healthy (`GET /health/deep`)
+1) target ready: wait for `GET /health/deep`; if it is still unhealthy (a previous run did
+   not recover), `POST /ops/reset` and wait again; then wait until MI has no open incident
 2) inject fault (`POST /ops/fault/{fault}`)
 3) wait for `incident.closed` in MI events
-4) slice the campaign window from `state/events.jsonl`
+4) slice the incident from `state/events.jsonl`
 5) run approved-outcome checker
 6) compute KPIs
 
-Outputs are written to `results/<run-id>/`.
+The harness never touches the target while MI works on an incident. The target must run
+with `TARGET_TEST_HOOKS=1` (fault and reset endpoints). Outputs are written to
+`results/<run-id>/`, including KPIs over all runs (`campaign.kpis.json`).
 """
 
 from __future__ import annotations
@@ -129,6 +134,104 @@ def _wait_for_target_healthy(
     raise RuntimeError(f"target did not become healthy within {timeout_seconds:.0f}s")
 
 
+def _open_incidents(events: list[dict[str, Any]]) -> set[str]:
+    started: set[str] = set()
+    closed: set[str] = set()
+    for event in events:
+        payload = event.get("payload")
+        incident_id = payload.get("incident_id") if isinstance(payload, dict) else None
+        if not isinstance(incident_id, str):
+            continue
+        if event.get("event_type") == "incident.started":
+            started.add(incident_id)
+        elif event.get("event_type") == "incident.closed":
+            closed.add(incident_id)
+    return started - closed
+
+
+def _wait_for_agent_idle(
+    client: httpx.Client,
+    *,
+    timeout_seconds: float,
+    poll_seconds: float,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    open_ids: set[str] = set()
+    while time.monotonic() < deadline:
+        try:
+            open_ids = _open_incidents(_agent_events(client))
+        except RuntimeError:
+            time.sleep(poll_seconds)
+            continue
+        if not open_ids:
+            return
+        time.sleep(poll_seconds)
+    raise RuntimeError(
+        f"MI incident(s) {sorted(open_ids)} still open {timeout_seconds:.0f}s after the target "
+        "was healthy"
+    )
+
+
+def _prepare_target(
+    target_client: httpx.Client,
+    agent_client: httpx.Client,
+    *,
+    ready_timeout_seconds: float,
+    healthy_timeout_seconds: float,
+    poll_seconds: float,
+) -> bool:
+    """Make the target healthy and MI idle before a run; True if the target was reset."""
+    reset = False
+    try:
+        _wait_for_target_healthy(
+            target_client,
+            timeout_seconds=ready_timeout_seconds,
+            poll_seconds=poll_seconds,
+        )
+    except RuntimeError:
+        _request_json(target_client, "POST", "/ops/reset")
+        reset = True
+        _wait_for_target_healthy(
+            target_client,
+            timeout_seconds=healthy_timeout_seconds,
+            poll_seconds=poll_seconds,
+        )
+    # A reset repairs the target from outside; MI's pre-retry health check then closes the
+    # open incident without learning from it.
+    _wait_for_agent_idle(
+        agent_client,
+        timeout_seconds=healthy_timeout_seconds,
+        poll_seconds=poll_seconds,
+    )
+    return reset
+
+
+def _recovery_outcome(rows: list[dict[str, Any]], incident_id: str) -> dict[str, Any]:
+    """How the incident ended: recovered_via is fast_path, full_loop, or None."""
+    started_ts: float | None = None
+    for row in rows:
+        payload = row.get("payload")
+        if not isinstance(payload, dict) or payload.get("incident_id") != incident_id:
+            continue
+        if row.get("event_type") == "incident.started" and started_ts is None:
+            started_ts = _event_ts(row)
+        if row.get("event_type") == "incident.recovered":
+            recovered_ts = _event_ts(row)
+            attempts = payload.get("attempts")
+            return {
+                "recovered_via": (
+                    "fast_path" if payload.get("source") == "class_memory" else "full_loop"
+                ),
+                "attempts": attempts if isinstance(attempts, int) else None,
+                "ttr_seconds": (
+                    round(recovered_ts - started_ts, 3)
+                    if recovered_ts is not None and started_ts is not None
+                    else None
+                ),
+            }
+    return {"recovered_via": None, "attempts": None, "ttr_seconds": None}
+
+
 def _wait_for_incident_closed(
     client: httpx.Client,
     *,
@@ -203,6 +306,7 @@ def _run_scenario(
     healthy_timeout_seconds: float,
     incident_timeout_seconds: float,
     poll_seconds: float,
+    ready_timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
     scenario_id = str(fixture["scenario_id"])
     fault = str(fixture["fault"])
@@ -210,9 +314,11 @@ def _run_scenario(
     effective_poll = poll_seconds if poll_seconds > 0 else 0.1
     slice_retries = max(5, math.ceil(incident_timeout_seconds / effective_poll))
 
-    _wait_for_target_healthy(
+    reset_before = _prepare_target(
         target_client,
-        timeout_seconds=healthy_timeout_seconds,
+        agent_client,
+        ready_timeout_seconds=ready_timeout_seconds,
+        healthy_timeout_seconds=healthy_timeout_seconds,
         poll_seconds=poll_seconds,
     )
     injected_at = time.time()
@@ -265,6 +371,8 @@ def _run_scenario(
         "closed_ts": closed_ts,
         "status": str(check_result["status"]),
         "violations": len(check_result.get("violations", [])),
+        "reset_before": reset_before,
+        **_recovery_outcome(sliced, incident_id),
         "slice": slice_path.as_posix(),
         "check": check_path.as_posix(),
         "kpis": kpis_path.as_posix(),
@@ -289,6 +397,46 @@ def _resolve_fixtures(fixtures_dir: Path, selected: list[str]) -> list[Path]:
     return selected_paths
 
 
+def _failure_row(
+    run_dir: Path,
+    *,
+    scenario_id: str,
+    artifact_prefix: str,
+    repetition: int,
+    fault: object,
+    fixture_path: Path,
+    error: str,
+) -> dict[str, Any]:
+    error_path = run_dir / f"{artifact_prefix}.error.txt"
+    error_path.write_text(error + "\n", encoding="utf-8")
+    return {
+        "scenario_id": scenario_id,
+        "repetition": repetition,
+        "fault": None if fault is None else str(fault),
+        "fixture": fixture_path.as_posix(),
+        "incident_id": None,
+        "status": "fail",
+        "violations": 1,
+        "error": error,
+        "error_file": error_path.as_posix(),
+    }
+
+
+def _summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    by_fault: dict[str, dict[str, int]] = {}
+    for row in rows:
+        key = str(row.get("fault") or row.get("scenario_id"))
+        entry = by_fault.setdefault(
+            key, {"runs": 0, "passed": 0, "fast_path": 0, "full_loop": 0, "resets": 0}
+        )
+        entry["runs"] += 1
+        entry["passed"] += 1 if row.get("status") == "pass" else 0
+        if row.get("recovered_via") in {"fast_path", "full_loop"}:
+            entry[str(row["recovered_via"])] += 1
+        entry["resets"] += 1 if row.get("reset_before") else 0
+    return dict(sorted(by_fault.items()))
+
+
 def run_campaign(
     *,
     fixtures_dir: Path,
@@ -302,6 +450,8 @@ def run_campaign(
     healthy_timeout_seconds: float,
     incident_timeout_seconds: float,
     poll_seconds: float,
+    repetitions_override: int | None = None,
+    ready_timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
     fixtures = _resolve_fixtures(fixtures_dir, selected_fixtures)
     if not fixtures:
@@ -312,53 +462,52 @@ def run_campaign(
     started_at = datetime.now(tz=UTC).isoformat()
 
     rows: list[dict[str, Any]] = []
-    overall_status = "pass"
+    loaded: list[tuple[Path, dict[str, Any], int]] = []
 
     for fixture_path in fixtures:
         scenario_id = fixture_path.stem
         try:
             fixture = load_fixture(fixture_path)
-            repetitions = int(fixture.get("repetitions", 1))
+            repetitions = (
+                repetitions_override
+                if repetitions_override is not None
+                else int(fixture.get("repetitions", 1))
+            )
         except Exception as exc:
-            overall_status = "fail"
-            error_path = run_dir / f"{scenario_id}.error.txt"
-            error_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
             rows.append(
-                {
-                    "scenario_id": scenario_id,
-                    "repetition": 1,
-                    "fault": None,
-                    "fixture": fixture_path.as_posix(),
-                    "incident_id": None,
-                    "status": "fail",
-                    "violations": 1,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "error_file": error_path.as_posix(),
-                }
+                _failure_row(
+                    run_dir,
+                    scenario_id=scenario_id,
+                    artifact_prefix=scenario_id,
+                    repetition=1,
+                    fault=None,
+                    fixture_path=fixture_path,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
             )
             continue
-
         if repetitions < 1:
-            overall_status = "fail"
-            error = f"invalid repetitions in fixture: {repetitions}"
-            error_path = run_dir / f"{scenario_id}.error.txt"
-            error_path.write_text(error + "\n", encoding="utf-8")
             rows.append(
-                {
-                    "scenario_id": scenario_id,
-                    "repetition": 1,
-                    "fault": str(fixture.get("fault")),
-                    "fixture": fixture_path.as_posix(),
-                    "incident_id": None,
-                    "status": "fail",
-                    "violations": 1,
-                    "error": error,
-                    "error_file": error_path.as_posix(),
-                }
+                _failure_row(
+                    run_dir,
+                    scenario_id=scenario_id,
+                    artifact_prefix=scenario_id,
+                    repetition=1,
+                    fault=fixture.get("fault"),
+                    fixture_path=fixture_path,
+                    error=f"invalid repetitions in fixture: {repetitions}",
+                )
             )
             continue
+        loaded.append((fixture_path, fixture, repetitions))
 
-        for repetition in range(1, repetitions + 1):
+    # Round-robin: repetition r of every fixture runs before repetition r + 1 of any.
+    max_repetitions = max((reps for _, _, reps in loaded), default=0)
+    for repetition in range(1, max_repetitions + 1):
+        for fixture_path, fixture, repetitions in loaded:
+            if repetition > repetitions:
+                continue
+            scenario_id = fixture_path.stem
             artifact_prefix = scenario_id
             if repetitions > 1:
                 artifact_prefix = f"{scenario_id}.r{repetition}"
@@ -376,29 +525,32 @@ def run_campaign(
                     healthy_timeout_seconds=healthy_timeout_seconds,
                     incident_timeout_seconds=incident_timeout_seconds,
                     poll_seconds=poll_seconds,
+                    ready_timeout_seconds=ready_timeout_seconds,
                 )
             except Exception as exc:
-                overall_status = "fail"
-                error_path = run_dir / f"{artifact_prefix}.error.txt"
-                error_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
                 rows.append(
-                    {
-                        "scenario_id": scenario_id,
-                        "repetition": repetition,
-                        "fault": str(fixture.get("fault")),
-                        "fixture": fixture_path.as_posix(),
-                        "incident_id": None,
-                        "status": "fail",
-                        "violations": 1,
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "error_file": error_path.as_posix(),
-                    }
+                    _failure_row(
+                        run_dir,
+                        scenario_id=scenario_id,
+                        artifact_prefix=artifact_prefix,
+                        repetition=repetition,
+                        fault=fixture.get("fault"),
+                        fixture_path=fixture_path,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
                 )
                 continue
-
             rows.append(row)
-            if row["status"] != "pass":
-                overall_status = "fail"
+
+    overall_status = "pass" if rows and all(row["status"] == "pass" for row in rows) else "fail"
+
+    all_slices: list[dict[str, Any]] = []
+    for row in rows:
+        slice_file = row.get("slice")
+        if isinstance(slice_file, str) and Path(slice_file).is_file():
+            all_slices.extend(load_event_log(Path(slice_file)))
+    campaign_kpis_path = run_dir / "campaign.kpis.json"
+    _write_json(campaign_kpis_path, compute_kpis(all_slices))
 
     finished_at = datetime.now(tz=UTC).isoformat()
     report = {
@@ -408,6 +560,8 @@ def run_campaign(
         "started_at": started_at,
         "finished_at": finished_at,
         "overall_status": overall_status,
+        "summary": _summary(rows),
+        "kpis": campaign_kpis_path.as_posix(),
         "scenarios": rows,
     }
     _write_json(run_dir / "campaign.json", report)
@@ -415,6 +569,12 @@ def run_campaign(
 
 
 def _parser() -> argparse.ArgumentParser:
+    def _positive_int(value: str) -> int:
+        number = int(value)
+        if number < 1:
+            raise argparse.ArgumentTypeError("must be >= 1")
+        return number
+
     def _positive_float(value: str) -> float:
         number = float(value)
         if number <= 0:
@@ -439,6 +599,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--healthy-timeout-seconds", type=_positive_float, default=90.0)
     parser.add_argument("--incident-timeout-seconds", type=_positive_float, default=420.0)
     parser.add_argument("--poll-seconds", type=_positive_float, default=1.0)
+    parser.add_argument(
+        "--ready-timeout-seconds",
+        type=_positive_float,
+        default=10.0,
+        help="how long to wait for a healthy target before a run; then POST /ops/reset",
+    )
+    parser.add_argument(
+        "--repetitions",
+        type=_positive_int,
+        help="runs per fixture (default: each fixture's `repetitions`)",
+    )
     return parser
 
 
@@ -466,6 +637,8 @@ def main(argv: list[str] | None = None) -> int:
             healthy_timeout_seconds=args.healthy_timeout_seconds,
             incident_timeout_seconds=args.incident_timeout_seconds,
             poll_seconds=args.poll_seconds,
+            repetitions_override=args.repetitions,
+            ready_timeout_seconds=args.ready_timeout_seconds,
         )
 
     print(f"campaign report: {args.results_root / run_id / 'campaign.json'}")

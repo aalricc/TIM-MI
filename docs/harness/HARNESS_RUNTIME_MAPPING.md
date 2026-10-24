@@ -143,6 +143,15 @@ the data.
    nothing. KPIs count such incidents as `self_resolved`.
 9. **Step 5 also writes `state/class_store.json`** (`ClassMemory.assign_class` updates the
    class centroid and may create a class). Its event is `class_memory.lookup`.
+10. **Backup restores and action keys.** Diagnostics carry the target's backup catalog
+    (`backups`, from `GET /ops/backups`); the HOW request gets it as `backup_catalog`.
+    `request_backup_restore` has one class-memory action key whatever `backup_id` it names,
+    so `incident.recovered.action_key` and class stats do not split by backup. Within an
+    incident a failed restore excludes only that backup. A fast-path restore binds
+    `backup_id` to the newest catalog backup created before the incident was detected; if
+    there is none, or that restore already failed in this incident, `path.selected`
+    (`full_loop`) carries `reason` = `fast_path_params_unbound` or
+    `fast_path_action_already_failed`.
 
 ## Alignment constraints
 

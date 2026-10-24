@@ -46,7 +46,11 @@ for example repaired by an operator, the incident closes without recording a lea
 - `GET /ops/db/status`
 - `POST /widgets`
 - `GET /widgets`
-- `POST /ops/fault/{delete_db|corrupt_db|drop_widgets_table}` (fault injection for recovery testing)
+- `GET /ops/backups?limit=N` (backup catalog: `backup_id`, `created_at`, `size_bytes`, newest first)
+- `POST /ops/backups/{backup_id}/restore`
+- Test hooks, registered only when `TARGET_TEST_HOOKS=1` (the harness campaign sets it):
+  - `POST /ops/fault/{delete_db|corrupt_db|drop_widgets_table}` (fault injection)
+  - `POST /ops/reset` (rebuild a clean database from the schema)
 
 ## Project layout
 
@@ -195,7 +199,7 @@ OPENAI_API_KEY=<key> pytest -q -m live
 
 ## Quick live recovery test
 
-1. Start stack: `docker compose up --build`
+1. Start stack with the test hooks: `TARGET_TEST_HOOKS=1 docker compose up --build`
 2. Open dashboard: `http://localhost:8090/dashboard`
 3. Inject fault: `curl -X POST http://localhost:8080/ops/fault/drop_widgets_table`
 4. Observe:
