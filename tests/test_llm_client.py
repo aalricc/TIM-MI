@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Any
+
+import httpx
 import pytest
 
 from mi_agent.config import MISettings
@@ -115,3 +118,58 @@ async def test_propose_how_retries_compact_payload_after_400(settings: MISetting
     assert [row["backup_id"] for row in second_payload["backup_catalog"]] == [
         f"app-{n}" for n in range(5)
     ]
+
+
+def _mock_llm_transport(
+    monkeypatch: pytest.MonkeyPatch, responses: list[Exception | int]
+) -> list[int]:
+    """Serve `responses` in order: an int is an HTTP status, an exception is raised."""
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        outcome = responses.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return httpx.Response(outcome, json={"ok": outcome < 400}, request=request)
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(**kwargs: Any) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr("mi_agent.llm.client.httpx.AsyncClient", client_factory)
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", [httpx.ReadTimeout(""), 503, 429])
+async def test_post_retries_once_after_transient_failure(
+    settings: MISettings, monkeypatch: pytest.MonkeyPatch, first: Exception | int
+) -> None:
+    calls = _mock_llm_transport(monkeypatch, [first, 200])
+
+    assert await OpenAILLMClient(settings)._post({}) == {"ok": True}
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_post_names_the_error_type_after_second_timeout(
+    settings: MISettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _mock_llm_transport(monkeypatch, [httpx.ReadTimeout(""), httpx.ReadTimeout("")])
+
+    with pytest.raises(LLMError, match=r"^LLM request failed: ReadTimeout: $"):
+        await OpenAILLMClient(settings)._post({})
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_post_does_not_retry_client_errors(
+    settings: MISettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _mock_llm_transport(monkeypatch, [400])
+
+    with pytest.raises(LLMError, match="HTTPStatusError: Client error '400 Bad Request'"):
+        await OpenAILLMClient(settings)._post({})
+    assert len(calls) == 1

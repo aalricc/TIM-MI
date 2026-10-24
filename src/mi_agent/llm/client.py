@@ -332,20 +332,37 @@ class OpenAILLMClient(LLMClient):
             headers[self._settings.llm_api_key_header] = api_key
 
         async with httpx.AsyncClient(timeout=self._settings.llm_timeout_seconds) as client:
-            try:
-                response = await client.post(
-                    self._settings.llm_endpoint,
-                    headers=headers,
-                    json=body,
-                )
-                response.raise_for_status()
-            except httpx.HTTPError as exc:
-                raise LLMError(f"LLM request failed: {exc}") from exc
+            # One retry for transient failures (timeouts, connection errors, 429/5xx).
+            for attempt in range(2):
+                try:
+                    response = await client.post(
+                        self._settings.llm_endpoint,
+                        headers=headers,
+                        json=body,
+                    )
+                    response.raise_for_status()
+                    break
+                except httpx.HTTPError as exc:
+                    if attempt == 0 and self._is_transient(exc):
+                        continue
+                    # str() of a timeout is often empty, so always name the type.
+                    raise LLMError(
+                        f"LLM request failed: {type(exc).__name__}: {exc}"
+                    ) from exc
 
         data = response.json()
         if not isinstance(data, dict):
             raise LLMError("LLM response was not a JSON object")
         return data
+
+    @staticmethod
+    def _is_transient(exc: httpx.HTTPError) -> bool:
+        if isinstance(exc, httpx.TransportError):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            return status == 429 or status >= 500
+        return False
 
     @staticmethod
     def _extract_json_text(payload: dict[str, Any]) -> Any:
