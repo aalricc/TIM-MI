@@ -97,6 +97,12 @@ def sqlite_failure(exc: sqlite3.Error) -> str:
     return "db_error"
 
 
+def _connect_existing() -> sqlite3.Connection:
+    """Open the database for request traffic without creating a missing file, so a write
+    after `delete_db` fails with `db_missing` instead of leaving an empty database."""
+    return sqlite3.connect(f"{DB_PATH.resolve().as_uri()}?mode=rw", uri=True)
+
+
 def db_status() -> dict[str, object]:
     status: dict[str, object] = {
         "db_path": DB_PATH.as_posix(),
@@ -114,6 +120,11 @@ def db_status() -> dict[str, object]:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='widgets'"
             ).fetchall()
             column_rows = conn.execute("PRAGMA table_info(widgets);").fetchall()
+            widget_rows = (
+                int(conn.execute("SELECT COUNT(*) FROM widgets").fetchone()[0])
+                if table_rows
+                else None
+            )
     except sqlite3.Error as exc:
         status.update({"ok": False, "error": sqlite_failure(exc), "details": repr(exc)})
         return status
@@ -128,6 +139,7 @@ def db_status() -> dict[str, object]:
             "integrity": integrity,
             "widgets_table_present": table_present,
             "widgets_columns_missing": missing_columns,
+            "widget_rows": widget_rows,
         }
     )
     if not bool(status["ok"]):
@@ -231,7 +243,7 @@ def create_widget(payload: WidgetCreateRequest) -> dict[str, object]:
         raise HTTPException(status_code=400, detail={"ok": False, "error": "empty_value"})
 
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with _connect_existing() as conn:
             cursor = conn.execute("INSERT INTO widgets(name) VALUES (?)", (value,))
             conn.commit()
             widget_id = int(cursor.lastrowid)
@@ -247,7 +259,7 @@ def create_widget(payload: WidgetCreateRequest) -> dict[str, object]:
 @app.get("/widgets")
 def list_widgets(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, object]:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with _connect_existing() as conn:
             rows = conn.execute(
                 "SELECT id, name, created_at FROM widgets ORDER BY id DESC LIMIT ?",
                 (limit,),
