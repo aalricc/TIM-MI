@@ -22,6 +22,8 @@ The runtime enforces a strict loop:
 16. Update class-memory store in `state/class_store.json` (if enabled).
 
 If verification fails, retain context and loop back to step 5 (no hard cap).
+Before each retry MI re-checks target health (step 1); if the target is already healthy,
+for example repaired by an operator, the incident closes without recording a learned success.
 
 ## Architecture Diagram
 ![MI Architecture Diagram](docs/images/tim_mi_architecture.png)
@@ -160,6 +162,13 @@ recovery loop if the LLM endpoint or credentials are invalid.
 ruff check .
 pytest -q
 mypy --strict src
+mypy --strict harness
+```
+
+Run the same checks automatically before every commit (once per clone):
+
+```bash
+pre-commit install
 ```
 
 By default, `pytest -q` excludes `live` tests. To run real OpenAI integration tests:

@@ -29,3 +29,17 @@
 - Incorrect JEV thresholds can over-block recovery or under-block risky actions.
 - Default `restart_service` behavior is a no-op unless an integration hook is configured.
 - RAG quality depends on Pinecone index quality and recency.
+- Verification is only as strong as the target's `/health/deep`. It now checks integrity,
+  the `widgets` table, and the columns the endpoints read; it does not exercise the
+  endpoints themselves. Learned state recorded before the column check contains a tool and
+  class template that create `widgets` with the wrong columns, and SQL templates that
+  create unrelated tables.
+- A repair made outside MI during an attempt (after the pre-retry health check, before
+  verification) is credited to that attempt's action and persisted. Repairs between
+  attempts close the incident without learning.
+- The backup job validates each copy before keeping it and retains the newest 360, but a
+  database that passes validation while logically wrong (bad data) is still backed up.
+
+## Operational response
+
+Fault handling, manual takeover, and post-incident review: `docs/runbooks/README.md`.

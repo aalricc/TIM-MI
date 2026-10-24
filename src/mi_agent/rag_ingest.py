@@ -285,7 +285,9 @@ def dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for record in records:
         section = str(record.get("section") or "")
         text = str(record.get("text") or "")
-        digest = hashlib.sha1(f"{section}|{_normalize(text)}".encode()).hexdigest()
+        digest = hashlib.sha1(
+            f"{section}|{_normalize(text)}".encode(), usedforsecurity=False
+        ).hexdigest()
         if digest in seen:
             continue
         seen.add(digest)
@@ -343,7 +345,7 @@ def to_upsert_record(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _text_hash(text: str) -> str:
-    return hashlib.sha1(_normalize(text).encode("utf-8")).hexdigest()
+    return hashlib.sha1(_normalize(text).encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def _normalize(value: str) -> str:

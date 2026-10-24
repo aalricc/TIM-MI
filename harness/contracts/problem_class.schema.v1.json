@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mi-agent/harness/contracts/problem_class.schema.v1.json",
+  "title": "ProblemClassV1",
+  "description": "One class record from `state/class_store.json` (`classes.<class_id>`), as written by ClassMemory. The centroid vector is summarised by its dimension.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "store_schema_version",
+    "class_id",
+    "created_ts",
+    "updated_ts",
+    "n_incidents",
+    "templates",
+    "centroid_dim",
+    "action_keys",
+    "skill_anchor"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "store_schema_version": {
+      "description": "Runtime class-store schema version (class_memory._SCHEMA_VERSION).",
+      "type": "integer",
+      "minimum": 1
+    },
+    "class_id": {"type": "string", "minLength": 1},
+    "created_ts": {"type": "number"},
+    "updated_ts": {"type": "number"},
+    "n_incidents": {"type": "integer", "minimum": 0},
+    "templates": {"type": "array", "items": {"type": "string"}},
+    "centroid_dim": {"type": "integer", "minimum": 0},
+    "action_keys": {"type": "array", "items": {"type": "string"}},
+    "skill_anchor": {
+      "description": "Action key of the last successful action for this class (set by record_outcome on success).",
+      "type": ["string", "null"]
+    }
+  }
+}

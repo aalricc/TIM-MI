@@ -11,7 +11,8 @@ def run() -> None:
     settings = MISettings()  # type: ignore[call-arg]
     agent, context = build_agent(settings)
     app = create_api(context, agent)
-    uvicorn.run(app, host="0.0.0.0", port=8090)
+    # Listens on all interfaces so the API is reachable from outside the container.
+    uvicorn.run(app, host="0.0.0.0", port=8090)  # noqa: S104
 
 
 if __name__ == "__main__":

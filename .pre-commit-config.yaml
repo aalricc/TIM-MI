@@ -1,0 +1,30 @@
+# Pre-commit stage of the harness quality placement (harness/governance/README.md).
+# Same commands as `make check` and CI; run inside the project virtualenv.
+# Install once per clone: pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint + security rules)
+        entry: ruff check .
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: mypy-src
+        name: mypy --strict src
+        entry: mypy --strict src
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: mypy-harness
+        name: mypy --strict harness
+        entry: mypy --strict harness
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: pytest
+        name: pytest (unit, contract, architecture, scenario regression)
+        entry: pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true

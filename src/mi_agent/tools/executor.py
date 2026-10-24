@@ -24,6 +24,12 @@ from mi_agent.tools.schemas import (
 from mi_agent.workflow.models import DynamicToolSpec, MonitorStatus, RAGChunk
 
 RestoreHook = Callable[[str], Awaitable[dict[str, Any]]]
+
+
+def base_tool_name(spec: DynamicToolSpec) -> str:
+    """Session tool name for a spec before de-duplication suffixes; also the RL policy key."""
+    return spec.name.strip().replace(" ", "_") or "dynamic_tool"
+
 RestartHook = Callable[[str], Awaitable[dict[str, Any]]]
 
 
@@ -169,9 +175,7 @@ class ToolExecutor:
 
     def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
         namespace = self._session_tools.setdefault(incident_id, {})
-        candidate_name = spec.name.strip().replace(" ", "_")
-        if candidate_name == "":
-            candidate_name = "dynamic_tool"
+        candidate_name = base_tool_name(spec)
 
         if candidate_name not in namespace:
             namespace[candidate_name] = spec
@@ -189,7 +193,8 @@ class ToolExecutor:
         spec = self._session_tools.get(incident_id, {}).get(tool_name)
         if spec is None:
             raise ToolExecutionError(f"dynamic tool not found: {tool_name}")
-        self._security_gate(spec)
+        # Re-checked at execution time so no caller can execute an ungated spec.
+        self.security_gate(spec)
         return await self._execute_operation(spec.operation, spec.params)
 
     def discard_incident_tools(self, incident_id: str, *, keep: str | None = None) -> None:
@@ -251,7 +256,8 @@ class ToolExecutor:
         blob = json.dumps(payload, sort_keys=True).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()
 
-    def _security_gate(self, spec: DynamicToolSpec) -> None:
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        """README step 9: schema/path/sandbox checks. Raises on rejection."""
         allowed_operations = {
             "request_backup_restore",
             "restart_service",

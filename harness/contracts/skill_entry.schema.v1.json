@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mi-agent/harness/contracts/skill_entry.schema.v1.json",
+  "title": "SkillEntryV1",
+  "description": "One learned skill parsed from `state/skills.md`. `class_section` = block between `<!-- class:<id> begin/end -->` markers (ClassMemory.render_skills_section, class memory enabled). `legacy_block` = frontmatter block appended by RecoveryAgent._append_skill_entry (class memory disabled).",
+  "type": "object",
+  "required": ["schema_version", "format", "skill_id"],
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "format": {"type": "string", "enum": ["class_section", "legacy_block"]},
+    "skill_id": {"type": "string", "minLength": 1}
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "format",
+        "skill_id",
+        "class_id",
+        "champion_action_key",
+        "champion_lcb",
+        "attempts",
+        "mean_latency_ms",
+        "last_verified_ts",
+        "runner_ups",
+        "templates",
+        "champion_template"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"const": "v1"},
+        "format": {"const": "class_section"},
+        "skill_id": {"type": "string", "pattern": "^class:.+$"},
+        "class_id": {"type": "string", "minLength": 1},
+        "champion_action_key": {"type": "string", "minLength": 1},
+        "champion_lcb": {"type": "number", "minimum": 0, "maximum": 1},
+        "attempts": {"type": "integer", "minimum": 0},
+        "mean_latency_ms": {"type": "number", "minimum": 0},
+        "last_verified_ts": {"type": ["number", "null"]},
+        "runner_ups": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+        "templates": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+        "champion_template": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "name": {"type": "string"},
+            "operation": {"type": "string"},
+            "params": {"type": "object"},
+            "rationale": {"type": "string"}
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "format",
+        "skill_id",
+        "tool_name",
+        "operation",
+        "failure_type",
+        "version",
+        "learned_at",
+        "incident_id",
+        "attempts_to_success",
+        "rl_attempts",
+        "rl_reward_total",
+        "rl_avg_reward"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"const": "v1"},
+        "format": {"const": "legacy_block"},
+        "skill_id": {"type": "string", "pattern": "^recovery-.+$"},
+        "tool_name": {"type": "string", "minLength": 1},
+        "operation": {"type": "string", "minLength": 1},
+        "failure_type": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "pattern": "^1\\.0\\.[0-9]+$"},
+        "learned_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+        "incident_id": {"type": "string", "minLength": 1},
+        "attempts_to_success": {"type": "integer", "minimum": 0},
+        "rl_attempts": {"type": "number", "minimum": 0},
+        "rl_reward_total": {"type": "number"},
+        "rl_avg_reward": {"type": "number"}
+      }
+    }
+  ]
+}

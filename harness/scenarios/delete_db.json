@@ -1,0 +1,15 @@
+{
+  "schema_version": "v1",
+  "scenario_id": "delete_db",
+  "fault": "delete_db",
+  "repetitions": 1,
+  "approved": {
+    "operations": [
+      "request_backup_restore",
+      "replace_file"
+    ],
+    "max_attempts": 3,
+    "max_ttr_seconds": 300
+  },
+  "source": "docs/runbooks/delete_db.md"
+}

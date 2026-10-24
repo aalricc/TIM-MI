@@ -150,7 +150,7 @@ def main() -> int:
     else:
         print("  (none)")
 
-    rng = random.Random(42)
+    rng = random.Random(42)  # noqa: S311 - seeded sampling for a report, not security
     sample_sources = [
         "Result and Error Codes",
         "Database File Format",
