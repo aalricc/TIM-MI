@@ -1,0 +1,6 @@
+{
+  "window_hours": 24,
+  "min_recovery_rate": 0.9,
+  "max_ttr_p90_seconds": 60,
+  "max_request_error_rate": 0.1
+}

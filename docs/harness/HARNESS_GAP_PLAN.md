@@ -19,7 +19,7 @@ Conventions for every checkpoint:
 | --- | --- | --- | --- |
 | D1 | What should a security-gate rejection do? | CP1 | **Decided: (b)** — failed attempt with learning penalties (policy −1, class-memory failure), action excluded for the incident, retry from step 5. Rejected alternatives: (a) keep raising; (c) failed attempt without penalties |
 | D2 | Where does the live E2E fault-injection regression run? It needs OpenAI, Pinecone, and the local JEV server (`.local/jev`). | CP7 | **Decided: (c)** — manual `workflow_dispatch` only via a self-hosted runner (no schedule) |
-| D3 | Where does continuous surveillance run? GitHub Actions cannot read a host's `state/`. | CP9 | (a) `harness-watch` service in `docker-compose.yml` sharing the `state` volume; (b) host cron; (c) Claude Code scheduled routine on the host |
+| D3 | Where does continuous surveillance run? GitHub Actions cannot read a host's `state/`. | CP9 | **Decided: (a)** — `harness-watch` compose service, `state/` mounted read-only, every 5 min over 24 h; results to `results/harness/sensor_results.jsonl` and the dashboard. Rejected: (b) host cron; (c) Claude Code scheduled routine |
 | D4 | Which model judges diagnosis/action quality, and who approves the rubric? | CP12 | OpenAI (same provider as runtime) or Claude; rubric owner |
 | D5 | Which agent runs LLM code/architecture review on PRs? | CP13 | GitHub Action with an LLM reviewer; selective on risky paths only |
 | D6 | Named owners for the roles runtime maintainer / harness maintainer / operator. | CP14 | — |

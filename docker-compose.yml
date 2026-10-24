@@ -47,6 +47,30 @@ services:
     volumes:
       - ./target/traffic:/traffic:ro
 
+  harness-watch:
+    # Continuous surveillance (D3 = compose service): every HARNESS_WATCH_INTERVAL_SECONDS
+    # it runs the invariant sensors and KPI thresholds over the last 24 h of MI's event
+    # log and appends the sensor_result records. State is mounted read-only.
+    image: python:3.12-slim
+    container_name: mi-harness-watch
+    depends_on:
+      - mi-agent
+    working_dir: /app
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        mkdir -p /results/harness && while true; do
+        python -m harness.watch /state/events.jsonl >> /results/harness/sensor_results.jsonl;
+        sleep "$${HARNESS_WATCH_INTERVAL_SECONDS}"; done
+    environment:
+      HARNESS_WATCH_INTERVAL_SECONDS: ${HARNESS_WATCH_INTERVAL_SECONDS:-300}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./harness:/app/harness:ro
+      - ./state:/state:ro
+      - ./results/harness:/results/harness
+
   mi-agent:
     build:
       context: .
@@ -102,10 +126,13 @@ services:
       MI_CLASSMEM_N_MIN: ${MI_CLASSMEM_N_MIN:-3}
       MI_CLASSMEM_COOLDOWN_SECONDS: ${MI_CLASSMEM_COOLDOWN_SECONDS:-30}
       MI_CLASSMEM_EMBEDDING_DIM: ${MI_CLASSMEM_EMBEDDING_DIM:-96}
+      MI_HARNESS_RESULTS_PATH: /results/harness/sensor_results.jsonl
     volumes:
       # No backups volume: MI lists and restores backups through the target's API.
       - ./target/app:/target/app
       - ./state:/state
+      # Read by the dashboard's Surveillance panel (written by harness-watch).
+      - ./results/harness:/results/harness:ro
 
 volumes:
   backups_data:

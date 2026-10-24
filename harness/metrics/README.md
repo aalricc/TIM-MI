@@ -56,6 +56,14 @@ visible in `decision_trace` records and `attempt_outcomes` instead.
 | `winning_actions_per_class` | per `class_id`, number of distinct `action_key` values that won a recovery; lower is more stable |
 | `data_loss` | over recovered cohort incidents whose `incident.recovered.rows_lost` is a number: `recoveries_measured`, `lossless_recoveries` (`rows_lost = 0`), `rows_lost_total`, and `rows_lost_per_recovery` (same summary as TTR). `rows_lost` is `null`, and the incident is not measured, when MI saw no healthy row count before the incident |
 
+## Thresholds
+
+`harness/metrics/thresholds.json` sets the continuous alert bounds checked by the
+`kpi_thresholds` sensor (`harness/sensors/kpi_thresholds.py`) over a `window_hours`
+rolling window: `min_recovery_rate` 0.9, `max_ttr_p90_seconds` 60,
+`max_request_error_rate` 0.1 (on `decision.jev_request_error_rate`). A KPI that is `null`
+for the window is not checked.
+
 ## Interpretation notes
 
 - Compare campaigns only with identical configuration and scenario sets
