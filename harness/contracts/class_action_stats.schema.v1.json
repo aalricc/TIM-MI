@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mi-agent/harness/contracts/class_action_stats.schema.v1.json",
+  "title": "ClassActionStatsV1",
+  "description": "One action-statistics record from `state/class_store.json` (`classes.<class_id>.actions.<action_key>`). Beta posterior starts at alpha=beta=1 and each outcome adds 1, so successes=alpha-1 and failures=beta-1.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "class_id",
+    "action_key",
+    "action_name",
+    "operation",
+    "params_template",
+    "source",
+    "attempts",
+    "alpha",
+    "beta",
+    "successes",
+    "failures",
+    "mean_latency_ms",
+    "last_ok_ts",
+    "last_failure_ts",
+    "cooldown_until_ts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "class_id": {"type": "string", "minLength": 1},
+    "action_key": {
+      "description": "canonical_action_key(spec): 24 hex chars.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{24}$"
+    },
+    "action_name": {"type": ["string", "null"]},
+    "operation": {"type": ["string", "null"]},
+    "params_template": {
+      "description": "param_template.params with incident slots replaced by {{slot_N}} placeholders.",
+      "type": "object"
+    },
+    "source": {"type": ["string", "null"], "enum": ["class_memory", "full_loop", null]},
+    "attempts": {"type": "integer", "minimum": 0},
+    "alpha": {"type": "number", "minimum": 1},
+    "beta": {"type": "number", "minimum": 1},
+    "successes": {"type": "number", "minimum": 0},
+    "failures": {"type": "number", "minimum": 0},
+    "mean_latency_ms": {"type": "number", "minimum": 0},
+    "last_ok_ts": {"type": ["number", "null"]},
+    "last_failure_ts": {"type": ["number", "null"]},
+    "cooldown_until_ts": {"type": "number"}
+  }
+}

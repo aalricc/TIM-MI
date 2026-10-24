@@ -125,6 +125,9 @@ class APIFakeTools:
         del query, k
         return []
 
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        del spec
+
     def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
         del incident_id
         return spec.name
@@ -446,6 +449,34 @@ def test_incident_views_limit_cards_to_six(tmp_path: Path) -> None:
     assert len(incident_view["tool_catalog"]) == 6
     assert all(row["incident_id"] == incident_id for row in incident_view["rl_summary"]["actions"])
     assert all(row["incident_id"] == incident_id for row in incident_view["tool_catalog"])
+
+
+def test_incident_view_reads_top_level_operation(tmp_path: Path) -> None:
+    client, events = _build_client(tmp_path)
+    incident_id = "inc-operation-1"
+
+    with client:
+        asyncio.run(events.publish("incident.started", {"incident_id": incident_id}))
+        asyncio.run(
+            events.publish(
+                "dynamic_tool.executed",
+                {
+                    "incident_id": incident_id,
+                    "tool_name": "restore",
+                    "operation": "request_backup_restore",
+                    "ok": True,
+                    "error": None,
+                    "result": {"ok": True, "action": "request_backup_restore"},
+                },
+            )
+        )
+        response = client.get("/agent/dashboard")
+
+    assert response.status_code == 200
+    rows = response.json()["incident_views"][incident_id]["tool_catalog"]
+    assert [(row["tool_name"], row["operation"]) for row in rows] == [
+        ("restore", "request_backup_restore")
+    ]
 
 
 def test_history_incident_view_is_scoped_per_incident(tmp_path: Path) -> None:

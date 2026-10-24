@@ -146,12 +146,17 @@ def _build_incident_views(
         if event_type == "dynamic_tool.executed":
             action_key = payload.get("action_key")
             tool_name = payload.get("tool_name")
-            action_details = payload.get("action")
             operation = None
-            if isinstance(action_details, dict):
-                operation_value = action_details.get("operation")
-                if isinstance(operation_value, str) and operation_value:
-                    operation = operation_value
+            operation_value = payload.get("operation")
+            if isinstance(operation_value, str) and operation_value:
+                operation = operation_value
+            else:
+                # Events logged before `operation` was a top-level field.
+                action_details = payload.get("action")
+                if isinstance(action_details, dict):
+                    legacy_value = action_details.get("operation")
+                    if isinstance(legacy_value, str) and legacy_value:
+                        operation = legacy_value
 
             stat_key = (
                 action_key

@@ -20,6 +20,7 @@ from mi_agent.workflow.models import (
     DynamicToolSpec,
     HowProposal,
     IncidentContext,
+    MonitorStatus,
     VerificationResult,
 )
 
@@ -142,6 +143,17 @@ class BenchTools:
     async def retrieve_rag_chunks(self, query: str, *, k: int) -> list[Any]:
         del query, k
         return []
+
+    async def monitor_health(self) -> MonitorStatus:
+        # Post-recovery ping (engine step after persistence) mirrors the last action outcome.
+        return MonitorStatus(
+            healthy=self._last_ok,
+            status_code=200 if self._last_ok else 500,
+            detail="healthy" if self._last_ok else "health_endpoint_unhealthy",
+        )
+
+    def security_gate(self, spec: DynamicToolSpec) -> None:
+        del spec
 
     def register_temporary_dynamic_tool(self, incident_id: str, spec: DynamicToolSpec) -> str:
         del incident_id

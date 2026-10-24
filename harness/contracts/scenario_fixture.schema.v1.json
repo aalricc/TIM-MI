@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mi-agent/harness/contracts/scenario_fixture.schema.v1.json",
+  "title": "ScenarioFixtureV1",
+  "description": "Operator-approved fault scenario fixture for offline campaign checks.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "fault",
+    "repetitions",
+    "approved",
+    "source"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "v1"
+    },
+    "scenario_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fault": {
+      "type": "string",
+      "enum": [
+        "drop_widgets_table",
+        "delete_db",
+        "corrupt_db"
+      ]
+    },
+    "repetitions": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "approved": {
+      "type": "object",
+      "required": [
+        "operations",
+        "max_attempts",
+        "max_ttr_seconds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "request_backup_restore",
+              "run_sql",
+              "replace_file"
+            ]
+          }
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_ttr_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^docs/runbooks/[a-z0-9_-]+\\.md$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "fault": {
+            "const": "drop_widgets_table"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "docs/runbooks/drop_widgets_table.md"
+          },
+          "approved": {
+            "properties": {
+              "operations": {
+                "items": {
+                  "enum": [
+                    "run_sql",
+                    "request_backup_restore"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "fault": {
+            "const": "delete_db"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "docs/runbooks/delete_db.md"
+          },
+          "approved": {
+            "properties": {
+              "operations": {
+                "items": {
+                  "enum": [
+                    "request_backup_restore",
+                    "replace_file"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "fault": {
+            "const": "corrupt_db"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "docs/runbooks/corrupt_db.md"
+          },
+          "approved": {
+            "properties": {
+              "operations": {
+                "items": {
+                  "enum": [
+                    "request_backup_restore",
+                    "replace_file"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

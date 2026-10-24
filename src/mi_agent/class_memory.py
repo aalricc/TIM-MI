@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import fcntl
 import hashlib
 import json
@@ -60,6 +61,16 @@ class FastPathDecision:
     margin: float
     action_key: str | None
     candidate: DynamicToolSpec | None
+
+
+@dataclass(slots=True)
+class OutcomeUpdate:
+    match: ClassMatch
+    spec: DynamicToolSpec
+    latency_ms: float
+    success: bool
+    source: str
+    ts: float
 
 
 @dataclass(slots=True)
@@ -486,12 +497,26 @@ class ClassMemory:
         latency_ms: float,
         success: bool,
         source: str,
+        ts: float | None = None,
     ) -> str:
-        action_key = canonical_action_key(spec)
+        update = OutcomeUpdate(
+            match=match,
+            spec=spec,
+            latency_ms=latency_ms,
+            success=success,
+            source=source,
+            ts=time.time() if ts is None else ts,
+        )
         classes = self._state.get("classes", {})
         record = classes.get(match.class_id)
         if not isinstance(record, dict):
-            return action_key
+            return canonical_action_key(spec)
+        action_key = self._apply_outcome(record, update)
+        self._save_state()
+        return action_key
+
+    def _apply_outcome(self, record: dict[str, Any], update: OutcomeUpdate) -> str:
+        action_key = canonical_action_key(update.spec)
         actions = record.setdefault("actions", {})
         if not isinstance(actions, dict):
             actions = {}
@@ -506,37 +531,51 @@ class ClassMemory:
                 "last_ok_ts": None,
                 "last_failure_ts": None,
                 "cooldown_until_ts": 0.0,
-                "param_template": self._param_template_payload(spec, match.signature.slots),
-                "source": source,
+                "param_template": self._param_template_payload(
+                    update.spec, update.match.signature.slots
+                ),
+                "source": update.source,
             }
             actions[action_key] = stats
 
         attempts = int(stats.get("attempts", 0) or 0) + 1
         mean_latency = float(stats.get("mean_latency", 0.0) or 0.0)
-        mean_latency = ((mean_latency * (attempts - 1)) + max(0.0, latency_ms)) / attempts
+        mean_latency = ((mean_latency * (attempts - 1)) + max(0.0, update.latency_ms)) / attempts
         stats["attempts"] = attempts
         stats["mean_latency"] = mean_latency
-        if success:
+        if update.success:
             stats["alpha"] = float(stats.get("alpha", 1.0) or 1.0) + 1.0
-            stats["last_ok_ts"] = time.time()
+            stats["last_ok_ts"] = update.ts
             stats["cooldown_until_ts"] = 0.0
             record["skill_anchor"] = action_key
         else:
-            now = time.time()
             stats["beta"] = float(stats.get("beta", 1.0) or 1.0) + 1.0
-            stats["last_failure_ts"] = now
-            stats["cooldown_until_ts"] = now + self._config.cooldown_seconds
+            stats["last_failure_ts"] = update.ts
+            stats["cooldown_until_ts"] = update.ts + self._config.cooldown_seconds
 
-        stats["source"] = source
-        record["updated_ts"] = time.time()
-        self._save_state()
+        stats["source"] = update.source
+        record["updated_ts"] = update.ts
         return action_key
 
-    def render_skills_section(self, *, class_id: str) -> str | None:
+    def render_skills_section(
+        self,
+        *,
+        class_id: str,
+        pending: OutcomeUpdate | None = None,
+    ) -> str | None:
+        """Render the class's skills.md section.
+
+        With `pending`, the section reflects that outcome as if it were already
+        recorded, without mutating the store, so step 15 can publish a skill that
+        includes the success step 16 is about to persist.
+        """
         classes = self._state.get("classes", {})
         record = classes.get(class_id)
         if not isinstance(record, dict):
             return None
+        if pending is not None:
+            record = copy.deepcopy(record)
+            self._apply_outcome(record, pending)
         actions_obj = record.get("actions", {})
         if not isinstance(actions_obj, dict) or not actions_obj:
             return None

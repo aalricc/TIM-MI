@@ -49,6 +49,8 @@ Built-ins are for diagnosis. Recovery strategy is selected and executed as a per
 16. Update class-memory store (`state/class_store.json`) when enabled.
 
 If verification fails, retain context and retry from step 5 without hard cap.
+Before each retry the monitor (step 1) is checked again; an already healthy target closes the
+incident without recording a learned success.
 
 ## Safety model
 
