@@ -109,6 +109,11 @@ def compute_kpis(events: Iterable[RuntimeEvent]) -> dict[str, Any]:
     ]
     with_source = [i for i in cohort_recovered if recovered[i].get("source") is not None]
     fast_path = [i for i in with_source if recovered[i].get("source") == "class_memory"]
+    rows_lost = [
+        float(recovered[i]["rows_lost"])
+        for i in cohort_recovered
+        if _is_number(recovered[i].get("rows_lost"))
+    ]
     jev_total = jev_status["usable"] + jev_status["unusable"]
     request_errors = sum(
         count
@@ -142,6 +147,12 @@ def compute_kpis(events: Iterable[RuntimeEvent]) -> dict[str, Any]:
             "recoveries_with_source": len(with_source),
             "fast_path_recoveries": len(fast_path),
             "fast_path_recovery_share": _ratio(len(fast_path), len(with_source)),
+        },
+        "data_loss": {
+            "recoveries_measured": len(rows_lost),
+            "lossless_recoveries": sum(1 for lost in rows_lost if lost == 0),
+            "rows_lost_total": sum(rows_lost),
+            "rows_lost_per_recovery": _summary(rows_lost),
         },
         "winning_actions_per_class": {
             class_id: len(keys) for class_id, keys in sorted(winners_by_class.items())

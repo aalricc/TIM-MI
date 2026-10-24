@@ -119,6 +119,27 @@ def test_kpis_cohort_classification_and_distribution() -> None:
     }
 
 
+def test_kpis_data_loss_counts_measured_recoveries() -> None:
+    events = [
+        _event(0.0, "incident.started", incident_id="a"),
+        _event(1.0, "incident.recovered", incident_id="a", attempts=1, rows_lost=0),
+        _event(2.0, "incident.started", incident_id="b"),
+        _event(3.0, "incident.recovered", incident_id="b", attempts=1, rows_lost=4),
+        _event(3.5, "incident.started", incident_id="d"),
+        _event(3.6, "incident.recovered", incident_id="d", attempts=1, rows_lost=0),
+        # Not measured (no healthy reference before the incident).
+        _event(4.0, "incident.started", incident_id="c"),
+        _event(5.0, "incident.recovered", incident_id="c", attempts=1, rows_lost=None),
+    ]
+
+    assert compute_kpis(events)["data_loss"] == {
+        "recoveries_measured": 3,
+        "lossless_recoveries": 2,
+        "rows_lost_total": 4.0,
+        "rows_lost_per_recovery": {"n": 3, "median": 0.0, "p90": 4.0, "max": 4.0},
+    }
+
+
 def test_kpis_p90_uses_nearest_rank() -> None:
     events: list[dict[str, Any]] = []
     for i in range(1, 11):

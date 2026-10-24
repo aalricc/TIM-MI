@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "mi-agent/harness/contracts/class_action_stats.schema.v1.json",
   "title": "ClassActionStatsV1",
-  "description": "One action-statistics record from `state/class_store.json` (`classes.<class_id>.actions.<action_key>`). Beta posterior starts at alpha=beta=1 and each outcome adds 1, so successes=alpha-1 and failures=beta-1.",
+  "description": "One action-statistics record from `state/class_store.json` (`classes.<class_id>.actions.<action_key>`). Beta posterior starts at alpha=beta=1 and each outcome adds 1 in total: a failure adds 1 to beta; a success adds its reward r in [0, 1] (1 minus the fraction of rows lost) to alpha and 1-r to beta. So successes=alpha-1 and failures=beta-1 are graded counts.",
   "type": "object",
   "required": [
     "schema_version",

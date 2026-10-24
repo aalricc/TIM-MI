@@ -207,7 +207,8 @@ def _prepare_target(
 
 
 def _recovery_outcome(rows: list[dict[str, Any]], incident_id: str) -> dict[str, Any]:
-    """How the incident ended: recovered_via is fast_path, full_loop, or None."""
+    """How the incident ended: recovered_via is fast_path, full_loop, or None; rows_lost is
+    the widget rows missing against the last healthy check (None when not measured)."""
     started_ts: float | None = None
     for row in rows:
         payload = row.get("payload")
@@ -218,6 +219,7 @@ def _recovery_outcome(rows: list[dict[str, Any]], incident_id: str) -> dict[str,
         if row.get("event_type") == "incident.recovered":
             recovered_ts = _event_ts(row)
             attempts = payload.get("attempts")
+            rows_lost = payload.get("rows_lost")
             return {
                 "recovered_via": (
                     "fast_path" if payload.get("source") == "class_memory" else "full_loop"
@@ -228,8 +230,9 @@ def _recovery_outcome(rows: list[dict[str, Any]], incident_id: str) -> dict[str,
                     if recovered_ts is not None and started_ts is not None
                     else None
                 ),
+                "rows_lost": rows_lost if isinstance(rows_lost, int) else None,
             }
-    return {"recovered_via": None, "attempts": None, "ttr_seconds": None}
+    return {"recovered_via": None, "attempts": None, "ttr_seconds": None, "rows_lost": None}
 
 
 def _wait_for_incident_closed(
@@ -427,13 +430,16 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     for row in rows:
         key = str(row.get("fault") or row.get("scenario_id"))
         entry = by_fault.setdefault(
-            key, {"runs": 0, "passed": 0, "fast_path": 0, "full_loop": 0, "resets": 0}
+            key,
+            {"runs": 0, "passed": 0, "fast_path": 0, "full_loop": 0, "resets": 0, "rows_lost": 0},
         )
         entry["runs"] += 1
         entry["passed"] += 1 if row.get("status") == "pass" else 0
         if row.get("recovered_via") in {"fast_path", "full_loop"}:
             entry[str(row["recovered_via"])] += 1
         entry["resets"] += 1 if row.get("reset_before") else 0
+        rows_lost = row.get("rows_lost")
+        entry["rows_lost"] += rows_lost if isinstance(rows_lost, int) else 0
     return dict(sorted(by_fault.items()))
 
 

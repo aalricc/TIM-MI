@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -799,3 +800,111 @@ async def test_failed_restore_does_not_block_restoring_another_backup(tmp_path: 
     assert canonical_action_key(tools.executed_specs[0]) == canonical_action_key(
         tools.executed_specs[1]
     )
+
+
+def _health(healthy: bool, widget_rows: int | None) -> MonitorStatus:
+    return MonitorStatus(
+        healthy=healthy,
+        status_code=200 if healthy else 500,
+        detail="healthy" if healthy else "down",
+        payload={"health": {"ok": healthy, "status": {"widget_rows": widget_rows}}},
+    )
+
+
+class RowCountTools(EngineTools):
+    """Monitor reports a healthy target with `rows_before` widgets, then a fault, then a
+    healthy post-recovery ping."""
+
+    def __init__(self, *, rows_before: int | None) -> None:
+        super().__init__(execute_ok_sequence=[True])
+        self._monitors = [_health(True, rows_before), _health(False, None)]
+
+    async def monitor_health(self) -> MonitorStatus:
+        return self._monitors.pop(0) if self._monitors else _health(True, None)
+
+
+class RowCountVerifier(EngineVerifier):
+    def __init__(self, *, rows_after: int) -> None:
+        super().__init__(healthy_sequence=[True])
+        self._rows_after = rows_after
+
+    async def verify(self) -> VerificationResult:
+        return VerificationResult(
+            healthy=True,
+            details={
+                "status_code": 200,
+                "payload": {"ok": True, "status": {"widget_rows": self._rows_after}},
+            },
+        )
+
+
+async def _recover_with_rows(
+    tmp_path: Path, *, rows_before: int | None, rows_after: int
+) -> tuple[dict[str, Any], dict[str, Any], ClassMemory, EventLog]:
+    memory = _empty_class_memory(tmp_path)
+    agent, events = _agent(
+        tmp_path,
+        llm=EngineLLM(),
+        tools=RowCountTools(rows_before=rows_before),
+        verifier=RowCountVerifier(rows_after=rows_after),
+        memory=memory,
+    )
+
+    await agent.run_iteration()  # healthy: records the row count
+    await agent.run_iteration()  # incident, recovered on attempt 1
+
+    recovered = next(e.payload for e in events.events if e.event_type == "incident.recovered")
+    stats = memory.action_stats(
+        class_id=recovered["class_id"], action_key=recovered["action_key"]
+    )
+    assert stats is not None
+    return recovered, stats, memory, events
+
+
+@pytest.mark.asyncio
+async def test_recovery_reward_is_graded_by_rows_lost(tmp_path: Path) -> None:
+    recovered, stats, _, events = await _recover_with_rows(
+        tmp_path, rows_before=10, rows_after=7
+    )
+
+    assert recovered["widget_rows_before"] == 10
+    assert recovered["widget_rows_after"] == 7
+    assert recovered["rows_lost"] == 3
+    assert recovered["reward"] == pytest.approx(0.7)
+    assert (stats["alpha"], stats["beta"]) == (pytest.approx(1.7), pytest.approx(1.3))
+    policy = [
+        e.payload
+        for e in events.events
+        if e.event_type == "workflow.step" and e.payload.get("step") == "persist.policy_store"
+    ]
+    assert [row["reward"] for row in policy] == [pytest.approx(0.7)]
+    stored = json.loads((tmp_path / "policy.json").read_text(encoding="utf-8"))
+    assert [entry["reward_total"] for entry in stored["actions"].values()] == [
+        pytest.approx(0.7)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recovery_that_empties_the_table_earns_no_reward(tmp_path: Path) -> None:
+    recovered, stats, _, _ = await _recover_with_rows(tmp_path, rows_before=10, rows_after=0)
+
+    assert recovered["rows_lost"] == 10
+    assert recovered["reward"] == 0.0
+    assert (stats["alpha"], stats["beta"]) == (1.0, 2.0)
+
+
+@pytest.mark.asyncio
+async def test_recovery_without_healthy_reference_keeps_full_reward(tmp_path: Path) -> None:
+    recovered, stats, _, _ = await _recover_with_rows(tmp_path, rows_before=None, rows_after=4)
+
+    assert recovered["rows_lost"] is None
+    assert recovered["reward"] == 1.0
+    assert (stats["alpha"], stats["beta"]) == (2.0, 1.0)
+
+
+@pytest.mark.asyncio
+async def test_rows_written_after_recovery_do_not_count_as_negative_loss(tmp_path: Path) -> None:
+    recovered, _, _, _ = await _recover_with_rows(tmp_path, rows_before=5, rows_after=9)
+
+    assert recovered["rows_lost"] == 0
+    assert recovered["reward"] == 1.0

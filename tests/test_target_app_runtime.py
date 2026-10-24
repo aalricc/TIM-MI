@@ -100,6 +100,8 @@ def test_required_columns_cover_every_widget_read(tmp_path: Path) -> None:
     assert selected, "no widget SELECT found"
     target = load_target_app_module(_app_root(tmp_path))
     for columns in selected:
+        if columns == "COUNT(*)":  # reads no column
+            continue
         assert {c.strip() for c in columns.split(",")} <= target.REQUIRED_WIDGET_COLUMNS
 
 
@@ -222,3 +224,29 @@ def test_reset_rebuilds_a_healthy_database(tmp_path: Path) -> None:
 
             assert client.post("/ops/reset").json() == {"ok": True}
             assert client.get("/health/deep").status_code == 200
+
+
+def test_db_status_reports_widget_row_count(tmp_path: Path) -> None:
+    module = load_target_app_module(_app_root(tmp_path))
+    with TestClient(module.app) as client:
+        assert client.get("/ops/db/status").json()["widget_rows"] == 0
+        client.post("/widgets", json={"value": "a"})
+        client.post("/widgets", json={"value": "b"})
+        assert client.get("/health/deep").json()["status"]["widget_rows"] == 2
+
+        client.post("/ops/fault/drop_widgets_table")
+        assert client.get("/ops/db/status").json()["widget_rows"] is None
+
+
+def test_widget_write_after_delete_db_does_not_recreate_the_file(tmp_path: Path) -> None:
+    module = load_target_app_module(_app_root(tmp_path))
+    with TestClient(module.app) as client:
+        client.post("/ops/fault/delete_db")
+
+        written = client.post("/widgets", json={"value": "a"})
+        listed = client.get("/widgets")
+
+        assert written.status_code == 500
+        assert written.json()["detail"]["error"] == "db_missing"
+        assert listed.json()["detail"]["error"] == "db_missing"
+        assert not module.DB_PATH.exists()

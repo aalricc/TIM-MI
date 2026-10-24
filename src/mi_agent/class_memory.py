@@ -71,6 +71,8 @@ class OutcomeUpdate:
     success: bool
     source: str
     ts: float
+    # Success reward in [0, 1] (1 - fraction of rows lost); failures always count as 0.
+    reward: float = 1.0
 
 
 @dataclass(slots=True)
@@ -497,6 +499,7 @@ class ClassMemory:
         success: bool,
         source: str,
         ts: float | None = None,
+        reward: float = 1.0,
     ) -> str:
         update = OutcomeUpdate(
             match=match,
@@ -505,6 +508,7 @@ class ClassMemory:
             success=success,
             source=source,
             ts=time.time() if ts is None else ts,
+            reward=reward,
         )
         classes = self._state.get("classes", {})
         record = classes.get(match.class_id)
@@ -543,7 +547,10 @@ class ClassMemory:
         stats["attempts"] = attempts
         stats["mean_latency"] = mean_latency
         if update.success:
-            stats["alpha"] = float(stats.get("alpha", 1.0) or 1.0) + 1.0
+            # Graded success: a recovery that lost data adds part of its weight to beta.
+            reward = min(1.0, max(0.0, update.reward))
+            stats["alpha"] = float(stats.get("alpha", 1.0) or 1.0) + reward
+            stats["beta"] = float(stats.get("beta", 1.0) or 1.0) + (1.0 - reward)
             stats["last_ok_ts"] = update.ts
             stats["cooldown_until_ts"] = 0.0
             record["skill_anchor"] = action_key

@@ -565,6 +565,7 @@ def _passing_row(**kwargs: object) -> dict[str, object]:
         "violations": 0,
         "reset_before": prefix == "b.r2",
         "recovered_via": "fast_path" if prefix.endswith("r2") else "full_loop",
+        "rows_lost": 3 if prefix.startswith("a.") else None,
         "slice": "missing.slice.jsonl",
     }
 
@@ -606,6 +607,7 @@ def test_run_campaign_runs_fixtures_round_robin_and_summarises(
     assert report["summary"] == {
         "drop_widgets_table": {
             "runs": 4, "passed": 4, "fast_path": 2, "full_loop": 2, "resets": 1,
+            "rows_lost": 6,
         }
     }
     kpis = json.loads(Path(report["kpis"]).read_text(encoding="utf-8"))
@@ -694,7 +696,12 @@ def test_recovery_outcome_reports_path(source: str | None, expected: str | None)
             {
                 "ts": 14.5,
                 "event_type": "incident.recovered",
-                "payload": {"incident_id": "inc-1", "source": source, "attempts": 2},
+                "payload": {
+                    "incident_id": "inc-1",
+                    "source": source,
+                    "attempts": 2,
+                    "rows_lost": 4,
+                },
             }
         )
 
@@ -702,7 +709,13 @@ def test_recovery_outcome_reports_path(source: str | None, expected: str | None)
 
     assert outcome["recovered_via"] == expected
     if expected is None:
-        assert outcome == {"recovered_via": None, "attempts": None, "ttr_seconds": None}
+        assert outcome == {
+            "recovered_via": None,
+            "attempts": None,
+            "ttr_seconds": None,
+            "rows_lost": None,
+        }
     else:
         assert outcome["attempts"] == 2
         assert outcome["ttr_seconds"] == 4.5
+        assert outcome["rows_lost"] == 4
