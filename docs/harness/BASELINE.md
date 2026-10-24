@@ -28,18 +28,38 @@ Pre-change baseline for the runtime loop in `README.md` (steps 1–16). KPI defi
 
 ## 3. Scenario set
 
-Each scenario is one fault injected against a healthy target via
-`POST /ops/fault/{fault}`, with the next fault injected only after `incident.closed`.
+Each run is one fault injected against a healthy target via `POST /ops/fault/{fault}`
+(target started with `TARGET_TEST_HOOKS=1`). `scripts/e2e_fault_campaign.py` runs the
+faults round-robin (S-01, S-02, S-03, S-01, ...) and keeps MI's memory across runs, so
+later repetitions measure learning (fast path). Before each run it waits for a healthy
+target; if a previous run left it unhealthy it calls `POST /ops/reset` (recorded as
+`reset_before`), then waits until MI has no open incident. The harness never acts on the
+target while MI handles an incident. `state/` starts empty for every CI campaign.
+
+A run passes when the incident is verifiably recovered within the fixture's budgets and
+every runtime invariant holds; fast-path use is a reported KPI, not a pass condition.
 
 | ID | Fault | Repetitions | Expected recovered outcome (approved) |
 | --- | --- | --- | --- |
-| S-01 | `drop_widgets_table` | TBD | TBD (e.g. `run_sql` recreating `widgets`) |
-| S-02 | `delete_db` | TBD | TBD (e.g. `request_backup_restore`) |
-| S-03 | `corrupt_db` | TBD | TBD |
+| S-01 | `drop_widgets_table` | 5 | `run_sql` recreating `widgets`, or `request_backup_restore` |
+| S-02 | `delete_db` | 5 | `request_backup_restore` (or `replace_file`) |
+| S-03 | `corrupt_db` | 5 | `request_backup_restore` (or `replace_file`) |
 | S-04 | TBD (optional) | TBD | TBD |
 | S-05 | TBD (optional) | TBD | TBD |
 
 ## 4. Collection
+
+The CI campaign (`.github/workflows/live-e2e-fault-campaign.yml`) produces everything
+below per run under `results/<run-id>/`: per-run slice, check and KPI files, and
+`campaign.json` (per-run `status`, `recovered_via` = `fast_path`/`full_loop`, `attempts`,
+`ttr_seconds`, `reset_before`, plus a per-fault `summary`) and `campaign.kpis.json` (KPIs
+over all runs). Locally, with the stack up:
+
+```bash
+PYTHONPATH=. python scripts/e2e_fault_campaign.py --stage ci --repetitions 5
+```
+
+The same records by hand from any event-log window:
 
 ```bash
 python -m harness.events.slice \
