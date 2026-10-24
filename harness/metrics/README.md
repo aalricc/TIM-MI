@@ -54,6 +54,7 @@ visible in `decision_trace` records and `attempt_outcomes` instead.
 | --- | --- |
 | `fast_path_recovery_share` | among recovered cohort incidents whose `incident.recovered` carries `source` (class memory enabled), the share with `source = class_memory`; `null` if none carry `source` |
 | `winning_actions_per_class` | per `class_id`, number of distinct `action_key` values that won a recovery; lower is more stable |
+| `data_loss` | over recovered cohort incidents whose `incident.recovered.rows_lost` is a number: `recoveries_measured`, `lossless_recoveries` (`rows_lost = 0`), `rows_lost_total`, and `rows_lost_per_recovery` (same summary as TTR). `rows_lost` is `null`, and the incident is not measured, when MI saw no healthy row count before the incident |
 
 ## Interpretation notes
 
