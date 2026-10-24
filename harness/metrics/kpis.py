@@ -50,6 +50,8 @@ def compute_kpis(events: Iterable[RuntimeEvent]) -> dict[str, Any]:
     selected_total = 0
     selected_with_scores = 0
     winners_by_class: dict[str, set[str]] = {}
+    tokens_by_incident: Counter[str] = Counter()
+    jev_calls_by_incident: Counter[str] = Counter()
 
     for event in events:
         event_type = event.get("event_type")
@@ -83,6 +85,10 @@ def compute_kpis(events: Iterable[RuntimeEvent]) -> dict[str, Any]:
         elif event_type == "workflow.step":
             step = payload.get("step")
             status = payload.get("status")
+            if step in {"llm.why", "llm.how"} and _is_number(payload.get("llm_usage_total")):
+                tokens_by_incident[incident_id] += int(payload["llm_usage_total"])
+            elif step == "jev.requested":
+                jev_calls_by_incident[incident_id] += 1
             if step == "attempt.result" and isinstance(status, str):
                 attempt_outcomes[status] += 1
             elif step == "security.gate" and status == "rejected":
@@ -154,6 +160,12 @@ def compute_kpis(events: Iterable[RuntimeEvent]) -> dict[str, Any]:
             "rows_lost_total": sum(rows_lost),
             "rows_lost_per_recovery": _summary(rows_lost),
         },
+        "llm_tokens_per_incident": _summary(
+            [float(tokens_by_incident[i]) for i in cohort if i in tokens_by_incident]
+        ),
+        "jev_calls_per_incident": _summary(
+            [float(jev_calls_by_incident[i]) for i in cohort if i in jev_calls_by_incident]
+        ),
         "winning_actions_per_class": {
             class_id: len(keys) for class_id, keys in sorted(winners_by_class.items())
         },

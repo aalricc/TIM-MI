@@ -16,6 +16,7 @@ THRESHOLDS = {
     "min_recovery_rate": 0.9,
     "max_ttr_p90_seconds": 60.0,
     "max_request_error_rate": 0.1,
+    "max_jev_calls_per_incident_p90": 6.0,
 }
 BUDGETS = {"why": 20.0, "how": 20.0, "jev": 8.0, "execute": 10.0, "verify": 10.0}
 
@@ -127,12 +128,17 @@ async def test_watch_reports_invariants_and_kpis_with_one_shared_ts(tmp_path: Pa
 
     results = watch(run.events, thresholds=THRESHOLDS, step_budgets=BUDGETS, now=now)
 
-    assert [r["sensor_name"] for r in results][-2:] == ["kpi_thresholds", "step_latency_budget"]
-    assert len(results) == 10
+    assert [r["sensor_name"] for r in results][-4:] == [
+        "kpi_thresholds",
+        "step_latency_budget",
+        "token_budget",
+        "call_rate_budget",
+    ]
+    assert len(results) == 12
     assert {r["ts"] for r in results} == {now}
     assert {r["stage"] for r in results} == {"continuous"}
     assert {r["status"] for r in results} <= {"pass", "skipped"}
-    assert results[-2]["status"] == "pass"
+    assert results[-4]["status"] == "pass"
     for result in results:
         assert contract_errors(result, "sensor_result") == []
 
@@ -142,7 +148,7 @@ async def test_watch_ignores_incidents_older_than_the_window(tmp_path: Path) -> 
     run = await SCENARIOS["full_loop_success"](tmp_path)
     now = max(float(event["ts"]) for event in run.events) + 25 * 3600.0
 
-    kpi = watch(run.events, thresholds=THRESHOLDS, step_budgets=BUDGETS, now=now)[-2]
+    kpi = watch(run.events, thresholds=THRESHOLDS, step_budgets=BUDGETS, now=now)[-4]
 
     assert kpi["status"] == "skipped"
     assert kpi["message"] == "no KPI defined over the window (0 incidents)"
@@ -162,9 +168,9 @@ def test_cli_prints_jsonl_and_exits_1_on_failure(
     lines = capsys.readouterr().out.splitlines()
     records = [json.loads(line) for line in lines]
     assert code == 1
-    assert len(records) == 10
-    assert records[-2]["sensor_name"] == "kpi_thresholds"
-    assert records[-2]["status"] == "fail"
+    assert len(records) == 12
+    assert records[-4]["sensor_name"] == "kpi_thresholds"
+    assert records[-4]["status"] == "fail"
 
 
 def test_cli_with_missing_log_reports_without_failing(
@@ -174,7 +180,7 @@ def test_cli_with_missing_log_reports_without_failing(
 
     records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert code == 0
-    assert [r["status"] for r in records[-2:]] == ["skipped", "skipped"]
+    assert [r["status"] for r in records[-4:]] == ["skipped"] * 4
 
 
 def test_compose_runs_the_watcher_with_read_only_state() -> None:

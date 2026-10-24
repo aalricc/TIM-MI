@@ -9,10 +9,10 @@ Working agreement for coding agents and contributors in this repository. Every p
 The harness gap plan is being built checkpoint by checkpoint. Before doing harness work,
 read `docs/harness/HANDOFF.md` (status, next checkpoint, working method, gotchas).
 
-Current checkpoint status (2026-10-25): CP0–CP9 and CP10a done. Baseline and comparison
-campaigns are in `docs/harness/BASELINE.md`; continuous surveillance runs as the compose
-`harness-watch` service (`harness/watch.py`, D3 = a) with step latency budgets; CP10b is
-next. D2 is manual `workflow_dispatch` on a self-hosted runner.
+Current checkpoint status (2026-10-25): CP0–CP10 done. Baseline and comparison campaigns
+are in `docs/harness/BASELINE.md`; continuous surveillance runs as the compose
+`harness-watch` service (`harness/watch.py`, D3 = a) with step latency, token (report-only)
+and JEV call budgets; CP11 is next. D2 is manual `workflow_dispatch` on a self-hosted runner.
 
 ## What this repo is
 

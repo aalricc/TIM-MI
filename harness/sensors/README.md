@@ -50,7 +50,7 @@ the listed stage; **manual** = command exists, run by a person; **gap** = not bu
 | `external_recovery_not_credited` (incident closed by the pre-retry health check is not followed by any execution or persistence) | computational | ci, continuous | same | harness maintainer | as above |
 | `retry_resumes_at_step5` (retry-loop check) | computational | ci, continuous | same | harness maintainer | as above |
 | `step_latency_budget` (p90 per step over 24 h vs budget: WHY 20 s, HOW 20 s, JEV 8 s, execute 10 s, verify 10 s; spans from `workflow.step` timestamps) | computational | continuous | `harness/sensors/step_latency.py`, budgets in `harness/metrics/thresholds.json`, run by `harness/watch.py` | runtime maintainer | wired (`harness-watch`) |
-| Runtime budget (token, call rate) | computational | continuous | — (needs token/call telemetry, CP10b) | runtime maintainer | gap |
+| `token_budget` (p90 LLM tokens per incident; budget `null` = report only until measured) and `call_rate_budget` (p90 JEV calls per incident ≤ 6) | computational | continuous | `harness/sensors/call_budgets.py` over the `llm_tokens_per_incident` / `jev_calls_per_incident` KPIs, budgets in `harness/metrics/thresholds.json`, run by `harness/watch.py` | runtime maintainer | wired (`harness-watch`; tokens report-only) |
 | Architecture review agent / log-quality reflection after failed run | inferential | ci (selective) | — | harness maintainer | gap |
 | Architecture-drift report review | human | ci | review of failures from the rows above | runtime maintainer | manual |
 

@@ -54,6 +54,8 @@ visible in `decision_trace` records and `attempt_outcomes` instead.
 | --- | --- |
 | `fast_path_recovery_share` | among recovered cohort incidents whose `incident.recovered` carries `source` (class memory enabled), the share with `source = class_memory`; `null` if none carry `source` |
 | `winning_actions_per_class` | per `class_id`, number of distinct `action_key` values that won a recovery; lower is more stable |
+| `llm_tokens_per_incident` | summary (as TTR) of LLM tokens per cohort incident: sum of `llm_usage_total` on its `llm.why` / `llm.how` steps; incidents without reported usage are left out |
+| `jev_calls_per_incident` | summary of `jev.requested` steps per cohort incident (fast-path fallbacks and retries add calls) |
 | `data_loss` | over recovered cohort incidents whose `incident.recovered.rows_lost` is a number: `recoveries_measured`, `lossless_recoveries` (`rows_lost = 0`), `rows_lost_total`, and `rows_lost_per_recovery` (same summary as TTR). `rows_lost` is `null`, and the incident is not measured, when MI saw no healthy row count before the incident |
 
 ## Thresholds
@@ -68,6 +70,11 @@ for the window is not checked.
 `step_latency_budget` (`harness/sensors/step_latency.py`): `why` 20, `how` 20 (the LLM
 call timeout), `jev` 8 (the JEV timeout), `execute` 10, `verify` 10. Over budget means a
 step's calls are regularly reaching their timeout; one slow call does not fail it.
+
+`max_jev_calls_per_incident_p90` (6) and `max_tokens_per_incident_p90` are checked by
+`token_budget` / `call_rate_budget` (`harness/sensors/call_budgets.py`). The token budget
+is `null` (report only) until a campaign has measured real usage; then set it to about 3×
+the observed p90.
 
 ## Interpretation notes
 

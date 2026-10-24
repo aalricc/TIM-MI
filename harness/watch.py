@@ -1,5 +1,5 @@
-"""Continuous surveillance: invariant sensors, KPI thresholds and step latency budgets
-over a rolling window.
+"""Continuous surveillance: invariant sensors, KPI thresholds, step latency budgets and
+token / JEV call budgets over a rolling window.
 
 Prints one `sensor_result` v1 record per line (JSONL) to stdout; harness code never
 writes files, so the caller appends the output, e.g. the compose `harness-watch` service:
@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.mappings.runtime import RuntimeEvent, load_event_log
+from harness.sensors.call_budgets import call_budgets
 from harness.sensors.kpi_thresholds import THRESHOLDS_PATH, kpi_thresholds, load_thresholds
 from harness.sensors.runtime_invariants import run_all
 from harness.sensors.step_latency import load_step_budgets, step_latency_budget
@@ -72,6 +73,7 @@ def watch(
         *run_all(rows, stage="continuous", now=now),
         kpi_thresholds(rows, thresholds=thresholds, stage="continuous", now=now),
         step_latency_budget(rows, budgets=step_budgets, stage="continuous", now=now),
+        *call_budgets(rows, thresholds=thresholds, stage="continuous", now=now),
     ]
 
 

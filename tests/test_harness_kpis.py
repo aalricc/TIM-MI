@@ -140,6 +140,33 @@ def test_kpis_data_loss_counts_measured_recoveries() -> None:
     }
 
 
+def _step(ts: float, incident_id: str, step: str, **extra: Any) -> dict[str, Any]:
+    return _event(ts, "workflow.step", incident_id=incident_id, attempt=1, step=step, **extra)
+
+
+def test_kpis_llm_tokens_and_jev_calls_per_incident() -> None:
+    events = [
+        _event(0.0, "incident.started", incident_id="a"),
+        _step(1.0, "a", "llm.why", llm_usage_total=100),
+        _step(2.0, "a", "llm.how", llm_usage_total=300),
+        _step(3.0, "a", "jev.requested"),
+        _step(4.0, "a", "jev.requested"),
+        _event(5.0, "incident.started", incident_id="b"),
+        _step(6.0, "b", "llm.why"),  # usage not reported: b has no token count
+        _step(7.0, "b", "jev.requested"),
+        # Outside the cohort (no incident.started in the window): ignored.
+        _step(8.0, "z", "llm.why", llm_usage_total=9999),
+        _step(9.0, "z", "jev.requested"),
+    ]
+
+    kpis = compute_kpis(events)
+
+    assert kpis["llm_tokens_per_incident"] == {
+        "n": 1, "median": 400.0, "p90": 400.0, "max": 400.0,
+    }
+    assert kpis["jev_calls_per_incident"] == {"n": 2, "median": 1.5, "p90": 2.0, "max": 2.0}
+
+
 def test_kpis_p90_uses_nearest_rank() -> None:
     events: list[dict[str, Any]] = []
     for i in range(1, 11):
