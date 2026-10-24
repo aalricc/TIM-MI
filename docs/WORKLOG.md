@@ -1,5 +1,22 @@
 # Rewrite Worklog
 
+## 2026-10-24 — First live CP7 campaign, self-hosted runner, and backup catalog API
+
+**Problem.** CP1–CP7 were merged to `main` (PR #1), but the first live E2E campaign never got going: no self-hosted runner was registered, `setup-python` failed on macOS, the secrets were missing (then uploaded with quotes), the LLM endpoint defaulted to OpenAI instead of Azure, another local service held port 8080, and the campaign script could not import `harness`. Once it ran (run `40106026091`), all 3 scenarios failed. On `corrupt_db` MI chose a backup restore but could not see which backups existed, so it invented ids (`latest_pre_fault_injection`, …) and hit `backup_not_found` for 22 attempts until the 420 s timeout. The later scenarios then failed because the target was still broken.
+**Approach.** Set up the runner (`~/actions-runner`, owner of `/Users/runner/hostedtoolcache`), the repo secrets and the `MI_LLM_ENDPOINT`/`MI_LLM_AUTH_MODE` variables, and fixed the workflow env and `PYTHONPATH`. The target now exposes its backup service like a real app: `GET /ops/backups` (id, time, size) and `POST /ops/backups/{id}/restore`. Fault injection and the new `POST /ops/reset` are test hooks that exist only with `TARGET_TEST_HOOKS=1`. MI lists and restores backups only through that API: no backups mount, no `latest` shortcut, and the catalog reaches HOW as plain data with no rule attached. Class memory learns a restore as one action whatever backup it used; the fast path picks the newest backup from before the incident. The campaign runs 3 faults × 5 round-robin, keeps MI memory within a campaign, resets the target only when it is unhealthy before a run, and reports fast path or full loop per run.
+**Impact.** The live campaign runs end to end on the self-hosted runner. Backup recovery depends on facts the agent can query, not on guessed ids or hard-coded answers, and a normal deployment has no fault or reset endpoints. The 15-run campaign gives the CP8 baseline (`docs/harness/BASELINE.md`) learning data: fast-path rate per fault over repetitions.
+
+**Commits included (2026-10-24; PR #2 committed just after midnight).**
+- `9e70e6dc` Update 2026-10-23 worklog entry.
+- `8e6f3d27` Fix harness: harden CP7 campaign and align status/docs.
+- `17d174e4` Merge harness: bring CP1–CP7 into cp8-ready for CP8 (PR #1, `13d073e7`).
+- `c2fb2bc3` CI harness: pass LLM endpoint and auth mode to live campaign.
+- `be289f65` CI harness: put repo root on PYTHONPATH for fault campaign.
+- `b3965ce1` Feat target: backup catalog and restore API; gate test hooks.
+- `ee9629b5` Feat runtime: use target backup catalog and restore API.
+- `57a86d92` Feat harness: repeated round-robin fault campaign.
+- `11781057` CI harness: 15-run baseline campaign with test hooks (PR #2, `bd201e6c`).
+
 ## 2026-10-23 — Harness foundation, runtime-step hardening, and campaign automation
 
 **Problem.** After the workflow-first rewrite, the project needed a diagnostics harness with enforceable runtime invariants, stronger security/retry semantics in the engine, safer infra/dependency posture, and repeatable end-to-end campaign coverage.
