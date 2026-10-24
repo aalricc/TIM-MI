@@ -20,8 +20,9 @@ THRESHOLDS_PATH = Path(__file__).resolve().parents[1] / "metrics" / "thresholds.
 
 
 def load_thresholds(path: Path = THRESHOLDS_PATH) -> dict[str, float]:
+    """The scalar thresholds; nested tables (step budgets) have their own loader."""
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return {str(key): float(value) for key, value in raw.items()}
+    return {str(key): float(value) for key, value in raw.items() if not isinstance(value, dict)}
 
 
 def _is_number(value: Any) -> bool:

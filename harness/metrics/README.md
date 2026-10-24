@@ -64,6 +64,11 @@ rolling window: `min_recovery_rate` 0.9, `max_ttr_p90_seconds` 60,
 `max_request_error_rate` 0.1 (on `decision.jev_request_error_rate`). A KPI that is `null`
 for the window is not checked.
 
+`step_latency_budgets_seconds` sets the per-step p90 budgets checked by
+`step_latency_budget` (`harness/sensors/step_latency.py`): `why` 20, `how` 20 (the LLM
+call timeout), `jev` 8 (the JEV timeout), `execute` 10, `verify` 10. Over budget means a
+step's calls are regularly reaching their timeout; one slow call does not fail it.
+
 ## Interpretation notes
 
 - Compare campaigns only with identical configuration and scenario sets

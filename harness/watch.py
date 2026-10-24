@@ -1,4 +1,5 @@
-"""Continuous surveillance: invariant sensors and KPI thresholds over a rolling window.
+"""Continuous surveillance: invariant sensors, KPI thresholds and step latency budgets
+over a rolling window.
 
 Prints one `sensor_result` v1 record per line (JSONL) to stdout; harness code never
 writes files, so the caller appends the output, e.g. the compose `harness-watch` service:
@@ -23,6 +24,7 @@ from typing import Any
 from harness.mappings.runtime import RuntimeEvent, load_event_log
 from harness.sensors.kpi_thresholds import THRESHOLDS_PATH, kpi_thresholds, load_thresholds
 from harness.sensors.runtime_invariants import run_all
+from harness.sensors.step_latency import load_step_budgets, step_latency_budget
 
 
 def _incident_id(event: RuntimeEvent) -> str | None:
@@ -59,6 +61,7 @@ def watch(
     events: Iterable[RuntimeEvent],
     *,
     thresholds: dict[str, float],
+    step_budgets: dict[str, float],
     now: float,
     window_hours: float | None = None,
 ) -> list[dict[str, Any]]:
@@ -68,6 +71,7 @@ def watch(
     return [
         *run_all(rows, stage="continuous", now=now),
         kpi_thresholds(rows, thresholds=thresholds, stage="continuous", now=now),
+        step_latency_budget(rows, budgets=step_budgets, stage="continuous", now=now),
     ]
 
 
@@ -89,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     results = watch(
         events,
         thresholds=load_thresholds(args.thresholds),
+        step_budgets=load_step_budgets(args.thresholds),
         now=time.time() if args.now is None else args.now,
         window_hours=args.window_hours,
     )
