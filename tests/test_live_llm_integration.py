@@ -54,6 +54,13 @@ async def test_openai_preflight_and_structured_calls() -> None:
         ],
         latest_tool_error=None,
         state_fingerprint="test-fingerprint",
+        backup_catalog=[
+            {
+                "backup_id": "app-1792857888",
+                "created_at": "2026-10-24T16:04:48+00:00",
+                "size_bytes": 16384,
+            }
+        ],
     )
     assert plan.primary.operation in {
         "request_backup_restore",
