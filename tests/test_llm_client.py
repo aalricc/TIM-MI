@@ -85,6 +85,10 @@ async def test_propose_how_retries_compact_payload_after_400(settings: MISetting
         prior_attempts=prior_attempts,
         latest_tool_error="z" * 1000,
         state_fingerprint="state",
+        backup_catalog=[
+            {"backup_id": f"app-{n}", "created_at": "2026-10-24T15:14:50+00:00", "size_bytes": 8192}
+            for n in range(8)
+        ],
     )
 
     assert plan.primary.operation == "request_backup_restore"
@@ -105,3 +109,9 @@ async def test_propose_how_retries_compact_payload_after_400(settings: MISetting
     assert len(second_rag) == 3
     assert all(len(str(item["text"])) <= 1200 for item in second_rag)
 
+    first_payload = first["payload"]
+    assert isinstance(first_payload, dict)
+    assert len(first_payload["backup_catalog"]) == 8
+    assert [row["backup_id"] for row in second_payload["backup_catalog"]] == [
+        f"app-{n}" for n in range(5)
+    ]

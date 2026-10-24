@@ -45,7 +45,9 @@ class APIFakeLLM:
         prior_attempts: list[Any],
         latest_tool_error: str | None,
         state_fingerprint: str | None,
+        backup_catalog: list[Any],
     ) -> HowProposal:
+        del backup_catalog
         del diagnosis, rag_chunks, prior_attempts, latest_tool_error, state_fingerprint
         return HowProposal(
             primary=DynamicToolSpec(

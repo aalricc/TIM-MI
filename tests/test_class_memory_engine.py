@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +41,9 @@ class EngineLLM:
         prior_attempts: list[Any],
         latest_tool_error: str | None,
         state_fingerprint: str | None,
+        backup_catalog: list[Any],
     ) -> HowProposal:
+        del backup_catalog
         del diagnosis, rag_chunks, prior_attempts, latest_tool_error, state_fingerprint
         return HowProposal(
             primary=DynamicToolSpec(
@@ -56,7 +60,7 @@ class EngineLLM:
                     name="full-loop-fallback",
                     rationale="r",
                     operation="request_backup_restore",
-                    params={"backup_id": "latest"},
+                    params={"backup_id": "app-1792854880"},
                 ),
                 DynamicToolSpec(
                     name="full-loop-other",
@@ -207,9 +211,25 @@ class EngineJevRejectClassMemorySource:
         )
 
 
+def _empty_class_memory(tmp_path: Path) -> ClassMemory:
+    return ClassMemory(
+        ClassMemoryConfig(
+            store_path=tmp_path / "class_store.json",
+            join_threshold=0.82,
+            margin_delta=0.08,
+            tau_conf=0.80,
+            n_min=3,
+            cooldown_seconds=2.0,
+            embedding_dim=64,
+            min_similarity_for_id=0.2,
+        )
+    )
+
+
 def _class_memory(
     tmp_path: Path,
     llm: EngineLLM,
+    class_spec: DynamicToolSpec | None = None,
 ) -> tuple[ClassMemory, ClassMatch, DynamicToolSpec]:
     memory = ClassMemory(
         ClassMemoryConfig(
@@ -234,7 +254,7 @@ def _class_memory(
         attempts=0,
     )
     match = memory.assign_class(signature)
-    class_spec = DynamicToolSpec(
+    class_spec = class_spec or DynamicToolSpec(
         name="class-memory-fast",
         rationale="r",
         operation="run_sql",
@@ -628,3 +648,154 @@ async def test_gate_rejected_fast_path_is_penalised_and_falls_back(tmp_path: Pat
     # verified recovery into a retry; verification + success persistence is what matters.
     assert (2, "full_loop", "verification.result", "ok") in steps
     assert (2, "full_loop", "persist.class_memory", "ok") in steps
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat()
+
+
+class CatalogTools(EngineTools):
+    """EngineTools whose diagnostics carry a target backup catalog."""
+
+    def __init__(self, *, execute_ok_sequence: list[bool], backups: list[dict[str, Any]]) -> None:
+        super().__init__(execute_ok_sequence=execute_ok_sequence)
+        self.backups = backups
+
+    async def collect_diagnostics(self) -> dict[str, Any]:
+        return {**await super().collect_diagnostics(), "backups": self.backups}
+
+
+class RestoreLLM(EngineLLM):
+    """Full loop proposes restores; call N proposes the backups in proposals[N]."""
+
+    def __init__(self, proposals: list[list[str]]) -> None:
+        super().__init__()
+        self.proposals = proposals
+        self.catalogs: list[list[Any]] = []
+
+    async def propose_how(self, **kwargs: Any) -> HowProposal:
+        self.catalogs.append(list(kwargs["backup_catalog"]))
+        restores = [
+            DynamicToolSpec(
+                name=f"restore-{backup_id}",
+                rationale="r",
+                operation="request_backup_restore",
+                params={"backup_id": backup_id},
+            )
+            for backup_id in self.proposals[len(self.catalogs) - 1]
+        ]
+        return HowProposal(primary=restores[0], alternatives=restores[1:])
+
+
+def _agent(
+    tmp_path: Path,
+    *,
+    llm: EngineLLM,
+    tools: EngineTools,
+    verifier: EngineVerifier,
+    memory: ClassMemory,
+) -> tuple[RecoveryAgent, EventLog]:
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=tools,  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=EngineJev(),  # type: ignore[arg-type]
+        class_memory=memory,
+        classmem_enabled=True,
+        classmem_dedupe_enabled=True,
+        classmem_fastpath_enabled=True,
+    )
+    return agent, events
+
+
+def _learned_restore() -> DynamicToolSpec:
+    return DynamicToolSpec(
+        name="restore-from-backup",
+        rationale="r",
+        operation="request_backup_restore",
+        params={"backup_id": "app-1700000000"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_fast_path_restore_binds_newest_backup_before_detection(tmp_path: Path) -> None:
+    llm = EngineLLM()
+    memory, _, _ = _class_memory(tmp_path, llm, _learned_restore())
+    now = time.time()
+    tools = CatalogTools(
+        execute_ok_sequence=[True],
+        backups=[
+            {"backup_id": "app-future", "created_at": _iso(now + 600), "size_bytes": 1},
+            {"backup_id": "app-recent", "created_at": _iso(now - 20), "size_bytes": 1},
+            {"backup_id": "app-older", "created_at": _iso(now - 100), "size_bytes": 1},
+        ],
+    )
+    agent, events = _agent(
+        tmp_path, llm=llm, tools=tools, verifier=EngineVerifier(healthy_sequence=[True]),
+        memory=memory,
+    )
+
+    await agent.run_iteration()
+
+    assert [spec.params for spec in tools.executed_specs] == [{"backup_id": "app-recent"}]
+    planning = [item.payload for item in events.events if item.event_type == "planning.how"]
+    assert planning[0].get("source") == "class_memory"
+
+
+@pytest.mark.asyncio
+async def test_fast_path_restore_without_pre_incident_backup_uses_full_loop(
+    tmp_path: Path,
+) -> None:
+    llm = EngineLLM()
+    memory, _, _ = _class_memory(tmp_path, llm, _learned_restore())
+    tools = CatalogTools(
+        execute_ok_sequence=[True],
+        backups=[
+            {"backup_id": "app-future", "created_at": _iso(time.time() + 600), "size_bytes": 1}
+        ],
+    )
+    agent, events = _agent(
+        tmp_path, llm=llm, tools=tools, verifier=EngineVerifier(healthy_sequence=[True]),
+        memory=memory,
+    )
+
+    await agent.run_iteration()
+
+    steps = [item.payload for item in events.events if item.event_type == "workflow.step"]
+    selected = [row for row in steps if row.get("step") == "path.selected"]
+    assert [(row["path_mode"], row["reason"]) for row in selected] == [
+        ("full_loop", "fast_path_params_unbound")
+    ]
+    planning = [item.payload for item in events.events if item.event_type == "planning.how"]
+    assert [row.get("source") for row in planning] == ["full_loop"]
+
+
+@pytest.mark.asyncio
+async def test_failed_restore_does_not_block_restoring_another_backup(tmp_path: Path) -> None:
+    llm = RestoreLLM([["app-wrong"], ["app-wrong", "app-right"]])
+    backups = [{"backup_id": "app-right", "created_at": _iso(time.time() - 20), "size_bytes": 1}]
+    tools = CatalogTools(execute_ok_sequence=[False, True], backups=backups)
+    agent, _ = _agent(
+        tmp_path,
+        llm=llm,
+        tools=tools,
+        verifier=EngineVerifier(healthy_sequence=[False, True]),
+        memory=_empty_class_memory(tmp_path),
+    )
+
+    await agent.run_iteration()
+    await agent.run_iteration()
+
+    assert [spec.params for spec in tools.executed_specs] == [
+        {"backup_id": "app-wrong"},
+        {"backup_id": "app-right"},
+    ]
+    assert llm.catalogs[0] == backups
+    # Both restores are one learned action, whatever backup they named.
+    assert canonical_action_key(tools.executed_specs[0]) == canonical_action_key(
+        tools.executed_specs[1]
+    )

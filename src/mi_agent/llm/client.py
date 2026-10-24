@@ -35,6 +35,7 @@ class LLMClient(ABC):
         prior_attempts: Sequence[AttemptFeedback],
         latest_tool_error: str | None,
         state_fingerprint: str | None,
+        backup_catalog: Sequence[Mapping[str, Any]],
     ) -> HowProposal:
         raise NotImplementedError
 
@@ -113,6 +114,7 @@ class OpenAILLMClient(LLMClient):
         prior_attempts: Sequence[AttemptFeedback],
         latest_tool_error: str | None,
         state_fingerprint: str | None,
+        backup_catalog: Sequence[Mapping[str, Any]],
     ) -> HowProposal:
         instruction = (
             "Propose one primary dynamic recovery action and 2-4 ranked alternatives. "
@@ -130,6 +132,7 @@ class OpenAILLMClient(LLMClient):
                     prior_attempts=prior_attempts,
                     latest_tool_error=latest_tool_error,
                     state_fingerprint=state_fingerprint,
+                    backup_catalog=backup_catalog,
                     compact=False,
                 ),
                 schema_name="how_proposal",
@@ -147,6 +150,7 @@ class OpenAILLMClient(LLMClient):
                     prior_attempts=prior_attempts,
                     latest_tool_error=latest_tool_error,
                     state_fingerprint=state_fingerprint,
+                    backup_catalog=backup_catalog,
                     compact=True,
                 ),
                 schema_name="how_proposal_compact",
@@ -219,11 +223,13 @@ class OpenAILLMClient(LLMClient):
         prior_attempts: Sequence[AttemptFeedback],
         latest_tool_error: str | None,
         state_fingerprint: str | None,
+        backup_catalog: Sequence[Mapping[str, Any]],
         compact: bool,
     ) -> dict[str, Any]:
         rag_rows = [chunk.model_dump() for chunk in rag_chunks]
         prior_rows = [attempt.model_dump() for attempt in prior_attempts]
         latest_error = latest_tool_error
+        backup_rows = [dict(row) for row in backup_catalog]
 
         if compact:
             rag_rows = [
@@ -242,6 +248,7 @@ class OpenAILLMClient(LLMClient):
             ]
             if latest_error is not None:
                 latest_error = latest_error[:400]
+            backup_rows = backup_rows[:5]
 
         return {
             "task": "propose_how",
@@ -250,6 +257,7 @@ class OpenAILLMClient(LLMClient):
             "prior_attempts": prior_rows,
             "latest_tool_error": latest_error,
             "state_fingerprint": state_fingerprint,
+            "backup_catalog": backup_rows,
             "allowed_operations": [
                 "request_backup_restore",
                 "restart_service",

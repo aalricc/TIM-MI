@@ -131,11 +131,10 @@ def _canonical_params_for_action(operation: str, params: dict[str, Any]) -> Any:
         }
 
     if op == "request_backup_restore":
-        backup_id = params.get("backup_id")
-        if not isinstance(backup_id, str) or backup_id.strip() == "":
-            backup_id = params.get("selection") or params.get("restore_point")
+        # Backup ids come from the target's catalog and differ every incident, so the
+        # learned action is "restore a catalog backup"; the fast path binds the id.
         return {
-            "backup": _normalize_arg_schema(backup_id),
+            "backup": "<catalog_backup_id>",
             "scope": _normalize_arg_schema(params.get("scope") or params.get("restore_scope")),
         }
 
@@ -957,12 +956,13 @@ def _normalize_arg_schema(value: Any) -> Any:
 
 
 def _target_kind(operation: str, params: dict[str, Any]) -> str:
+    if operation.strip().lower() == "request_backup_restore":
+        return "backup_id:catalog"
     alias_groups = [
         ("db_path", ["db_path", "database_path"]),
         ("destination_path", ["destination_path", "target_path"]),
         ("source_path", ["source_path", "source"]),
         ("service_name", ["service_name"]),
-        ("backup_id", ["backup_id", "selection", "restore_point"]),
     ]
     for canonical_key, aliases in alias_groups:
         value = None

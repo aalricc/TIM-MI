@@ -6,10 +6,10 @@ or before the last healthy target heartbeat (or --before) and validates it read-
 PRAGMA integrity_check is ok, and the widgets table has the columns the target reads
 (id, name, created_at).
 
-Runs with the standard library only. Inside the compose stack (defaults match the mi-agent
+Runs with the standard library only. Inside the compose stack (defaults match the backup-job
 container mounts):
 
-    docker compose exec -T mi-agent python - < scripts/find_known_good_backup.py
+    docker compose exec -T backup-job python /scripts/find_known_good_backup.py
 
 Exit codes: 0 backup printed, 1 no valid backup, 2 no cutoff time found.
 

@@ -37,7 +37,9 @@ class FakeLLM:
         prior_attempts: list[Any],
         latest_tool_error: str | None,
         state_fingerprint: str | None,
+        backup_catalog: list[Any],
     ) -> HowProposal:
+        del backup_catalog
         del diagnosis, prior_attempts, latest_tool_error, state_fingerprint
         self.last_propose_rag_chunks = list(rag_chunks)
         return HowProposal(

@@ -10,10 +10,8 @@ from mi_agent.config import MISettings
 @pytest.fixture
 def settings(tmp_path: Path) -> MISettings:
     app_root = tmp_path / "app"
-    backups_root = tmp_path / "backups"
     state_root = tmp_path / "state"
     app_root.mkdir(parents=True, exist_ok=True)
-    backups_root.mkdir(parents=True, exist_ok=True)
     state_root.mkdir(parents=True, exist_ok=True)
 
     schema = app_root / "schema.sql"
@@ -32,7 +30,6 @@ def settings(tmp_path: Path) -> MISettings:
         target_service_url="http://example.invalid",
         app_root=app_root,
         sandbox_root=tmp_path,
-        backups_root=backups_root,
         db_file=app_root / "data" / "app.db",
         app_log=app_root / "app.log",
         schema_file=schema,
