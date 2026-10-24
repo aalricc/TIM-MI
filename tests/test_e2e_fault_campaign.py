@@ -515,6 +515,8 @@ def test_run_scenario_uses_agent_baseline_timestamp_when_host_clock_ahead(
     )
     monkeypatch.setattr(script, "evaluate_fixture", lambda *_args, **_kwargs: {"status": "pass"})
     monkeypatch.setattr(script, "compute_kpis", lambda _rows: {"recovery_rate": 1.0})
+    sleeps: list[float] = []
+    monkeypatch.setattr(script.time, "sleep", sleeps.append)
 
     row = script._run_scenario(
         fixture=fixture,
@@ -529,16 +531,42 @@ def test_run_scenario_uses_agent_baseline_timestamp_when_host_clock_ahead(
         healthy_timeout_seconds=10.0,
         incident_timeout_seconds=10.0,
         poll_seconds=1.0,
+        settle_seconds=30.0,
     )
 
     assert seen["since_ts"] == 100.0
     assert row["status"] == "pass"
+    assert 30.0 in sleeps
 
 
 def test_parser_rejects_non_positive_poll_seconds() -> None:
     script = _load_script()
     with pytest.raises(SystemExit):
         script._parser().parse_args(["--poll-seconds", "0"])
+
+
+def test_parser_settle_seconds_defaults_to_30_and_rejects_negative() -> None:
+    script = _load_script()
+    assert script._parser().parse_args([]).settle_seconds == 30.0
+    assert script._parser().parse_args(["--settle-seconds", "0"]).settle_seconds == 0.0
+    with pytest.raises(SystemExit):
+        script._parser().parse_args(["--settle-seconds", "-1"])
+
+
+def test_main_passes_settle_seconds_to_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _load_script()
+    seen: dict[str, object] = {}
+
+    def _fake_run_campaign(**kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {"overall_status": "pass"}
+
+    monkeypatch.setattr(script, "run_campaign", _fake_run_campaign)
+
+    assert script.main(["--results-root", str(tmp_path), "--settle-seconds", "12"]) == 0
+    assert seen["settle_seconds"] == 12.0
 
 
 def test_live_campaign_workflow_is_manual_dispatch_only() -> None:
@@ -583,6 +611,7 @@ def test_run_campaign_runs_fixtures_round_robin_and_summarises(
 
     def _fake_run_scenario(**kwargs: object) -> dict[str, object]:
         seen.append(str(kwargs["artifact_prefix"]))
+        assert kwargs["settle_seconds"] == 7.0
         return _passing_row(**kwargs)
 
     monkeypatch.setattr(script, "_run_scenario", _fake_run_scenario)
@@ -600,6 +629,7 @@ def test_run_campaign_runs_fixtures_round_robin_and_summarises(
         incident_timeout_seconds=1.0,
         poll_seconds=0.1,
         repetitions_override=2,
+        settle_seconds=7.0,
     )
 
     assert seen == ["a.r1", "b.r1", "a.r2", "b.r2"]
@@ -640,6 +670,8 @@ def test_prepare_target_resets_only_when_unhealthy(
     monkeypatch.setattr(script, "_wait_for_target_healthy", _fake_healthy)
     monkeypatch.setattr(script, "_request_json", _fake_request)
     monkeypatch.setattr(script, "_wait_for_agent_idle", _fake_idle)
+    sleeps: list[float] = []
+    monkeypatch.setattr(script.time, "sleep", sleeps.append)
 
     reset = script._prepare_target(
         object(),
@@ -647,12 +679,14 @@ def test_prepare_target_resets_only_when_unhealthy(
         ready_timeout_seconds=5.0,
         healthy_timeout_seconds=90.0,
         poll_seconds=0.1,
+        settle_seconds=30.0,
     )
 
     assert reset is (not healthy_first)
     assert requests == ([] if healthy_first else [("POST", "/ops/reset")])
     assert health_checks == ([5.0] if healthy_first else [5.0, 90.0])
     assert idle_waits == [90.0]
+    assert sleeps == [30.0]
 
 
 def test_wait_for_agent_idle_waits_for_open_incident_to_close(

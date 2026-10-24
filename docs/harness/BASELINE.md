@@ -33,7 +33,10 @@ Each run is one fault injected against a healthy target via `POST /ops/fault/{fa
 faults round-robin (S-01, S-02, S-03, S-01, ...) and keeps MI's memory across runs, so
 later repetitions measure learning (fast path). Before each run it waits for a healthy
 target; if a previous run left it unhealthy it calls `POST /ops/reset` (recorded as
-`reset_before`), then waits until MI has no open incident. The harness never acts on the
+`reset_before`), then waits until MI has no open incident, then keeps the target healthy
+for `--settle-seconds` (default 30, longer than the 10 s backup interval) so a fresh
+backup exists and traffic has written rows before the fault. The 2026-10-24 baseline ran
+before the settle time and the traffic service existed (no settle, no writes). The harness never acts on the
 target while MI handles an incident. `state/` starts empty for every CI campaign.
 
 A run passes when the incident is verifiably recovered within the fixture's budgets and
