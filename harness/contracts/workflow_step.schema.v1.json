@@ -74,6 +74,21 @@
         "usable"
       ]
     },
+    "llm_usage_input": {
+      "description": "llm.why / llm.how only: input tokens of the call (summed over its requests), when the provider reports usage. Named without 'token' because the event log redacts such keys.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "llm_usage_output": {
+      "description": "llm.why / llm.how only: output tokens of the call, as llm_usage_input.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "llm_usage_total": {
+      "description": "llm.why / llm.how only: total tokens of the call, as llm_usage_input.",
+      "type": "integer",
+      "minimum": 0
+    },
     "readme_step": {
       "description": "README.md loop step (1-16) this runtime step belongs to; null for markers outside the numbered loop (post_recovery.ping, attempt.result).",
       "anyOf": [

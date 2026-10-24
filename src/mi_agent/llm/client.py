@@ -42,11 +42,20 @@ class LLMClient(ABC):
     def consume_trace(self) -> dict[str, Any] | None:
         return None
 
+    def consume_usage(self) -> dict[str, int] | None:
+        """Token usage of the last diagnose_why / propose_how call, summed over its
+        requests; None when the provider reported none."""
+        return None
+
+
+USAGE_FIELDS = ("input_tokens", "output_tokens", "total_tokens")
+
 
 class OpenAILLMClient(LLMClient):
     def __init__(self, settings: MISettings) -> None:
         self._settings = settings
         self._last_trace: dict[str, Any] | None = None
+        self._usage: dict[str, int] | None = None
 
     async def preflight(self) -> dict[str, str]:
         payload = await self._call_json(
@@ -76,6 +85,7 @@ class OpenAILLMClient(LLMClient):
         evidence: Mapping[str, Any],
         rag_chunks: Sequence[RAGChunk],
     ) -> Diagnosis:
+        self._usage = None
         payload = await self._call_json(
             instruction=(
                 "Diagnose the root cause from diagnostics and RAG symptom context. "
@@ -123,6 +133,7 @@ class OpenAILLMClient(LLMClient):
             "Do not output strategy text outside JSON."
         )
         schema = self._how_schema()
+        self._usage = None
         try:
             payload = await self._call_json(
                 instruction=instruction,
@@ -277,6 +288,26 @@ class OpenAILLMClient(LLMClient):
         self._last_trace = None
         return trace
 
+    def consume_usage(self) -> dict[str, int] | None:
+        usage = self._usage
+        self._usage = None
+        return usage
+
+    def _add_usage(self, response: Mapping[str, Any]) -> None:
+        # Responses API: {"usage": {"input_tokens", "output_tokens", "total_tokens", ...}}.
+        usage = response.get("usage")
+        if not isinstance(usage, Mapping):
+            return
+        counts = {
+            name: value
+            for name in USAGE_FIELDS
+            if isinstance(value := usage.get(name), int) and not isinstance(value, bool)
+        }
+        if not counts:
+            return
+        total = self._usage or {}
+        self._usage = {name: total.get(name, 0) + counts.get(name, 0) for name in USAGE_FIELDS}
+
     async def _call_json(
         self,
         *,
@@ -311,6 +342,7 @@ class OpenAILLMClient(LLMClient):
         }
 
         response = await self._post(body)
+        self._add_usage(response)
         parsed = self._extract_json_text(response)
         if not isinstance(parsed, dict):
             raise LLMError("LLM response payload was not an object")

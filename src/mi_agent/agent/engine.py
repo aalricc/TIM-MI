@@ -301,6 +301,7 @@ class RecoveryAgent:
                 step="llm.why",
                 status="ok",
                 failure_type=diagnosis.failure_type,
+                **self._consume_llm_usage(),
             )
             incident.diagnosis = diagnosis
             self._record_diagnosis_trace(
@@ -477,6 +478,7 @@ class RecoveryAgent:
             step="llm.how",
             status="ok",
             candidate_count=len([how.primary, *how.alternatives]),
+            **self._consume_llm_usage(),
         )
 
         selected_how, executed_candidate, jev_decision = await self._select_candidate_with_jev(
@@ -1935,6 +1937,21 @@ class RecoveryAgent:
                 self._llm_traces.pop(stale_incident, None)
 
         return self._llm_traces[incident_id]
+
+    def _consume_llm_usage(self) -> dict[str, int]:
+        """Token counts for the llm.why / llm.how step, as `llm_usage_input/output/total`;
+        empty when unreported. The names avoid "token", which the event log redacts."""
+        consume = getattr(self._llm, "consume_usage", None)
+        if not callable(consume):
+            return {}
+        usage = consume()
+        if not isinstance(usage, dict):
+            return {}
+        return {
+            f"llm_usage_{name.removesuffix('_tokens')}": int(usage[name])
+            for name in ("input_tokens", "output_tokens", "total_tokens")
+            if isinstance(usage.get(name), int)
+        }
 
     def _consume_llm_trace(self) -> dict[str, Any] | None:
         consume = getattr(self._llm, "consume_trace", None)

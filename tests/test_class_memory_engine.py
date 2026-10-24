@@ -908,3 +908,69 @@ async def test_rows_written_after_recovery_do_not_count_as_negative_loss(tmp_pat
 
     assert recovered["rows_lost"] == 0
     assert recovered["reward"] == 1.0
+
+
+class UsageLLM(EngineLLM):
+    """Reports token usage per call: WHY 100 + 20, HOW 300 + 50."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._pending: dict[str, int] | None = None
+
+    async def diagnose_why(self, *, evidence: dict[str, Any], rag_chunks: list[Any]) -> Diagnosis:
+        self._pending = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
+        return await super().diagnose_why(evidence=evidence, rag_chunks=rag_chunks)
+
+    async def propose_how(self, **kwargs: Any) -> HowProposal:
+        self._pending = {"input_tokens": 300, "output_tokens": 50, "total_tokens": 350}
+        return await super().propose_how(**kwargs)
+
+    def consume_usage(self) -> dict[str, int] | None:
+        usage, self._pending = self._pending, None
+        return usage
+
+
+def _llm_steps(events: EventLog) -> dict[str, dict[str, Any]]:
+    return {
+        e.payload["step"]: e.payload
+        for e in events.events
+        if e.event_type == "workflow.step" and e.payload.get("step") in {"llm.why", "llm.how"}
+    }
+
+
+@pytest.mark.asyncio
+async def test_llm_steps_carry_token_usage(tmp_path: Path) -> None:
+    agent, events = _agent(
+        tmp_path,
+        llm=UsageLLM(),
+        tools=EngineTools(execute_ok_sequence=[True]),
+        verifier=EngineVerifier(healthy_sequence=[True]),
+        memory=_empty_class_memory(tmp_path),
+    )
+
+    await agent.run_iteration()
+
+    steps = _llm_steps(events)
+    assert {k: v for k, v in steps["llm.why"].items() if k.startswith("llm_usage_")} == {
+        "llm_usage_input": 100,
+        "llm_usage_output": 20,
+        "llm_usage_total": 120,
+    }
+    assert steps["llm.how"]["llm_usage_total"] == 350
+
+
+@pytest.mark.asyncio
+async def test_llm_steps_without_reported_usage_have_no_token_fields(tmp_path: Path) -> None:
+    agent, events = _agent(
+        tmp_path,
+        llm=EngineLLM(),
+        tools=EngineTools(execute_ok_sequence=[True]),
+        verifier=EngineVerifier(healthy_sequence=[True]),
+        memory=_empty_class_memory(tmp_path),
+    )
+
+    await agent.run_iteration()
+
+    steps = _llm_steps(events)
+    assert set(steps) == {"llm.why", "llm.how"}
+    assert all("llm_usage_total" not in payload for payload in steps.values())

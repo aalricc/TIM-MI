@@ -163,6 +163,12 @@ the data.
     `widget_rows_before`, `widget_rows_after`, `rows_lost` and `reward`. The compose
     `traffic` service writes a widget every `TRAFFIC_INTERVAL_SECONDS` (default 2) so
     there are rows to lose.
+12. **LLM token usage.** `llm.why` and `llm.how` carry `llm_usage_input`,
+    `llm_usage_output` and `llm_usage_total` (tokens, summed over the call's requests,
+    including the compact HOW retry) when the provider returns `usage`. A request that
+    failed is not counted. The names avoid "token" because `EventLog` redacts keys that
+    contain it. JEV calls are counted from `jev.requested` steps; nothing new is emitted
+    for them.
 
 ## Alignment constraints
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -173,3 +174,70 @@ async def test_post_does_not_retry_client_errors(
     with pytest.raises(LLMError, match="HTTPStatusError: Client error '400 Bad Request'"):
         await OpenAILLMClient(settings)._post({})
     assert len(calls) == 1
+
+
+def _usage_response(input_tokens: int, output_tokens: int) -> dict[str, Any]:
+    text = json.dumps({"failure_type": "db_missing", "hypotheses": ["h"], "evidence": ["e"]})
+    return {
+        "output": [{"content": [{"type": "output_text", "text": text}]}],
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "output_tokens_details": {"reasoning_tokens": 7},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_diagnose_why_reports_usage_once(
+    settings: MISettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = OpenAILLMClient(settings)
+    responses = [_usage_response(100, 20)]
+
+    async def _fake_post(_body: Any) -> dict[str, Any]:
+        return responses.pop(0)
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    await client.diagnose_why(evidence={}, rag_chunks=[])
+
+    assert client.consume_usage() == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+    }
+    assert client.consume_usage() is None
+
+
+@pytest.mark.asyncio
+async def test_usage_is_summed_over_requests_and_reset_per_call(
+    settings: MISettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = OpenAILLMClient(settings)
+    responses = [_usage_response(5, 5), _usage_response(100, 20), _usage_response(1, 2)]
+
+    async def _fake_post(_body: Any) -> dict[str, Any]:
+        return responses.pop(0)
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    await client.diagnose_why(evidence={}, rag_chunks=[])  # left unconsumed
+    await client.diagnose_why(evidence={}, rag_chunks=[])  # resets, then counts its own
+    client._add_usage(_usage_response(1, 2))  # a second request in the same call
+
+    assert client.consume_usage() == {
+        "input_tokens": 101,
+        "output_tokens": 22,
+        "total_tokens": 123,
+    }
+
+
+def test_usage_without_counts_is_ignored(settings: MISettings) -> None:
+    client = OpenAILLMClient(settings)
+
+    client._add_usage({})
+    client._add_usage({"usage": {"input_tokens": True, "total_tokens": "9"}})
+
+    assert client.consume_usage() is None
