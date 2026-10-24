@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 90
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MI_LLM_ENDPOINT: ${{ vars.MI_LLM_ENDPOINT }}
+      MI_LLM_AUTH_MODE: ${{ vars.MI_LLM_AUTH_MODE }}
       JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
       PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
       PINECONE_INDEX_HOST: ${{ secrets.PINECONE_INDEX_HOST }}
