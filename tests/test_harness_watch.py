@@ -16,6 +16,7 @@ THRESHOLDS = {
     "min_recovery_rate": 0.9,
     "max_ttr_p90_seconds": 60.0,
     "max_request_error_rate": 0.1,
+    "max_tokens_per_incident_p90": 126000.0,
     "max_jev_calls_per_incident_p90": 6.0,
 }
 BUDGETS = {"why": 20.0, "how": 20.0, "jev": 8.0, "execute": 10.0, "verify": 10.0}

@@ -147,37 +147,28 @@ campaign, so data loss was not measured; there is no `rows_lost` KPI yet.
 
 ## 8. Comparison run (2026-10-25)
 
-CI run `40130194856`, campaign `fault-campaign-20261024T203328Z`, commit `608429c`,
-overall `pass`. Same configuration and scenario set as §2–§3, plus the changes since the
-baseline: LLM transport retry (one retry, error type named), compose `traffic` service
-(one widget write every 2 s), data-loss reward (`HARNESS_RUNTIME_MAPPING.md` item 11),
-and a 30 s healthy settle before each fault. An earlier run without the settle time
-(`40127112134`) left the target broken almost the whole campaign and is discarded.
+CI run `40135533734`, campaign `fault-campaign-20261024T214656Z`, overall `pass`.
 
 | KPI | Baseline (§5) | Comparison |
 | --- | --- | --- |
 | Recovered / started | 15 / 15 | 15 / 15 |
-| TTR median / p90 / max (s) | 12.63 / 18.62 / 28.62 | 13.89 / 15.94 / 25.12 |
-| TTR median full loop / fast path (s) | 13.91 / 6.41 | 14.50 / 6.83 |
+| TTR median / p90 / max (s) | 12.63 / 18.62 / 28.62 | 13.45 / 17.62 / 18.42 |
+| TTR median full loop / fast path (s) | 13.91 / 6.41 | 16.19 / 7.02 |
 | Attempts per recovery (max) | 1 | 1 |
 | Fast-path recovery share | 0.467 (7 / 15) | 0.467 (7 / 15) |
 | First fast-path run | 9 (S-01 r3) | 9 (S-01 r3) |
 | Winning actions per class | 1 class, 2 actions | 1 class, 1 action (`request_backup_restore`) |
-| Rows lost total / per recovery median / max | not measured | 36 / 3 / 5 (2 lossless) |
-| Restore reward range (full loop → fast path) | n/a | 0.872–0.991 → 0.971–1.0 |
+| Rows lost total / per recovery median / p90 / max | not measured | 37 / 2 / 4 / 5 (2 lossless) |
+| Restore reward range (full loop → fast path) | n/a | 0.889–0.991 → 0.971–1.0 |
+| LLM tokens per incident median / p90 / max | n/a | 39265 / 41849 / 42046 |
+| JEV calls per incident p90 | n/a | 1 |
 | `agent.loop_error` | 1 (`LLMError`, empty message) | 0 |
 | JEV usable rate / gate rejections | 1.0 / 0 | 1.0 / 0 |
 | Invariant violations | 0 | 0 |
 
 Notes:
 
-- Every recovery was a restore; the `run_sql` recreate that won S-01 r1–r2 in the
-  baseline (it leaves an empty table) did not appear. Rows lost per recovery stay below
-  one backup interval of writes (10 s × 0.5 writes/s).
-- The graded reward did not delay the fast path: restore rewards of 0.87–0.99 still
-  pushed the class's lower confidence bound over `TAU_CONF` after 8 recoveries, as in the
-  baseline.
-- S-02 r5 (TTR 25.12 s, the max): the WHY call took 23.8 s with no `agent.loop_error`.
-  That is longer than the 20 s LLM timeout, so the first request most likely timed out and
-  the new retry succeeded within the same attempt.
-- All three faults still share one class (`2adf6b555d9b`); see the §5 finding.
+- This run is the source for the token budget calibration:
+  `max_tokens_per_incident_p90 = 126000` (about 3× `41849`).
+- All 15 selected actions were `request_backup_restore`; all three faults still joined one
+  class (`5ace67c6fbc9`).

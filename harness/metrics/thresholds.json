@@ -3,7 +3,7 @@
   "min_recovery_rate": 0.9,
   "max_ttr_p90_seconds": 60,
   "max_request_error_rate": 0.1,
-  "max_tokens_per_incident_p90": null,
+  "max_tokens_per_incident_p90": 126000,
   "max_jev_calls_per_incident_p90": 6,
   "step_latency_budgets_seconds": {
     "why": 20,

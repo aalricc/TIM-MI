@@ -28,11 +28,11 @@ def _incident(incident_id: str, *, tokens: int, jev_calls: int) -> list[dict[str
     return rows
 
 
-def test_thresholds_set_jev_budget_and_leave_tokens_report_only() -> None:
+def test_thresholds_set_jev_and_token_budgets() -> None:
     thresholds = load_thresholds()
 
     assert thresholds["max_jev_calls_per_incident_p90"] == 6.0
-    assert "max_tokens_per_incident_p90" not in thresholds
+    assert thresholds["max_tokens_per_incident_p90"] == 126000.0
 
 
 def test_token_budget_reports_without_failing_when_no_budget_is_set() -> None:

@@ -11,7 +11,7 @@ read `docs/harness/HANDOFF.md` (status, next checkpoint, working method, gotchas
 
 Current checkpoint status (2026-10-25): CP0–CP10 done. Baseline and comparison campaigns
 are in `docs/harness/BASELINE.md`; continuous surveillance runs as the compose
-`harness-watch` service (`harness/watch.py`, D3 = a) with step latency, token (report-only)
+`harness-watch` service (`harness/watch.py`, D3 = a) with step latency, token (p90 ≤ 126000)
 and JEV call budgets; CP11 is next. D2 is manual `workflow_dispatch` on a self-hosted runner.
 
 ## What this repo is

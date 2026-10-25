@@ -72,9 +72,9 @@ call timeout), `jev` 8 (the JEV timeout), `execute` 10, `verify` 10. Over budget
 step's calls are regularly reaching their timeout; one slow call does not fail it.
 
 `max_jev_calls_per_incident_p90` (6) and `max_tokens_per_incident_p90` are checked by
-`token_budget` / `call_rate_budget` (`harness/sensors/call_budgets.py`). The token budget
-is `null` (report only) until a campaign has measured real usage; then set it to about 3×
-the observed p90.
+`token_budget` / `call_rate_budget` (`harness/sensors/call_budgets.py`).
+`max_tokens_per_incident_p90` is set to 126000, calibrated from CI run `40135533734`
+(`llm_tokens_per_incident.p90 = 41849`, rounded to about 3×).
 
 ## Interpretation notes
 
