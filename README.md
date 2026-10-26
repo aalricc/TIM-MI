@@ -67,7 +67,7 @@ for example repaired by an operator, the incident closes without recording a lea
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev,jev,rag]'
+pip install -e '.[dev,jev,rag,trace]'
 ```
 
 ## Jev local server (required)
@@ -97,6 +97,13 @@ Azure OpenAI example:
 - `MI_LLM_AUTH_MODE=api_key`
 - `MI_LLM_API_KEY_HEADER=api-key`
 - `MI_LLM_MODEL=<azure-deployment-name>`
+
+Optional LangSmith tracing (`trace` extra, installed in the Docker image): set
+`LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY=<key>` (optionally `LANGSMITH_PROJECT`).
+Each WHY / HOW call becomes a trace (`llm.why` / `llm.how`) with an `openai.responses`
+LLM span carrying token usage. Tracing only observes; it never changes the loop. It sends
+the diagnostics, RAG chunks, backup catalog and model output to LangSmith, so leave it off
+where that data must stay local.
 
 Jev decision layer (mandatory, used after candidate-set assembly to choose one action):
 

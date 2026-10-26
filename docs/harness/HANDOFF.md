@@ -35,7 +35,7 @@ Branch `main` (synced to `origin/main`), tree clean.
 | CP13–CP14 | not started | — |
 
 `make check` green at CP11 (ruff, mypy `src`, mypy `harness`, pytest; 3 skipped in the
-dev-only `.venv`, 0 with `.[dev,jev,rag]`).
+dev-only `.venv`, 0 with `.[dev,jev,rag,trace]`).
 
 ## 2. Next: CP12 — LLM-as-judge on diagnosis/action quality (blocked by D4)
 
@@ -72,7 +72,7 @@ Commit target after D4 is decided:
   the test fails, restore). Verify dependency floors with an exact-floor install and a
   `--resolution lowest-direct` install.
 - **Python versions:** the local `.venv` is Python 3.14 with `.[dev]`; CI and Docker use
-  3.12 with `.[dev,jev,rag]`. Use `uv venv --seed --python 3.12 <scratch>` (uv is at
+  3.12 with `.[dev,jev,rag,trace]`. Use `uv venv --seed --python 3.12 <scratch>` (uv is at
   `~/.local/bin/uv`) for CI-parity runs. pytest's config already adds `-q`; use
   `-o addopts=""` to see the summary line.
 - **Risky changes** (list in `harness/governance/README.md`) need explicit user approval.

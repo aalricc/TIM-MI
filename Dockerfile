@@ -4,7 +4,7 @@ WORKDIR /workspace
 COPY pyproject.toml /workspace/pyproject.toml
 COPY src /workspace/src
 COPY dashboard /workspace/dashboard
-RUN pip install --no-cache-dir .[jev,rag]
+RUN pip install --no-cache-dir .[jev,rag,trace]
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8090

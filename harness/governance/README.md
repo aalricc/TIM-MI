@@ -10,7 +10,7 @@ runtime-written artifacts are governed. Governance never relaxes a runtime invar
 | **Pre-commit / every change** | lint, type checks (runtime + harness), unit tests, contract validation, structural architecture checks, scripted recovery regression | `.pre-commit-config.yaml` (same commands as `make check`) | wired; each clone runs `pre-commit install` once |
 | | basic security scan | ruff `S` (flake8-bandit) rules, part of `ruff check .` | wired (pre-commit + CI) |
 | **CI/CD after integration** | everything above again | `.github/workflows/ci.yml` (`ruff`, `mypy --strict src`, `mypy --strict harness`, `pytest -q`) | wired |
-| | dependency vulnerability scan | `.github/workflows/ci.yml` job `audit` (`pip-audit` over `.[dev,jev,rag]`) | wired |
+| | dependency vulnerability scan | `.github/workflows/ci.yml` job `audit` (`pip-audit` over `.[dev,jev,rag,trace]`) | wired |
 | | full E2E fault-injection recovery regression | `README.md` quick live recovery test | manual |
 | | costlier inferential review (LLM code / architecture review) | — | gap |
 | | required approval for risky changes | PR review (see below) | manual |
@@ -44,7 +44,7 @@ When `pip-audit` fails (CI job `audit` or the weekly drift issue):
 1. Raise the affected floor in `pyproject.toml` to the first fixed version (and the cap
    if the fix needs a new major). Check that the new floor is compatible with its
    dependents (e.g. pytest 9 needs pytest-asyncio ≥ 1.3).
-2. Verify on Python 3.12 (CI and Docker version) with `.[dev,jev,rag]`: `make check`,
+2. Verify on Python 3.12 (CI and Docker version) with `.[dev,jev,rag,trace]`: `make check`,
    `make audit`. For a changed floor, also install that exact floor version and re-run
    the tests.
 3. A floor change to a runtime dependency (base, `jev`, `rag`) is reviewed for behaviour

@@ -28,7 +28,7 @@ Python 3.12 is the CI and Docker version (`pyproject.toml` allows ≥ 3.12).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e '.[dev]'          # add ,jev,rag for the full image dependency set
+pip install -e '.[dev]'          # add ,jev,rag,trace for the full image dependency set
 pre-commit install               # once per clone
 make check                       # ruff, pytest, mypy --strict src, mypy --strict harness
 make harness                     # harness tests + mypy harness only
@@ -50,6 +50,7 @@ active.
 | `src/mi_agent/class_memory.py` | incident classes, fast path, `state/skills.md` sections |
 | `src/mi_agent/decision/client.py` | JEV action selection |
 | `src/mi_agent/llm/client.py` | WHY / HOW LLM calls |
+| `src/mi_agent/llm/tracing.py` | optional LangSmith tracing of the LLM calls |
 | `src/mi_agent/api/server.py`, `dashboard/index.html` | observability API and dashboard |
 | `harness/contracts/` | versioned JSON Schemas for harness records |
 | `harness/mappings/runtime.py` | read-only mapping from runtime outputs to records |

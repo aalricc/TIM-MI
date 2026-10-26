@@ -25,7 +25,7 @@ the listed stage; **manual** = command exists, run by a person; **gap** = not bu
 | Contract validity + runtime grammar equality | computational | pre_commit, ci | `tests/test_harness_contracts.py` | harness maintainer | wired |
 | Contract shape vs runtime output | computational | pre_commit, ci | `tests/test_harness_mappings.py` | harness maintainer | wired |
 | Basic security scan (static) | computational | pre_commit, ci | ruff `S` (flake8-bandit) rules in `ruff check .`; suppressions are inline with a reason, plus `S101` in `tests/**` | runtime maintainer | wired |
-| Dependency vulnerability scan | computational | ci, continuous | `pip-audit` over `.[dev,jev,rag]` (everything the image ships + dev tools): CI job `audit` in `.github/workflows/ci.yml`; weekly fresh-resolution run in `.github/workflows/drift.yml` (opens/updates a tracking issue on failure); local `make audit` | runtime maintainer | wired |
+| Dependency vulnerability scan | computational | ci, continuous | `pip-audit` over `.[dev,jev,rag,trace]` (everything the image ships + dev tools): CI job `audit` in `.github/workflows/ci.yml`; weekly fresh-resolution run in `.github/workflows/drift.yml` (opens/updates a tracking issue on failure); local `make audit` | runtime maintainer | wired |
 | LLM code review (duplication, over-engineering) | inferential | ci (selective) | — | harness maintainer | gap |
 | PR review | human | ci | GitHub pull request review | change author's reviewer | manual |
 

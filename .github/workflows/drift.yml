@@ -27,7 +27,7 @@ jobs:
       - name: Install image and dev dependencies (fresh resolution)
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir -e ".[dev,jev,rag]"
+          pip install --no-cache-dir -e ".[dev,jev,rag,trace]"
 
       - name: pip-audit
         run: pip-audit --skip-editable --progress-spinner off --desc on -f markdown -o audit.md

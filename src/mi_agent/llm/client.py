@@ -9,6 +9,7 @@ import httpx
 
 from mi_agent.config import MISettings
 from mi_agent.errors import LLMError
+from mi_agent.llm.tracing import USAGE_FIELDS, llm_span_outputs, traced
 from mi_agent.workflow.models import AttemptFeedback, Diagnosis, HowProposal, RAGChunk
 
 
@@ -48,9 +49,6 @@ class LLMClient(ABC):
         return None
 
 
-USAGE_FIELDS = ("input_tokens", "output_tokens", "total_tokens")
-
-
 class OpenAILLMClient(LLMClient):
     def __init__(self, settings: MISettings) -> None:
         self._settings = settings
@@ -79,6 +77,7 @@ class OpenAILLMClient(LLMClient):
             "status": "ok",
         }
 
+    @traced("llm.why")
     async def diagnose_why(
         self,
         *,
@@ -116,6 +115,7 @@ class OpenAILLMClient(LLMClient):
         )
         return Diagnosis.model_validate(payload)
 
+    @traced("llm.how")
     async def propose_how(
         self,
         *,
@@ -355,6 +355,7 @@ class OpenAILLMClient(LLMClient):
         }
         return parsed
 
+    @traced("openai.responses", run_type="llm", process_outputs=llm_span_outputs)
     async def _post(self, body: Mapping[str, Any]) -> dict[str, Any]:
         api_key = self._settings.openai_api_key
         headers = {"Content-Type": "application/json"}

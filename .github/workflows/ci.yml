@@ -27,7 +27,7 @@ jobs:
         # run against the real JEV client and RAG libraries.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,jev,rag]"
+          pip install -e ".[dev,jev,rag,trace]"
 
       - name: Ruff
         run: ruff check .
@@ -59,7 +59,7 @@ jobs:
       - name: Install image and dev dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,jev,rag]"
+          pip install -e ".[dev,jev,rag,trace]"
 
       - name: pip-audit
         run: pip-audit --skip-editable --progress-spinner off

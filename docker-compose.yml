@@ -127,6 +127,11 @@ services:
       MI_CLASSMEM_COOLDOWN_SECONDS: ${MI_CLASSMEM_COOLDOWN_SECONDS:-30}
       MI_CLASSMEM_EMBEDDING_DIM: ${MI_CLASSMEM_EMBEDDING_DIM:-96}
       MI_HARNESS_RESULTS_PATH: /results/harness/sensor_results.jsonl
+      # Optional LangSmith tracing of the WHY / HOW calls; off unless set to true.
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-mi-agent}
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
     volumes:
       # No backups volume: MI lists and restores backups through the target's API.
       - ./target/app:/target/app

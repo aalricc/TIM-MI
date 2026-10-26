@@ -34,6 +34,10 @@ jev = [
   # Pinned exactly: upgrade deliberately after tests/test_jev_client.py passes.
   "langchain-typesafe==0.0.1a3",
 ]
+# Optional LangSmith tracing of the WHY / HOW LLM calls (src/mi_agent/llm/tracing.py).
+trace = [
+  "langsmith>=0.14,<1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mi_agent"]
@@ -63,3 +67,8 @@ strict = true
 mypy_path = "src"
 packages = ["mi_agent"]
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+# Optional `trace` extra: tracing is a no-op when it is not installed.
+module = ["langsmith", "langsmith.*"]
+ignore_missing_imports = true
