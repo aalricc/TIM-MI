@@ -32,27 +32,27 @@ Branch `main` (synced to `origin/main`), tree clean.
 | CP10 runtime budget sensors (step latency, token budget, JEV call budget, telemetry) | done | `44aa4aa`, `9da180d`, `bc07b51` |
 | CP11 decision-log sampling for human review | done | this commit |
 | CP12 LLM-as-judge on diagnosis/action quality | done | this commit |
-| **CP13** selective LLM code / architecture review (needs D5) | **next** | — |
-| CP14 | not started | — |
+| CP13 selective LLM code / architecture review (D5 decided: OpenAI `gpt-5.3`) | done | this commit |
+| **CP14** governance enforcement (needs D6) | **next** | — |
 
-`make check` green at CP12 (ruff, mypy `src`, mypy `harness`, pytest; 3 skipped in the
+`make check` green at CP13 (ruff, mypy `src`, mypy `harness`, pytest; 3 skipped in the
 dev-only `.venv`, 0 with `.[dev,jev,rag,trace]`).
 
-## 2. Next: CP13 — selective LLM code / architecture review (blocked by D5)
+## 2. Next: CP14 — governance enforcement (blocked by D6)
 
-CP12 is complete once this commit lands (rubric approved, judge + calibration tools,
-contracts/tests/docs synced).
+CP13 is complete once this commit lands (selective risky-path PR LLM review + failed
+campaign reflection summary).
 
-Before implementation, confirm D5 in `docs/harness/HARNESS_GAP_PLAN.md`:
-- Which agent/provider runs selective PR review on risky paths.
+Before implementation, confirm D6 in `docs/harness/HARNESS_GAP_PLAN.md`:
+- Named owners for runtime maintainer / harness maintainer / operator.
 
-Then implement CP13 exactly as specified in the plan:
-1. Trigger review only on risky paths from governance.
-2. Post advisory review comments (never merge-blocking).
-3. Add the log-quality reflection prompt for failed CP7 campaigns.
+Then implement CP14 exactly as specified in the plan:
+1. Add `.github/CODEOWNERS` for risky paths.
+2. Add `.github/pull_request_template.md` with risky-change checklist and steering-loop link.
+3. Document branch-protection settings in governance docs.
 
-Commit target after D5 is decided:
-`ci(harness): selective LLM review on risky paths`
+Commit target after D6 is decided:
+`chore(harness): CODEOWNERS and PR template for risky changes`
 
 ## 3. How this work has been done (keep doing it)
 

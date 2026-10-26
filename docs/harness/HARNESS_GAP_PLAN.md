@@ -21,7 +21,7 @@ Conventions for every checkpoint:
 | D2 | Where does the live E2E fault-injection regression run? It needs OpenAI, Pinecone, and the local JEV server (`.local/jev`). | CP7 | **Decided: (c)** — manual `workflow_dispatch` only via a self-hosted runner (no schedule) |
 | D3 | Where does continuous surveillance run? GitHub Actions cannot read a host's `state/`. | CP9 | **Decided: (a)** — `harness-watch` compose service, `state/` mounted read-only, every 5 min over 24 h; results to `results/harness/sensor_results.jsonl` and the dashboard. Rejected: (b) host cron; (c) Claude Code scheduled routine |
 | D4 | Which model judges diagnosis/action quality, and who approves the rubric? | CP12 | **Decided:** OpenAI `gpt-5.3`; rubric owner is operator (approved v1 in `harness/guides/judge_rubric.md`) |
-| D5 | Which agent runs LLM code/architecture review on PRs? | CP13 | GitHub Action with an LLM reviewer; selective on risky paths only |
+| D5 | Which agent runs LLM code/architecture review on PRs? | CP13 | **Decided:** GitHub Action + OpenAI Responses (`gpt-5.3`), selective risky-path trigger, advisory-only PR comments |
 | D6 | Named owners for the roles runtime maintainer / harness maintainer / operator. | CP14 | — |
 
 ## Checkpoint 0 — Commit what exists (now)
@@ -274,11 +274,18 @@ Done notes:
 - Implemented OpenAI judge path (`gpt-5.3`) with optional LangSmith mirroring (`--langsmith`)
   and trust-gated sensor semantics (untrusted calibration is advisory-only).
 
-### CP13 — Selective LLM code / architecture review in CI (depends on D5)
-- PR workflow triggered only on risky paths (governance list); posts review comments;
-  advisory, never blocking.
-- Add "log-quality reflection" prompt run when a CP7 campaign fails.
+### CP13 — Selective LLM code / architecture review in CI (depends on D5) — done
 - Commit: `ci(harness): selective LLM review on risky paths`
+
+Done notes:
+- Added `.github/workflows/selective-llm-review.yml` with pull-request trigger scoped to
+  governance risky paths only.
+- Added `python -m harness.review.pr_review pr` to generate advisory-only review markdown and
+  post/update a PR comment (never merge-blocking).
+- Added failed-campaign reflection wiring in
+  `.github/workflows/live-e2e-fault-campaign.yml`:
+  `python -m harness.review.pr_review reflect --campaign-json <campaign.json>` runs only
+  when the campaign step fails and writes to the job summary.
 
 ### CP14 — Governance enforcement (depends on D6)
 - `.github/CODEOWNERS` for risky paths; `.github/pull_request_template.md` with the

@@ -26,7 +26,7 @@ the listed stage; **manual** = command exists, run by a person; **gap** = not bu
 | Contract shape vs runtime output | computational | pre_commit, ci | `tests/test_harness_mappings.py` | harness maintainer | wired |
 | Basic security scan (static) | computational | pre_commit, ci | ruff `S` (flake8-bandit) rules in `ruff check .`; suppressions are inline with a reason, plus `S101` in `tests/**` | runtime maintainer | wired |
 | Dependency vulnerability scan | computational | ci, continuous | `pip-audit` over `.[dev,jev,rag,trace]` (everything the image ships + dev tools): CI job `audit` in `.github/workflows/ci.yml`; weekly fresh-resolution run in `.github/workflows/drift.yml` (opens/updates a tracking issue on failure); local `make audit` | runtime maintainer | wired |
-| LLM code review (duplication, over-engineering) | inferential | ci (selective) | — | harness maintainer | gap |
+| LLM code review (duplication, over-engineering) | inferential | ci (selective) | `.github/workflows/selective-llm-review.yml` + `python -m harness.review.pr_review pr --files-file <changed>`; advisory PR comment only | harness maintainer | wired |
 | PR review | human | ci | GitHub pull request review | change author's reviewer | manual |
 
 ## Architecture sensors
@@ -51,7 +51,7 @@ the listed stage; **manual** = command exists, run by a person; **gap** = not bu
 | `retry_resumes_at_step5` (retry-loop check) | computational | ci, continuous | same | harness maintainer | as above |
 | `step_latency_budget` (p90 per step over 24 h vs budget: WHY 20 s, HOW 20 s, JEV 8 s, execute 10 s, verify 10 s; spans from `workflow.step` timestamps) | computational | continuous | `harness/sensors/step_latency.py`, budgets in `harness/metrics/thresholds.json`, run by `harness/watch.py` | runtime maintainer | wired (`harness-watch`) |
 | `token_budget` (p90 LLM tokens per incident ≤ 126000) and `call_rate_budget` (p90 JEV calls per incident ≤ 6) | computational | continuous | `harness/sensors/call_budgets.py` over the `llm_tokens_per_incident` / `jev_calls_per_incident` KPIs, budgets in `harness/metrics/thresholds.json`, run by `harness/watch.py` | runtime maintainer | wired (`harness-watch`) |
-| Architecture review agent / log-quality reflection after failed run | inferential | ci (selective) | — | harness maintainer | gap |
+| Architecture review agent / log-quality reflection after failed run | inferential | ci (selective) | `.github/workflows/selective-llm-review.yml` for risky-path PRs + failed-run reflection in `.github/workflows/live-e2e-fault-campaign.yml` via `python -m harness.review.pr_review reflect --campaign-json <campaign.json>` | harness maintainer | wired |
 | Architecture-drift report review | human | ci | review of failures from the rows above | runtime maintainer | manual |
 
 Continuous run against live state: the compose `harness-watch` service runs

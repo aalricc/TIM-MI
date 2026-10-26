@@ -12,7 +12,7 @@ runtime-written artifacts are governed. Governance never relaxes a runtime invar
 | **CI/CD after integration** | everything above again | `.github/workflows/ci.yml` (`ruff`, `mypy --strict src`, `mypy --strict harness`, `pytest -q`) | wired |
 | | dependency vulnerability scan | `.github/workflows/ci.yml` job `audit` (`pip-audit` over `.[dev,jev,rag,trace]`) | wired |
 | | full E2E fault-injection recovery regression | `README.md` quick live recovery test | manual |
-| | costlier inferential review (LLM code / architecture review) | — | gap |
+| | costlier inferential review (LLM code / architecture review) | `.github/workflows/selective-llm-review.yml` (advisory PR comment only; triggered only on risky paths) | wired |
 | | required approval for risky changes | PR review (see below) | manual |
 | **Continuous (outside change lifecycle)** | dependency / security drift scans | `.github/workflows/drift.yml` (weekly + manual; fresh resolution, `pip-audit` + ruff `S`; opens/updates one tracking issue) | wired |
 | | runtime KPI surveillance (recovery rate, TTR, JEV request errors vs `harness/metrics/thresholds.json`) | compose `harness-watch` service: `python -m harness.watch` every 5 min over 24 h → `results/harness/sensor_results.jsonl`, dashboard Surveillance panel | wired |

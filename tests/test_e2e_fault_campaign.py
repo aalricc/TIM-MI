@@ -581,6 +581,18 @@ def test_live_campaign_workflow_is_manual_dispatch_only() -> None:
     assert "pytest -q -m live" in workflow
 
 
+def test_live_campaign_workflow_runs_reflection_on_failure() -> None:
+    workflow = Path(".github/workflows/live-e2e-fault-campaign.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "id: run_campaign" in workflow
+    assert "continue-on-error: true" in workflow
+    assert "Generate failed-campaign log reflection" in workflow
+    assert "python -m harness.review.pr_review" in workflow
+    assert "reflect" in workflow
+    assert "Fail job if campaign failed" in workflow
+
+
 def _passing_row(**kwargs: object) -> dict[str, object]:
     prefix = str(kwargs["artifact_prefix"])
     return {

@@ -65,7 +65,35 @@ jobs:
         run: pytest -q -m live
 
       - name: Run fault campaign
+        id: run_campaign
+        continue-on-error: true
         run: PYTHONPATH=. python scripts/e2e_fault_campaign.py --stage ci --repetitions 5
+
+      - name: Generate failed-campaign log reflection
+        if: steps.run_campaign.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          mkdir -p results/harness
+          campaign_json="$(find results -name campaign.json -type f | sort | tail -n 1)"
+          if [ -z "$campaign_json" ]; then
+            cat > results/harness/log-quality-reflection.md <<'EOF'
+          ## Log-Quality Reflection
+
+          Campaign failed but no campaign report was found. Check compose logs and state/events.jsonl.
+          EOF
+          else
+            python -m harness.review.pr_review \
+              reflect \
+              --campaign-json "$campaign_json" \
+              > results/harness/log-quality-reflection.md
+          fi
+
+      - name: Publish reflection summary
+        if: always() && steps.run_campaign.outcome == 'failure'
+        run: |
+          if [ -f results/harness/log-quality-reflection.md ]; then
+            cat results/harness/log-quality-reflection.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Capture compose logs
         if: always()
@@ -81,6 +109,10 @@ jobs:
           path: |
             results/
             state/events.jsonl
+
+      - name: Fail job if campaign failed
+        if: steps.run_campaign.outcome == 'failure'
+        run: exit 1
 
       - name: Tear down stack
         if: always()
