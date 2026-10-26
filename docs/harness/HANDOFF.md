@@ -9,7 +9,7 @@ Approved scope document: `docs/harness/HARNESS_IMPLEMENTATION_WORKFLOW.md`. It i
 user's approved plan; change it only with explicit user approval (the retry rule was
 amended once, approved, 2026-10-23).
 
-## 1. Status (as of 2026-10-25)
+## 1. Status (as of 2026-10-26)
 
 Branch `main` (synced to `origin/main`), tree clean.
 
@@ -31,27 +31,28 @@ Branch `main` (synced to `origin/main`), tree clean.
 | CP9 continuous KPI + invariant surveillance | done | `faf70be`, `1f3ee12` |
 | CP10 runtime budget sensors (step latency, token budget, JEV call budget, telemetry) | done | `44aa4aa`, `9da180d`, `bc07b51` |
 | CP11 decision-log sampling for human review | done | this commit |
-| **CP12** LLM-as-judge (needs D4) | **next** | — |
-| CP13–CP14 | not started | — |
+| CP12 LLM-as-judge on diagnosis/action quality | done | this commit |
+| **CP13** selective LLM code / architecture review (needs D5) | **next** | — |
+| CP14 | not started | — |
 
-`make check` green at CP11 (ruff, mypy `src`, mypy `harness`, pytest; 3 skipped in the
+`make check` green at CP12 (ruff, mypy `src`, mypy `harness`, pytest; 3 skipped in the
 dev-only `.venv`, 0 with `.[dev,jev,rag,trace]`).
 
-## 2. Next: CP12 — LLM-as-judge on diagnosis/action quality (blocked by D4)
+## 2. Next: CP13 — selective LLM code / architecture review (blocked by D5)
 
-Before implementation, confirm D4 in `docs/harness/HARNESS_GAP_PLAN.md`:
-- Which model runs the judge (`OpenAI` or `Claude`), and
-- Who approves and owns `harness/guides/judge_rubric.md`.
+CP12 is complete once this commit lands (rubric approved, judge + calibration tools,
+contracts/tests/docs synced).
 
-Then implement CP12 exactly as specified in the plan:
-1. Add `harness/guides/judge_rubric.md` (risky: needs approval).
-2. Add `python -m harness.review.judge` to score sampled packets.
-3. Emit inferential `sensor_result` records from judge output.
-4. Calibrate judge output against CP11 human verdicts before trusting thresholds.
-5. Keep harness read-only for runtime state and keep all runtime invariants unchanged.
+Before implementation, confirm D5 in `docs/harness/HARNESS_GAP_PLAN.md`:
+- Which agent/provider runs selective PR review on risky paths.
 
-Commit target after D4 is decided:
-`feat(harness): LLM-as-judge for diagnosis and action quality`
+Then implement CP13 exactly as specified in the plan:
+1. Trigger review only on risky paths from governance.
+2. Post advisory review comments (never merge-blocking).
+3. Add the log-quality reflection prompt for failed CP7 campaigns.
+
+Commit target after D5 is decided:
+`ci(harness): selective LLM review on risky paths`
 
 ## 3. How this work has been done (keep doing it)
 

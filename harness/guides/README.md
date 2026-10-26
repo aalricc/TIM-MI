@@ -44,6 +44,7 @@ Owner roles: **runtime maintainer** (owns `src/mi_agent`), **harness maintainer*
 | Thresholds and their justification | inferential | `docs/THRESHOLD_JUSTIFICATION.md` | runtime maintainer | in place |
 | Learned skills fed to HOW | inferential | `state/skills.md` (runtime-written, contract `skill_entry`) | runtime (auto) / operator review | in place |
 | Runbooks and policy links | inferential | `docs/runbooks/` (one per fault, security-gate rejection, stuck incident; deployment behaviour and manual takeover in its README); `scripts/find_known_good_backup.py`; linked from `docs/THREAT_MODEL.md` | operator | in place |
+| Judge rubric for diagnosis and action quality (LLM judge and human reviewers) | inferential | `harness/guides/judge_rubric.md` | operator | approved v1 (CP12) |
 
 ## Changing a guide
 

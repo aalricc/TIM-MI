@@ -16,6 +16,7 @@ CONTRACT_NAMES = (
     "skill_entry",
     "scenario_fixture",
     "review_verdict",
+    "judge_verdict",
     "sensor_result",
     "decision_trace",
     "workflow_step",

@@ -9,10 +9,11 @@ Working agreement for coding agents and contributors in this repository. Every p
 The harness gap plan is being built checkpoint by checkpoint. Before doing harness work,
 read `docs/harness/HANDOFF.md` (status, next checkpoint, working method, gotchas).
 
-Current checkpoint status (2026-10-25): CP0–CP10 done. Baseline and comparison campaigns
+Current checkpoint status (2026-10-26): CP0–CP10 done. Baseline and comparison campaigns
 are in `docs/harness/BASELINE.md`; continuous surveillance runs as the compose
 `harness-watch` service (`harness/watch.py`, D3 = a) with step latency, token (p90 ≤ 126000)
-and JEV call budgets; CP11 (decision-log review packets) done; CP12 is next and needs D4. D2 is manual `workflow_dispatch` on a self-hosted runner.
+and JEV call budgets; CP11 (decision-log review packets) and CP12 (LLM judge + calibration)
+done; CP13 is next and needs D5. D2 is manual `workflow_dispatch` on a self-hosted runner.
 
 ## What this repo is
 
@@ -58,6 +59,8 @@ active.
 | `harness/metrics/kpis.py` | KPI computation |
 | `harness/watch.py` | continuous surveillance (invariants + `harness/sensors/kpi_thresholds.py`) |
 | `harness/review/sample.py` | decision-log review packets for weekly human review |
+| `harness/review/judge.py` | LLM-as-judge scoring for diagnosis/action quality (`judge_verdict` + inferential `sensor_result`) |
+| `harness/review/calibrate.py` | human-vs-judge agreement and trust gate (`trusted: true|false`) |
 | `tests/harness_scenarios.py` | scripted runtime scenarios used by harness tests |
 | `docs/harness/skills/` | step-by-step procedures (below) |
 
