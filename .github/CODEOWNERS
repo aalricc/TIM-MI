@@ -1,0 +1,35 @@
+# CP14 (D6): risky-path ownership and process control ownership.
+# Runtime maintainer: @aalricc
+# Harness maintainer: @aalricc
+# Operator: @aalricc
+
+# Runtime control flow and execution boundary
+/src/mi_agent/agent/engine.py @aalricc
+/src/mi_agent/tools/executor.py @aalricc
+/src/mi_agent/tools/schemas.py @aalricc
+/src/mi_agent/tools/pathing.py @aalricc
+
+# JEV / class-memory controls
+/src/mi_agent/decision/** @aalricc
+/src/mi_agent/config.py @aalricc
+/src/mi_agent/class_memory.py @aalricc
+
+# LLM prompts/parsing
+/src/mi_agent/llm/** @aalricc
+
+# Contract and workflow-step / sensor pass-fail controls
+/src/mi_agent/workflow/models.py @aalricc
+/harness/contracts/*.schema.v*.json @aalricc
+/harness/sensors/**/*.py @aalricc
+/harness/metrics/thresholds.json @aalricc
+
+# Rubric and runtime-written state contracts
+/harness/guides/judge_rubric.md @aalricc
+/state/skills.md @aalricc
+/state/class_store.json @aalricc
+/state/policy_store.json @aalricc
+/state/tool_catalog.json @aalricc
+
+# Hybrid process-control additions (requested)
+/AGENTS.md @aalricc
+/docs/harness/HANDOFF.md @aalricc

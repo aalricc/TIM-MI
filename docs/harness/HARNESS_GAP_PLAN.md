@@ -22,7 +22,7 @@ Conventions for every checkpoint:
 | D3 | Where does continuous surveillance run? GitHub Actions cannot read a host's `state/`. | CP9 | **Decided: (a)** — `harness-watch` compose service, `state/` mounted read-only, every 5 min over 24 h; results to `results/harness/sensor_results.jsonl` and the dashboard. Rejected: (b) host cron; (c) Claude Code scheduled routine |
 | D4 | Which model judges diagnosis/action quality, and who approves the rubric? | CP12 | **Decided:** OpenAI `gpt-5.3`; rubric owner is operator (approved v1 in `harness/guides/judge_rubric.md`) |
 | D5 | Which agent runs LLM code/architecture review on PRs? | CP13 | **Decided:** GitHub Action + OpenAI Responses (`gpt-5.3`), selective risky-path trigger, advisory-only PR comments |
-| D6 | Named owners for the roles runtime maintainer / harness maintainer / operator. | CP14 | — |
+| D6 | Named owners for the roles runtime maintainer / harness maintainer / operator. | CP14 | **Decided:** all three roles are `@aalricc` with a temporary solo-owner self-approval exception |
 
 ## Checkpoint 0 — Commit what exists (now)
 
@@ -287,11 +287,16 @@ Done notes:
   `python -m harness.review.pr_review reflect --campaign-json <campaign.json>` runs only
   when the campaign step fails and writes to the job summary.
 
-### CP14 — Governance enforcement (depends on D6)
-- `.github/CODEOWNERS` for risky paths; `.github/pull_request_template.md` with the
-  risky-change checklist and steering-loop link; branch protection (manual GitHub setting,
-  recorded in governance doc).
+### CP14 — Governance enforcement (depends on D6) — done
 - Commit: `chore(harness): CODEOWNERS and PR template for risky changes`
+
+Done notes:
+- Added `.github/CODEOWNERS` for governance risky paths plus requested hybrid process-control
+  files (`AGENTS.md`, `docs/harness/HANDOFF.md`), with role-commented ownership entries.
+- Added `.github/pull_request_template.md` with risky-change checklist (governance items 1–7),
+  required evidence links, and steering-loop reference.
+- Documented branch-protection settings in `harness/governance/README.md`, including
+  verification checklist and emergency bypass/rollback procedure.
 
 ## Order and dependencies
 

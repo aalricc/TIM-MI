@@ -32,27 +32,23 @@ Branch `main` (synced to `origin/main`), tree clean.
 | CP10 runtime budget sensors (step latency, token budget, JEV call budget, telemetry) | done | `44aa4aa`, `9da180d`, `bc07b51` |
 | CP11 decision-log sampling for human review | done | this commit |
 | CP12 LLM-as-judge on diagnosis/action quality | done | this commit |
-| CP13 selective LLM code / architecture review (D5 decided: OpenAI `gpt-5.3`) | done | this commit |
-| **CP14** governance enforcement (needs D6) | **next** | — |
+| CP13 selective LLM code / architecture review (D5 decided: OpenAI `gpt-5.3`) | done | `47ccf97` |
+| CP14 governance enforcement (D6 decided: role owners set) | done | this commit |
 
-`make check` green at CP13 (ruff, mypy `src`, mypy `harness`, pytest; 3 skipped in the
+`make check` green at CP14 (ruff, mypy `src`, mypy `harness`, pytest; 3 skipped in the
 dev-only `.venv`, 0 with `.[dev,jev,rag,trace]`).
 
-## 2. Next: CP14 — governance enforcement (blocked by D6)
+## 2. Next: steady-state governance + campaigns
 
-CP13 is complete once this commit lands (selective risky-path PR LLM review + failed
-campaign reflection summary).
+CP14 is complete once this commit lands (CODEOWNERS, PR template, branch-protection doc,
+role ownership assignment).
 
-Before implementation, confirm D6 in `docs/harness/HARNESS_GAP_PLAN.md`:
-- Named owners for runtime maintainer / harness maintainer / operator.
+Run the normal operating cadence:
+1. Keep branch protection settings aligned with `harness/governance/README.md`.
+2. Continue weekly review sampling/judge calibration and periodic campaign runs.
+3. Use steering loop S1–S6 for repeated issues.
 
-Then implement CP14 exactly as specified in the plan:
-1. Add `.github/CODEOWNERS` for risky paths.
-2. Add `.github/pull_request_template.md` with risky-change checklist and steering-loop link.
-3. Document branch-protection settings in governance docs.
-
-Commit target after D6 is decided:
-`chore(harness): CODEOWNERS and PR template for risky changes`
+Next optional checkpoint in the plan is maintenance hardening, not a blocked build step.
 
 ## 3. How this work has been done (keep doing it)
 

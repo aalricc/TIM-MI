@@ -3,6 +3,12 @@
 Where checks run, what needs human approval, how harness changes are promoted, and how
 runtime-written artifacts are governed. Governance never relaxes a runtime invariant.
 
+## Role owners (D6)
+
+- Runtime maintainer: `@aalricc`
+- Harness maintainer: `@aalricc`
+- Operator: `@aalricc`
+
 ## Quality placement (keep quality left)
 
 | Stage | Runs | Command | Status |
@@ -38,6 +44,49 @@ agent that drafted it) when it touches any of:
 
 Non-risky (normal review): harness docs, new sensors that only add checks, KPI reporting,
 test fixtures that do not weaken assertions.
+
+Temporary solo-owner exception (CP14/D6): while all three role owners above are the same
+person (`@aalricc`), self-approval is allowed for risky changes. Remove this exception once
+another maintainer role owner is assigned.
+
+## Branch protection for `main` (manual GitHub setting)
+
+Apply these settings in GitHub UI:
+
+1. Require a pull request before merging.
+2. Require approvals (minimum 1).
+3. Require review from Code Owners.
+4. Dismiss stale approvals when new commits are pushed.
+5. Require conversation resolution before merging.
+6. Require status checks to pass with **`CI`** required.
+7. Keep **`Selective LLM Review` advisory only** (do not mark required).
+8. Keep force-push and branch deletion disabled.
+
+Verification checklist:
+
+- UI: repository Settings → Branches → `main` protection reflects items 1–8.
+- CLI (replace owner/repo):
+
+```bash
+gh api repos/<owner>/<repo>/branches/main/protection --jq '{
+  required_pull_request_reviews,
+  required_status_checks,
+  enforce_admins,
+  allow_force_pushes,
+  allow_deletions
+}'
+```
+
+Confirm `required_status_checks.contexts` includes `CI` and does not include
+`Selective LLM Review`.
+
+Emergency bypass / rollback (production-impacting hotfix only):
+
+1. A maintainer-role owner may temporarily bypass protections (currently `@aalricc`).
+2. Record reason, incident link, and timestamp in PR and `docs/WORKLOG.md`.
+3. Merge the minimal hotfix.
+4. Re-enable standard protections immediately after merge.
+5. Open a follow-up PR to restore normal review flow and capture lessons learned.
 
 ## Dependency vulnerabilities
 
