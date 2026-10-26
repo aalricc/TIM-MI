@@ -13,6 +13,7 @@ derivations: `docs/harness/HARNESS_RUNTIME_MAPPING.md`.
 | `skill_entry.schema.v1.json` | skill in `state/skills.md` | class sections and legacy frontmatter blocks |
 | `scenario_fixture.schema.v1.json` | approved fault scenario fixture | `harness/scenarios/*.json` |
 | `review_verdict.schema.v1.json` | one human verdict for a sampled decision packet | operator-reviewed packets under `results/reviews/` |
+| `judge_verdict.schema.v1.json` | one LLM judge verdict for a sampled decision packet | `python -m harness.review.judge` output |
 | `sensor_result.schema.v1.json` | sensor run | harness sensors (never the runtime) |
 
 Validation:

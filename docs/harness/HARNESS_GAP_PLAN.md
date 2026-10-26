@@ -20,7 +20,7 @@ Conventions for every checkpoint:
 | D1 | What should a security-gate rejection do? | CP1 | **Decided: (b)** — failed attempt with learning penalties (policy −1, class-memory failure), action excluded for the incident, retry from step 5. Rejected alternatives: (a) keep raising; (c) failed attempt without penalties |
 | D2 | Where does the live E2E fault-injection regression run? It needs OpenAI, Pinecone, and the local JEV server (`.local/jev`). | CP7 | **Decided: (c)** — manual `workflow_dispatch` only via a self-hosted runner (no schedule) |
 | D3 | Where does continuous surveillance run? GitHub Actions cannot read a host's `state/`. | CP9 | **Decided: (a)** — `harness-watch` compose service, `state/` mounted read-only, every 5 min over 24 h; results to `results/harness/sensor_results.jsonl` and the dashboard. Rejected: (b) host cron; (c) Claude Code scheduled routine |
-| D4 | Which model judges diagnosis/action quality, and who approves the rubric? | CP12 | OpenAI (same provider as runtime) or Claude; rubric owner |
+| D4 | Which model judges diagnosis/action quality, and who approves the rubric? | CP12 | **Decided:** OpenAI `gpt-5.3`; rubric owner is operator (approved v1 in `harness/guides/judge_rubric.md`) |
 | D5 | Which agent runs LLM code/architecture review on PRs? | CP13 | GitHub Action with an LLM reviewer; selective on risky paths only |
 | D6 | Named owners for the roles runtime maintainer / harness maintainer / operator. | CP14 | — |
 
@@ -260,11 +260,19 @@ Done notes:
 - Documented weekly sampling cadence and `results/reviews/` verdict storage in governance
   and the sensor catalogue.
 
-### CP12 — LLM-as-judge on diagnosis and action quality (depends on D4)
+### CP12 — LLM-as-judge on diagnosis and action quality — done
 - Rubric in `harness/guides/judge_rubric.md` (risky: approval of rubric).
 - `python -m harness.review.judge` scores sampled packets → `sensor_result`
   (`sensor_type=inferential`); calibrate against CP11 human verdicts before trusting.
 - Commit: `feat(harness): LLM-as-judge for diagnosis and action quality`
+
+Done notes:
+- Added `judge_verdict` v1 contract and wired `python -m harness.review.judge` to emit one
+  verdict JSONL row per packet plus one inferential `sensor_result` summary row.
+- Added `python -m harness.review.calibrate` to compare human `review_verdict` files with
+  judge outputs and compute trust (`>=0.8` on both questions over `>=20` matched packets).
+- Implemented OpenAI judge path (`gpt-5.3`) with optional LangSmith mirroring (`--langsmith`)
+  and trust-gated sensor semantics (untrusted calibration is advisory-only).
 
 ### CP13 — Selective LLM code / architecture review in CI (depends on D5)
 - PR workflow triggered only on risky paths (governance list); posts review comments;

@@ -17,7 +17,7 @@ runtime-written artifacts are governed. Governance never relaxes a runtime invar
 | **Continuous (outside change lifecycle)** | dependency / security drift scans | `.github/workflows/drift.yml` (weekly + manual; fresh resolution, `pip-audit` + ruff `S`; opens/updates one tracking issue) | wired |
 | | runtime KPI surveillance (recovery rate, TTR, JEV request errors vs `harness/metrics/thresholds.json`) | compose `harness-watch` service: `python -m harness.watch` every 5 min over 24 h → `results/harness/sensor_results.jsonl`, dashboard Surveillance panel | wired |
 | | invariant surveillance on live logs | same `harness-watch` run (all invariant sensors, `stage=continuous`) | wired |
-| | periodic decision-log sampling and review | weekly: `python -m harness.review.sample --n 20 > results/reviews/packets-$(date +%F).md`; reviewers save verdict JSON files in `results/reviews/` using `review_verdict.schema.v1.json` | manual |
+| | periodic decision-log sampling and review | weekly: `python -m harness.review.sample --n 20 > results/reviews/packets-$(date +%F).md`, reviewers save JSON verdicts in `results/reviews/` (`review_verdict`), run `python -m harness.review.judge --events state/events.jsonl --n 20 > results/reviews/judge-$(date +%F).jsonl`, then `python -m harness.review.calibrate results/reviews/ results/reviews/judge-$(date +%F).jsonl > results/reviews/calibration-$(date +%F).json`; optional trusted mode rerun: `python -m harness.review.judge --events state/events.jsonl --n 20 --calibration results/reviews/calibration-$(date +%F).json` | manual |
 
 ## Changes that require explicit human approval
 
@@ -33,6 +33,8 @@ agent that drafted it) when it touches any of:
 5. A harness contract major version, a `workflow_step` enum, or any sensor's pass/fail rule.
 6. Hand edits to runtime-written state (`state/skills.md`, `state/class_store.json`,
    `state/policy_store.json`, `state/tool_catalog.json`).
+7. Judge rubric changes that alter grading criteria or threshold semantics
+   (`harness/guides/judge_rubric.md`).
 
 Non-risky (normal review): harness docs, new sensors that only add checks, KPI reporting,
 test fixtures that do not weaken assertions.
