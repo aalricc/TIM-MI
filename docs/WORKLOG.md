@@ -1,5 +1,15 @@
 # Rewrite Worklog
 
+## 2026-10-26 — CP13 shipped; CP14 governance enforcement finalized on `main`
+
+**Problem.** CP13 needed to be truly selective and advisory (risky paths only, never merge-blocking) while still producing useful PR feedback and failed-campaign reflection. CP14 then needed to move governance from documentation-only to enforceable repository controls with explicit role ownership and a practical hotfix escape hatch.
+**Approach.** Completed CP13 with a risky-path PR workflow (`Selective LLM Review`) plus failure-only campaign reflection, then tightened scope and behavior via iterative audits: corrected risky path coverage (`config.py`, workflow-step/sensor-control files), kept advisory semantics non-blocking, and fixed reflection fallback heading behavior. Implemented CP14 by adding `.github/CODEOWNERS`, `.github/pull_request_template.md`, D6 role-owner assignment (`@aalricc` for runtime maintainer / harness maintainer / operator), and branch-protection runbook details (required checks, verification, emergency bypass/rollback). Added drift tests to lock these governance assets.
+**Impact.** The harness now has both advisory inferential review and enforceable governance controls: risky-path ownership routing, risky-change PR checklist with evidence links, and a verified active `main-protection` ruleset on GitHub. Ruleset verification confirms `main` requires PR + code-owner review + conversation resolution + required checks (`test`, `audit`), while `Selective LLM Review` remains advisory (not required), matching governance intent.
+
+**Commits included (2026-10-26).**
+- `47ccf97` `ci(harness): selective LLM review on risky paths`.
+- CP14 governance-enforcement bundle prepared and validated locally (`make check` green), including `CODEOWNERS`, PR template, governance/HANDOFF/plan/AGENTS updates, and `tests/test_harness_governance_assets.py`.
+
 ## 2026-10-25 — CP8 baseline plus CP9/CP10 surveillance and budget wiring
 
 **Problem.** The first full 15-run campaign passed and produced a CP8 baseline, but two gaps were visible: recovery scoring could not distinguish low-data-loss vs high-data-loss fixes, and transport errors from WHY calls were too opaque. After those were fixed, CP9/CP10 still needed to be wired so KPI and invariant surveillance ran continuously and token/call/latency budgets were measured from runtime telemetry rather than manual checks.
