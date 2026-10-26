@@ -9,9 +9,9 @@ Approved scope document: `docs/harness/HARNESS_IMPLEMENTATION_WORKFLOW.md`. It i
 user's approved plan; change it only with explicit user approval (the retry rule was
 amended once, approved, 2026-10-23).
 
-## 1. Status (as of 2026-10-23)
+## 1. Status (as of 2026-10-25)
 
-Branch `harness` (pushed to `origin/harness`), 14 commits ahead of `main`, tree clean.
+Branch `main` (synced to `origin/main`), tree clean.
 
 | Checkpoint | State | Commit(s) |
 | --- | --- | --- |
@@ -25,54 +25,33 @@ Branch `harness` (pushed to `origin/harness`), 14 commits ahead of `main`, tree 
 | Pre-CP7 fixes: fresh-clone CI fix, JEV SDK pin + JEV tests in CI, `pydantic-settings>=2.15`, target deep health checks widget columns, validated backups + retention, compose class-memory default | done | `ebd3978`, `e264372`, `f6eca3b`, `d7c77be`, `0ed94ad` |
 | User decisions: remove `target/last_resort`; clear `state/` (archived) | done | `5728a60` |
 | User decision: re-check health before each retry; externally repaired incidents close without learning | done | `a98d4ff` |
-| **CP6** scenario fixtures, event slicing, outcome checker | **next** | — |
-| CP7–CP14 | not started | — |
+| CP6 scenario fixtures, event slicing, outcome checker | done | `d5ab37b` |
+| CP7 live E2E fault-injection campaign (manual `workflow_dispatch` on self-hosted runner, D2=(c)) | done | `57a86d9` |
+| CP8 baseline campaign + calibration | done | `a41e770`, `8c7fd87` |
+| CP9 continuous KPI + invariant surveillance | done | `faf70be`, `1f3ee12` |
+| CP10 runtime budget sensors (step latency, token budget, JEV call budget, telemetry) | done | `44aa4aa`, `9da180d`, `bc07b51` |
+| CP11 decision-log sampling for human review | done | this commit |
+| **CP12** LLM-as-judge (needs D4) | **next** | — |
+| CP13–CP14 | not started | — |
 
-Checks at `a98d4ff`: `make check` green (ruff, mypy `src`, mypy `harness`, 238 passed /
-3 skipped in the dev-only `.venv`; 0 skipped with `.[dev,jev,rag]`).
+`make check` green at CP11 (ruff, mypy `src`, mypy `harness`, pytest; 3 skipped in the
+dev-only `.venv`, 0 with `.[dev,jev,rag]`).
 
-## 2. Next: CP6 — scenario fixtures, event slicing, outcome checker
+## 2. Next: CP12 — LLM-as-judge on diagnosis/action quality (blocked by D4)
 
-Offline only (no Docker, no credentials). One commit:
-`feat(harness): scenario fixtures, event slicing, outcome checker`.
+Before implementation, confirm D4 in `docs/harness/HARNESS_GAP_PLAN.md`:
+- Which model runs the judge (`OpenAI` or `Claude`), and
+- Who approves and owns `harness/guides/judge_rubric.md`.
 
-Deliverables:
+Then implement CP12 exactly as specified in the plan:
+1. Add `harness/guides/judge_rubric.md` (risky: needs approval).
+2. Add `python -m harness.review.judge` to score sampled packets.
+3. Emit inferential `sensor_result` records from judge output.
+4. Calibrate judge output against CP11 human verdicts before trusting thresholds.
+5. Keep harness read-only for runtime state and keep all runtime invariants unchanged.
 
-1. **Contract** `harness/contracts/scenario_fixture.schema.v1.json`: `schema_version`,
-   `scenario_id`, `fault` (`drop_widgets_table` | `delete_db` | `corrupt_db`),
-   `repetitions`, `approved` { `operations` (allowed winning operations), `max_attempts`,
-   `max_ttr_seconds` }, `source` (runbook path). Add the name to
-   `harness/contracts/__init__.py::CONTRACT_NAMES`;
-   `tests/test_harness_contracts.py::test_contract_set_is_exactly_the_documented_contracts`
-   requires the v1 file set to equal that tuple. Update `harness/contracts/README.md`.
-2. **Fixtures** (data, one JSON per fault) under a new `harness/scenarios/` directory.
-   Approved operations come from the runbooks' "Approved recovery actions" tables:
-   `drop_widgets_table` → `run_sql`, `request_backup_restore`; `delete_db` →
-   `request_backup_restore`, `replace_file`; `corrupt_db` → `request_backup_restore`,
-   `replace_file`. Use `max_attempts` 3 and `max_ttr_seconds` 300, matching the escalation
-   thresholds in `docs/runbooks/stuck-incident.md`; flag them as operator-approved values
-   in the PR so the user can change them.
-3. **Slicer**: `python -m harness.events.slice --since/--until/--incident <log>` prints the
-   matching JSONL rows **to stdout** (the caller redirects). Harness code must not write
-   files (`tests/test_harness_architecture.py::test_harness_code_is_read_only`) and must
-   not import `mi_agent`. Times: ISO-8601 with offset or epoch seconds.
-4. **Checker**: `python -m harness.scenarios.check <fixture> <log-slice>` prints one
-   `sensor_result` (`lane` = `behavior`, `stage` = `ci` or `continuous`) per fixture. For
-   every incident in the slice: recovered (`incident.recovered`), attempts ≤
-   `max_attempts`, TTR ≤ `max_ttr_seconds`, the recovering decision's operation (the
-   `selected` `decision_trace` in the recovered attempt) is in `approved.operations`, and
-   the runtime invariant sensors pass (`harness/sensors/runtime_invariants.py::run_all`).
-   Exit 1 on fail. Reuse `harness/mappings/runtime.py` and `harness/metrics/kpis.py`.
-5. **Tests** using `tests/harness_scenarios.py` logs: a passing fixture, each failure mode
-   (not recovered, too many attempts, TTR over budget, unapproved operation, invariant
-   violation), slicer boundaries, and the CLIs' exit codes. Validate outputs against the
-   contracts.
-6. **Docs**: flip "Approved recovery outcomes" in `harness/guides/README.md` and the
-   relevant sensor rows; add CP6 "done" notes to the plan; replace the not-yet-built slice
-   step in `docs/harness/BASELINE.md` § 4 with the real commands.
-
-Then CP7 needs decision **D2** (where the live campaign runs) from the user before work
-starts; see the plan's decisions table. D3–D6 block CP9, CP12, CP13, CP14.
+Commit target after D4 is decided:
+`feat(harness): LLM-as-judge for diagnosis and action quality`
 
 ## 3. How this work has been done (keep doing it)
 

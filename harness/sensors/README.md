@@ -80,7 +80,7 @@ slice the campaign window first (`docs/harness/BASELINE.md` § 4).
 | Recovery KPIs (recovery rate, TTR, attempts, decision telemetry) | computational | continuous | `python -m harness.metrics.kpis state/events.jsonl` | operator | manual |
 | `kpi_thresholds` (recovery rate ≥ 0.9, p90 TTR ≤ 60 s, JEV request-error rate ≤ 0.1 over 24 h; `skipped` when no KPI is defined) | computational | continuous | `harness/sensors/kpi_thresholds.py`, thresholds in `harness/metrics/thresholds.json`, run by `harness/watch.py` | operator | wired (`harness-watch`) |
 | LLM-as-judge on diagnosis quality and action choice | inferential | continuous (sampled) | — (input: `decision_trace` + `incident_signature` records) | harness maintainer | gap |
-| Decision-log sampling and review | human | continuous | sample `decision_trace` records weekly | operator | manual |
+| Decision-log sampling and review | human | continuous | `python -m harness.review.sample --n 20 > results/reviews/packets-<date>.md`; reviewers store verdict JSON files in `results/reviews/` (`review_verdict` v1) | operator | manual |
 | Manual testing / approve risky changes | human | ci | `harness/governance/README.md` | reviewer | manual |
 
 ## Primary runtime signal sources

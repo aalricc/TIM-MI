@@ -45,4 +45,6 @@ knowledge_base/
 !.env.example
 
 .local/jev/results/
-results/
+# Review verdicts are kept (CP12 calibrates the judge against them).
+results/*
+!results/reviews/

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mi-agent/harness/contracts/review_verdict.schema.v1.json",
+  "title": "ReviewVerdictV1",
+  "description": "Human review verdict for a sampled incident decision packet.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "incident_id",
+    "diagnosis_correct",
+    "action_appropriate",
+    "notes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "v1"
+    },
+    "incident_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "diagnosis_correct": {
+      "type": "boolean"
+    },
+    "action_appropriate": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "reviewer": {
+      "type": "string"
+    },
+    "reviewed_at": {
+      "description": "Unix epoch seconds recorded by the reviewer.",
+      "type": "number"
+    }
+  }
+}

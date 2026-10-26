@@ -245,12 +245,20 @@ Implementation notes:
 
 ## Phase 5 — Inferential and human lanes
 
-### CP11 — Decision-log sampling for human review
+### CP11 — Decision-log sampling for human review — done
 - `python -m harness.review.sample --n 20` builds review packets (incident signature,
   decision traces, outcome) as Markdown; contract `review_verdict.schema.v1.json` for the
   reviewer's verdict (diagnosis correct?, action appropriate?, notes).
 - Weekly cadence documented in governance; verdicts stored under `results/reviews/`.
 - Commit: `feat(harness): decision-log sampling and review verdicts`
+
+Done notes:
+- Added `python -m harness.review.sample --n 20` to build markdown review packets from
+  `incident_signature` + `decision_trace` + incident outcomes.
+- Added `harness/contracts/review_verdict.schema.v1.json` and wired it into the contract
+  registry and contract docs.
+- Documented weekly sampling cadence and `results/reviews/` verdict storage in governance
+  and the sensor catalogue.
 
 ### CP12 — LLM-as-judge on diagnosis and action quality (depends on D4)
 - Rubric in `harness/guides/judge_rubric.md` (risky: approval of rubric).

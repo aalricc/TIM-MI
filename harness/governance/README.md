@@ -17,7 +17,7 @@ runtime-written artifacts are governed. Governance never relaxes a runtime invar
 | **Continuous (outside change lifecycle)** | dependency / security drift scans | `.github/workflows/drift.yml` (weekly + manual; fresh resolution, `pip-audit` + ruff `S`; opens/updates one tracking issue) | wired |
 | | runtime KPI surveillance (recovery rate, TTR, JEV request errors vs `harness/metrics/thresholds.json`) | compose `harness-watch` service: `python -m harness.watch` every 5 min over 24 h → `results/harness/sensor_results.jsonl`, dashboard Surveillance panel | wired |
 | | invariant surveillance on live logs | same `harness-watch` run (all invariant sensors, `stage=continuous`) | wired |
-| | periodic decision-log sampling and review | `decision_trace` records via `harness.mappings.runtime.decision_traces` | manual |
+| | periodic decision-log sampling and review | weekly: `python -m harness.review.sample --n 20 > results/reviews/packets-$(date +%F).md`; reviewers save verdict JSON files in `results/reviews/` using `review_verdict.schema.v1.json` | manual |
 
 ## Changes that require explicit human approval
 
