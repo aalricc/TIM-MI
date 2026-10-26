@@ -1,10 +1,10 @@
 # Rewrite Worklog
 
-## 2026-10-25 — CP8 baseline, data-loss reward, and comparison campaign
+## 2026-10-25 — CP8 baseline plus CP9/CP10 surveillance and budget wiring
 
-**Problem.** The first full 15-run campaign passed (run `40111431118`) and gave the CP8 baseline, but it showed two gaps. Learning could not see data loss: nothing wrote to the target, so a restore and a table recreate looked equally good, even though a recreate leaves an empty table. And one WHY call timed out with an empty `LLMError` message. The first comparison run then exposed a campaign pacing problem: each fault came about 1 s after the previous recovery, so traffic and backups barely ran and restores looked far more lossy than they would in practice.
-**Approach.** Recorded the baseline in `docs/harness/BASELINE.md`. LLM transport errors now name their type, and timeouts, connection errors, 429 and 5xx get one retry. The target reports `widget_rows`, and a compose `traffic` service writes a widget every 2 s; widget endpoints no longer recreate a deleted database. MI records the row count at each healthy check, computes `rows_lost` after a verified recovery, and grades the success reward `1 − lost/before` for the policy store and the class-memory Beta update. A new `data_loss` KPI and per-run `rows_lost` are in the campaign report. The campaign keeps the target healthy for 30 s before each fault. The first comparison run (`40127112134`, no settle time) was discarded.
-**Impact.** The comparison run (`40130194856`) passed 15/15 with no invariant violations or loop errors. Every recovery was a restore, losing at most 5 rows. The fast path still took over from run 9 (7/15). Learning now prefers the fix that loses the least data, using evidence from the system and no hard-coded rule. Baseline and comparison are both recorded in `BASELINE.md`.
+**Problem.** The first full 15-run campaign passed and produced a CP8 baseline, but two gaps were visible: recovery scoring could not distinguish low-data-loss vs high-data-loss fixes, and transport errors from WHY calls were too opaque. After those were fixed, CP9/CP10 still needed to be wired so KPI and invariant surveillance ran continuously and token/call/latency budgets were measured from runtime telemetry rather than manual checks.
+**Approach.** Recorded baseline and comparison runs in `docs/harness/BASELINE.md`; added `widget_rows` telemetry and simulated traffic so data loss became measurable; computed `rows_lost` after verified recovery; and graded recovery reward as `1 − lost/before`. Added campaign settle time (30 s healthy before each injected fault). Then wired continuous surveillance (`harness.watch`) and surfaced latest results in the dashboard, added step-latency budgets, emitted runtime token telemetry, and added token/JEV-call budget sensors. Calibrated token budget from the 15/15 campaign (`40135533734`) and set p90 threshold to `126000` in `harness/metrics/thresholds.json`.
+**Impact.** Campaigns remained stable (15/15 pass, zero invariant violations), with data loss now explicitly tracked and fed into learning. Continuous lane moved from manual to wired for invariant/KPI/budget checks, and budget enforcement is now based on measured campaign data instead of placeholder thresholds.
 
 **Commits included (2026-10-25).**
 - `a315d0e` Test live: pass backup catalog to propose_how (PR #3).
@@ -14,6 +14,12 @@
 - `0c1acc0` Feat runtime: grade recovery reward by rows lost.
 - `2286f33` Feat harness: data-loss KPI and rows_lost in campaign report (PR #5).
 - `71b5121` Feat harness: 30 s healthy settle before each campaign fault (PR #6).
+- `faf70be` Feat harness: continuous KPI and invariant surveillance.
+- `1f3ee12` Feat api: surveillance panel from harness-watch results.
+- `44aa4aa` Feat harness: step latency budget sensor.
+- `9da180d` Feat harness: token and JEV call budget sensors.
+- `bc07b51` Feat runtime: token usage telemetry.
+- `8c7fd87` Feat harness: set token budget from campaign.
 
 ## 2026-10-24 — First live CP7 campaign, self-hosted runner, and backup catalog API
 
