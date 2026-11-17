@@ -34,6 +34,7 @@ Branch `main` (synced to `origin/main`), tree clean.
 | CP12 LLM-as-judge on diagnosis/action quality | done | this commit |
 | CP13 selective LLM code / architecture review (D5 decided: OpenAI `gpt-5.3`) | done | `47ccf97` |
 | CP14 governance enforcement (D6 decided: role owners set) | done | this commit |
+| Deploy-readiness: prompt rewrite, no-trace faults, write-checked health, protected `main`, landing page, demo recorder (live campaign 2026-11-17) | done | PR `deploy-readiness` |
 
 `make check` green at CP14 (ruff, mypy `src`, mypy `harness`, pytest; 3 skipped in the
 dev-only `.venv`, 0 with `.[dev,jev,rag,trace]`).
@@ -52,7 +53,9 @@ Next optional checkpoint in the plan is maintenance hardening, not a blocked bui
 
 ## 3. How this work has been done (keep doing it)
 
-- **The user commits and pushes; the agent never does.** At the end of each checkpoint,
+- **Commits land through PRs gated by the required CI checks** (2026-11-17: the user
+  asked the agent to commit; `main` is protected, see `harness/governance/README.md`).
+  Before that date: **the user commits and pushes; the agent never does.** At the end of each checkpoint,
   give exact `git add` / `git commit` commands, one logical change per commit, with file
   sets that do not overlap between commits.
 - **Prove each commit is green before handing over commands.** Replay the commits in order

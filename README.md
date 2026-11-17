@@ -38,6 +38,34 @@ for example repaired by an operator, the incident closes without recording a lea
 - `restart_service` is optional fallback only.
 - Startup config gate requires OpenAI + JEV + Pinecone credentials and class-memory enabled.
 
+## WHY / HOW prompts (what the LLM is given)
+
+Both prompts live in `src/mi_agent/llm/client.py` (`WHY_INSTRUCTION`, `HOW_INSTRUCTION`).
+They describe the agent's role, the evidence fields and the action interface, and nothing
+else: no fault names, no statement that a fault is simulated, no preferred repair. Which
+repair works is learned from verified outcomes (policy store, class memory, skills).
+`tests/test_llm_client.py` enforces this.
+
+| Stage | Input | Output |
+| --- | --- | --- |
+| WHY | `evidence` = `health_deep`, `db_status`, `db_integrity`, `runtime_paths` (incl. `app_root`, `sandbox_root`), `app_schema` (the app's own DDL), `log_tail`, `log_collection`, `backups`; `rag_chunks` (SQLite docs) | `failure_type` (root-cause label), `hypotheses` (ranked), `evidence` (quoted input values) |
+| HOW | `diagnosis`, `incident_state` (the evidence above minus logs), `backup_catalog`, `prior_attempts` (tool error + post-attempt verifier state), `latest_tool_error`, `rag_chunks` (docs + learned skills) | `primary` + 2–4 `alternatives`, each `{name, rationale, operation, params}` with the exact param keys of `src/mi_agent/tools/schemas.py` |
+
+JEV then selects one candidate; the security gate, single execution and the verifier follow.
+
+### Simulated faults stay invisible to MI
+
+The target's test hooks (`TARGET_TEST_HOOKS=1`) break the database and write nothing to
+the app log; MI only observes the resulting symptoms through `/health/deep`, `/ops/logs`,
+`/ops/db/status` and `/ops/backups`. `tests/test_tools_executor.py::test_diagnostics_after_a_simulated_fault_carry_symptoms_but_no_trace_of_the_fault`
+and the CI `docker-build-smoke` job enforce it.
+
+### Honest health
+
+`/health/deep` checks integrity, the `widgets` columns and a rolled-back test insert
+(`write_check`), so a repair that leaves the table unable to accept the app's writes is
+reported unhealthy (`write_failed`) and MI keeps working.
+
 ## Target app surface
 
 - `GET /health/live`
@@ -144,6 +172,19 @@ Recommended (Docker):
 docker compose up --build --remove-orphans
 ```
 
+By default the compose file publishes only to localhost:
+
+- target app: `127.0.0.1:8080`
+- MI API/dashboard: `127.0.0.1:8090`
+
+This keeps the unauthenticated demo endpoints off external interfaces.
+
+If either port is already in use, override host ports when starting compose:
+
+```bash
+TARGET_HOST_PORT=18080 MI_HOST_PORT=18090 docker compose up --build --remove-orphans
+```
+
 Optional (host Python process):
 
 ```bash
@@ -207,11 +248,93 @@ OPENAI_API_KEY=<key> pytest -q -m live
 ## Quick live recovery test
 
 1. Start stack with the test hooks: `TARGET_TEST_HOOKS=1 docker compose up --build`
-2. Open dashboard: `http://localhost:8090/dashboard`
-3. Inject fault: `curl -X POST http://localhost:8080/ops/fault/drop_widgets_table`
+2. Open dashboard: `http://127.0.0.1:8090/dashboard`
+3. Inject fault: `curl -X POST http://127.0.0.1:8080/ops/fault/drop_widgets_table`
 4. Observe:
    - monitor transitions to incident
    - WHY diagnosis updates
    - HOW primary + alternatives appears
    - one dynamic action executes per loop
    - verification/timeline events continue until recovery
+
+## Live demo walkthrough (beginner-friendly)
+
+1. Create env file from template:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Fill required placeholders in `.env`:
+
+   - `OPENAI_API_KEY=<your-openai-or-azure-key>`
+   - `JEV_API_KEY=<your-local-jev-secret>`
+   - `PINECONE_API_KEY=<your-pinecone-key>`
+   - `PINECONE_INDEX_HOST=<your-pinecone-index-host>`
+
+3. Start Jev locally (separate terminal):
+
+   ```bash
+   cd .local/jev/jev
+   export JEV_API_KEY='<your-local-jev-secret>'
+   ./jev serve --host 127.0.0.1 --port 8017
+   ```
+
+4. Start MI + target stack:
+
+   ```bash
+   TARGET_TEST_HOOKS=1 docker compose up --build --remove-orphans
+   ```
+
+5. Open the dashboard:
+
+   - `http://127.0.0.1:8090/dashboard`
+
+6. Show normal behavior:
+
+   - `curl http://127.0.0.1:8080/health/deep`
+   - `curl http://127.0.0.1:8080/widgets`
+
+7. Trigger a fault and show autonomous recovery:
+
+   ```bash
+   curl -X POST http://127.0.0.1:8080/ops/fault/drop_widgets_table
+   ```
+
+   Watch the dashboard timeline until the incident closes.
+
+8. Optional quick verification:
+
+   ```bash
+   make check
+   ```
+
+Known demo limitation: this repository does not include end-user auth flows (registration/login);
+it is an operator-facing recovery system plus a demo target service.
+
+## Recording the demo
+
+With the stack up (`TARGET_TEST_HOOKS=1`), record the dashboard through two live outages
+(captions are drawn for the viewer only):
+
+```bash
+pip install playwright   # uses the local Chrome; or `playwright install chromium`
+python scripts/record_demo.py --target-url http://127.0.0.1:8080 \
+  --out site/demo.mp4 --poster site/demo-poster.png
+```
+
+## CI/CD and branch protection
+
+Every PR and push to `main` runs `.github/workflows/ci.yml`:
+
+| Required check | What it proves |
+| --- | --- |
+| `lint-type-test` | ruff, `mypy --strict` (src + harness), full offline pytest |
+| `dependency-audit` | `pip-audit` over the runtime + dev dependency set |
+| `docker-build-smoke` | both images build; target healthy, a simulated fault leaves no trace in its logs, reset recovers |
+
+`main` is protected: changes land through a PR whose three checks pass on the latest
+commit (no force pushes, no deletions, linear history). The live LLM + JEV + Pinecone
+campaign runs on demand on the self-hosted runner
+(`.github/workflows/live-e2e-fault-campaign.yml`). The landing page in `site/` is a static
+site deployed to Vercel (`npx vercel deploy site --prod`).
