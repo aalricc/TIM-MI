@@ -33,3 +33,11 @@
 # Hybrid process-control additions (requested)
 /AGENTS.md @aalricc
 /docs/harness/HANDOFF.md @aalricc
+
+# Delivery pipeline: CI/CD workflows, merge gates and agent permissions. A change here
+# can weaken the checks that judge every other change, so it always needs the owner.
+/.github/** @aalricc
+/harness/review/gate.py @aalricc
+/harness/governance/** @aalricc
+/.claude/settings.json @aalricc
+/.pre-commit-config.yaml @aalricc

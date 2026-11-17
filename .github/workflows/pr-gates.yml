@@ -1,0 +1,139 @@
+name: PR Gates
+
+# Required merge gates `agent-review` and `risk-gate` (harness/review/gate.py).
+#
+# Security model: `pull_request_target` runs THIS file from the base branch, never the
+# PR's copy, so a PR cannot rewrite the gate that judges it. PR content is fetched through
+# the API as data (file list, diff, metadata) and is never checked out or executed. The
+# results are posted as commit statuses on the PR head commit; a run that dies leaves the
+# status `pending`, which blocks the merge (fail closed).
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write
+
+concurrency:
+  group: pr-gates-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: pr-gates
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Mark gates pending
+        run: |
+          for ctx in agent-review risk-gate; do
+            gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=pending \
+              -f context="$ctx" -f description="running" -f target_url="$RUN_URL" >/dev/null
+          done
+
+      - name: Checkout base branch (trusted gate code only)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install gate dependency
+        run: python -m pip install "httpx>=0.28,<1"
+
+      - name: Owner sign-off is stale after a new push
+        if: github.event.action == 'synchronize'
+        run: |
+          gh api -X DELETE "repos/$REPO/issues/$PR/labels/owner-approved" >/dev/null 2>&1 || true
+
+      - name: Fetch PR data (as data, never executed)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pr"
+          d="$RUNNER_TEMP/pr"
+          gh api "repos/$REPO/pulls/$PR" > "$d/pr.json"
+          gh api --paginate "repos/$REPO/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' | sort -u > "$d/files.txt"
+          gh api -H "Accept: application/vnd.github.v3.diff" "repos/$REPO/pulls/$PR" > "$d/pr.diff"
+          gh api --paginate "repos/$REPO/issues/$PR/events" --jq '.[]' | jq -s . > "$d/events.json"
+          gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '.[]' | jq -s . > "$d/reviews.json"
+          # Current permission of every code owner (from the trusted base-branch CODEOWNERS);
+          # a lookup that fails leaves that owner out, so they do not count (fail closed).
+          echo '{}' > "$d/permissions.json"
+          for login in $(grep -o '@[A-Za-z0-9-]*' .github/CODEOWNERS | tr -d @ | sort -u); do
+            level=$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission \
+              2>/dev/null || true)
+            jq --arg l "$login" --arg p "$level" '. + {($l): $p}' "$d/permissions.json" \
+              > "$d/p.tmp" && mv "$d/p.tmp" "$d/permissions.json"
+          done
+          # The head may have moved since this run was queued; judge what is there now.
+          echo "HEAD_SHA=$(jq -r .head.sha "$d/pr.json")" >> "$GITHUB_ENV"
+
+      - name: risk-gate
+        id: risk
+        continue-on-error: true
+        run: |
+          d="$RUNNER_TEMP/pr"
+          python -m harness.review.gate risk --files "$d/files.txt" --pr "$d/pr.json" \
+            --events "$d/events.json" --reviews "$d/reviews.json" \
+            --permissions "$d/permissions.json" > "$d/risk.md"
+
+      - name: agent-review
+        id: review
+        continue-on-error: true
+        env:
+          REVIEW_LLM_API_KEY: ${{ secrets.REVIEW_LLM_API_KEY }}
+          REVIEW_LLM_ENDPOINT: ${{ vars.REVIEW_LLM_ENDPOINT }}
+          REVIEW_LLM_MODEL: ${{ vars.REVIEW_LLM_MODEL }}
+          REVIEW_LLM_AUTH_MODE: ${{ vars.REVIEW_LLM_AUTH_MODE }}
+        run: |
+          d="$RUNNER_TEMP/pr"
+          python -m harness.review.gate review --files "$d/files.txt" --diff "$d/pr.diff" \
+            --pr "$d/pr.json" --events "$d/events.json" --reviews "$d/reviews.json" \
+            --permissions "$d/permissions.json" > "$d/review.md"
+
+      - name: Post statuses and review comment
+        if: always()
+        env:
+          RISK_OUTCOME: ${{ steps.risk.outcome }}
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+        run: |
+          d="$RUNNER_TEMP/pr"
+          post() {  # context outcome file
+            state=failure
+            [ "$2" = success ] && state=success
+            desc=$(sed -n 3p "$3" 2>/dev/null | cut -c1-138)
+            gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context="$1" \
+              -f description="${desc:-no result (fail closed)}" -f target_url="$RUN_URL" >/dev/null
+          }
+          post risk-gate "$RISK_OUTCOME" "$d/risk.md"
+          post agent-review "$REVIEW_OUTCOME" "$d/review.md"
+          {
+            echo '<!-- pr-gates -->'
+            cat "$d/risk.md" 2>/dev/null || echo "## risk-gate: FAIL (no output)"
+            echo
+            cat "$d/review.md" 2>/dev/null || echo "## agent-review: FAIL (no output)"
+            echo
+            echo "_Head \`$HEAD_SHA\` · [run]($RUN_URL)_"
+          } > "$d/comment.md"
+          cat "$d/comment.md" >> "$GITHUB_STEP_SUMMARY"
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq '.[] | select(.user.type == "Bot" and (.body | contains("<!-- pr-gates -->"))) | .id' | tail -1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$d/comment.md" >/dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@"$d/comment.md" >/dev/null
+          fi
