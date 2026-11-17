@@ -594,3 +594,42 @@ def test_agent_harness_route_serves_latest_results(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert set(response.json()) == {"available", "ts", "status", "results"}
+
+
+def test_dashboard_marks_the_candidate_jev_actually_executed() -> None:
+    """The HOW panel must badge the executed candidate (primary or an alternative), not
+    always the primary: the engine reports it as `executed_candidate`."""
+    html = Path("dashboard/index.html").read_text(encoding="utf-8")
+    how = html[html.index("function howMarkup"):html.index("function renderHow")]
+    assert "executed_candidate" in how
+    assert "alternative:" in how
+    assert "jev_decision" in how
+    assert "EXECUTED" in how and "primaryRan" in how
+
+
+def test_incident_rl_view_shows_the_graded_reward_mi_stored(tmp_path: Path) -> None:
+    """The per-incident RL panel must show the reward MI stored (1 - rows lost / rows
+    before; -1 on failure), not +/-1 from the verification verdict."""
+    client, events = _build_client(tmp_path)
+    incident_id = "inc-graded-1"
+
+    def attempt(tool: str, healthy: bool, reward: float) -> None:
+        asyncio.run(events.publish("dynamic_tool.executed", {
+            "incident_id": incident_id, "tool_name": tool, "operation": "run_sql"}))
+        asyncio.run(events.publish("verification.result", {
+            "incident_id": incident_id, "healthy": healthy}))
+        asyncio.run(events.publish("workflow.step", {
+            "incident_id": incident_id, "attempt": 1, "path_mode": "full_loop",
+            "step": "persist.policy_store", "status": "ok" if healthy else "failure",
+            "action_key": tool, "reward": reward}))
+
+    with client:
+        asyncio.run(events.publish("incident.started", {"incident_id": incident_id}))
+        attempt("bad_copy", healthy=False, reward=-1.0)
+        attempt("recreate_table", healthy=True, reward=0.0)
+        response = client.get("/agent/dashboard")
+
+    rows = {row["action"]: row for row in
+            response.json()["incident_views"][incident_id]["rl_summary"]["actions"]}
+    assert rows["recreate_table"]["reward_total"] == 0.0
+    assert rows["bad_copy"]["reward_total"] == -1.0

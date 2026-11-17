@@ -200,7 +200,10 @@ def _build_incident_views(
             pending_rl_keys[incident_id].append(stat_key)
             continue
 
-        if event_type == "verification.result":
+        if event_type == "workflow.step" and payload.get("step") == "persist.policy_store":
+            # The reward MI actually stored for the attempt: graded by data loss on success
+            # (1 - rows lost / rows before), -1 on failure. Logs from before the reward
+            # field existed fall back to the step status.
             queue = pending_rl_keys.get(incident_id)
             if not queue:
                 continue
@@ -215,7 +218,11 @@ def _build_incident_views(
                     "avg_reward": 0.0,
                 },
             )
-            reward = 1.0 if bool(payload.get("healthy", False)) else -1.0
+            stored = payload.get("reward")
+            if isinstance(stored, (int, float)) and not isinstance(stored, bool):
+                reward = float(stored)
+            else:
+                reward = 1.0 if payload.get("status") == "ok" else -1.0
             rl_row["reward_total"] = float(rl_row["reward_total"]) + reward
 
     incident_ids = sorted(set(rl_by_incident.keys()) | set(tools_by_incident.keys()))
