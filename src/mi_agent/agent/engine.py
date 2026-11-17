@@ -43,6 +43,12 @@ from mi_agent.workflow.models import (
 )
 from mi_agent.workflow.state_machine import WorkflowEvent, WorkflowState, transition
 
+# Data recovery: after the service is healthy again, MI keeps the incident open until at
+# least this share of the rows seen at the last healthy check is back, for at most
+# DATA_RECOVERY_MAX_ATTEMPTS further attempts (user decision 2026-11-18).
+DATA_RECOVERY_TARGET = 0.9
+DATA_RECOVERY_MAX_ATTEMPTS = 3
+
 
 @dataclass(slots=True)
 class AgentSnapshot:
@@ -177,6 +183,18 @@ class RecoveryAgent:
             and self._workflow_state == WorkflowState.INCIDENT_ACTIVE
             and self._incident.attempts > 0
         ):
+            if self._incident.data_recovery:
+                # The service is already back; this retry is about the missing data, so a
+                # healthy check does not close the incident.
+                if self._incident.data_recovery_attempts >= DATA_RECOVERY_MAX_ATTEMPTS:
+                    await self._close_data_loss_accepted(self._incident)
+                    return
+                self._incident.data_recovery_attempts += 1
+                data_monitor = await self._tools.monitor_health()
+                self._last_monitor = data_monitor
+                await self._events.publish("monitor.health", data_monitor.model_dump())
+                await self._attempt_recovery(self._incident, retry_from_step5=True)
+                return
             # Re-check health before retrying: a target repaired outside MI (by an operator
             # or on its own) closes the incident instead of crediting MI's next action.
             retry_monitor = await self._tools.monitor_health()
@@ -226,6 +244,95 @@ class RecoveryAgent:
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.UNHEALTHY_DETECTED)
 
         await self._attempt_recovery(self._incident, retry_from_step5=False)
+
+    @staticmethod
+    def _enough_data_recovered(before: int | None, after: int | None) -> bool:
+        """True when the share of rows back is at least DATA_RECOVERY_TARGET, or when the
+        loss cannot be measured (no healthy baseline, or an empty table before)."""
+        if before is None or after is None or before == 0:
+            return True
+        return after / before >= DATA_RECOVERY_TARGET
+
+    def _recovered_extra(
+        self,
+        latency_ms: float,
+        source: str,
+        action_key: str,
+        class_match: ClassMatch | None,
+    ) -> dict[str, Any]:
+        if not self._classmem_enabled:
+            return {}
+        return {
+            "latency_ms": latency_ms,
+            "source": source,
+            "action_key": action_key,
+            "class_id": class_match.class_id if class_match is not None else None,
+        }
+
+    async def _continue_data_recovery(
+        self,
+        *,
+        incident: IncidentContext,
+        selected_how: DynamicToolSpec,
+        tool_name: str,
+        attempt: int,
+        path_mode: str,
+        widget_rows_after: int | None,
+        rows_lost: int | None,
+        reward: float,
+        first_recovery: bool,
+        recovered_extra: dict[str, Any],
+    ) -> None:
+        """The service is healthy but too much data is missing: keep the incident open and
+        retry from step 5 with the data gap as feedback. The action that ran is not
+        proposed again in this incident."""
+        if first_recovery:
+            await self._events.publish(
+                "incident.recovered",
+                {
+                    "incident_id": incident.incident_id,
+                    "tool_name": tool_name,
+                    "attempts": incident.attempts,
+                    "widget_rows_before": incident.widget_rows_before,
+                    "widget_rows_after": widget_rows_after,
+                    "rows_lost": rows_lost,
+                    "reward": reward,
+                    **recovered_extra,
+                },
+            )
+        incident.data_recovery = True
+        incident.failed_action_keys.add(self._attempt_key(selected_how))
+        incident.last_tool_error = (
+            f"data_incomplete: the service is healthy again, but only {widget_rows_after} of "
+            f"the {incident.widget_rows_before} rows that existed before the outage are back "
+            f"({rows_lost} missing). Recover the missing data without breaking the service."
+        )
+        await self._publish_workflow_step(
+            incident_id=incident.incident_id,
+            attempt=attempt,
+            path_mode=path_mode,
+            step="attempt.result",
+            status="retry",
+            tool_name=tool_name,
+            reason="data_incomplete",
+            widget_rows_before=incident.widget_rows_before,
+            widget_rows_after=widget_rows_after,
+        )
+
+    async def _close_data_loss_accepted(self, incident: IncidentContext) -> None:
+        """Data recovery used its attempts without getting enough rows back: close the
+        incident (the service is healthy) and record the loss."""
+        self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_SUCCEEDED)
+        await self._events.publish(
+            "incident.closed",
+            {
+                "incident_id": incident.incident_id,
+                "attempts": incident.attempts,
+                "resolution": "data_loss_accepted",
+                "data_recovery_attempts": incident.data_recovery_attempts,
+            },
+        )
+        self._incident = None
 
     async def _close_healthy_before_retry(
         self,
@@ -802,6 +909,27 @@ class RecoveryAgent:
             )
 
             if post_recovery_monitor.healthy:
+                first_recovery = not incident.service_recovered
+                incident.service_recovered = True
+                data_ok = self._enough_data_recovered(
+                    incident.widget_rows_before, widget_rows_after
+                )
+                if not data_ok and incident.data_recovery_attempts < DATA_RECOVERY_MAX_ATTEMPTS:
+                    await self._continue_data_recovery(
+                        incident=incident,
+                        selected_how=selected_how,
+                        tool_name=tool_name,
+                        attempt=attempt,
+                        path_mode=path_mode,
+                        widget_rows_after=widget_rows_after,
+                        rows_lost=rows_lost,
+                        reward=reward,
+                        first_recovery=first_recovery,
+                        recovered_extra=self._recovered_extra(
+                            latency_ms, source, action_key, class_match
+                        ),
+                    )
+                    return
                 self._workflow_state = transition(
                     self._workflow_state,
                     WorkflowEvent.RECOVERY_SUCCEEDED,
@@ -824,8 +952,10 @@ class RecoveryAgent:
                             "class_id": class_match.class_id if class_match is not None else None,
                         }
                     )
+                # incident.recovered marks the service coming back (TTR) once per incident;
+                # a later data-recovery success is incident.data_recovered.
                 await self._events.publish(
-                    "incident.recovered",
+                    "incident.recovered" if first_recovery else "incident.data_recovered",
                     recovered_payload,
                 )
                 await self._publish_workflow_step(
@@ -836,13 +966,17 @@ class RecoveryAgent:
                     status="recovered",
                     tool_name=tool_name,
                 )
-                await self._events.publish(
-                    "incident.closed",
-                    {
-                        "incident_id": incident.incident_id,
-                        "attempts": incident.attempts,
-                    },
-                )
+                closed_payload: dict[str, Any] = {
+                    "incident_id": incident.incident_id,
+                    "attempts": incident.attempts,
+                }
+                if not first_recovery:
+                    closed_payload["resolution"] = (
+                        "data_recovered" if data_ok else "data_loss_accepted"
+                    )
+                elif not data_ok:
+                    closed_payload["resolution"] = "data_loss_accepted"
+                await self._events.publish("incident.closed", closed_payload)
                 self._incident = None
                 return
 

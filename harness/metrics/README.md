@@ -56,7 +56,7 @@ visible in `decision_trace` records and `attempt_outcomes` instead.
 | `winning_actions_per_class` | per `class_id`, number of distinct `action_key` values that won a recovery; lower is more stable |
 | `llm_tokens_per_incident` | summary (as TTR) of LLM tokens per cohort incident: sum of `llm_usage_total` on its `llm.why` / `llm.how` steps; incidents without reported usage are left out |
 | `jev_calls_per_incident` | summary of `jev.requested` steps per cohort incident (fast-path fallbacks and retries add calls) |
-| `data_loss` | over recovered cohort incidents whose `incident.recovered.rows_lost` is a number: `recoveries_measured`, `lossless_recoveries` (`rows_lost = 0`), `rows_lost_total`, and `rows_lost_per_recovery` (same summary as TTR). `rows_lost` is `null`, and the incident is not measured, when MI saw no healthy row count before the incident |
+| `data_loss` | over recovered cohort incidents whose `incident.recovered.rows_lost` is a number (replaced by `incident.data_recovered.rows_lost` when MI later recovered the data): `recoveries_measured`, `lossless_recoveries` (`rows_lost = 0`), `rows_lost_total`, and `rows_lost_per_recovery` (same summary as TTR). `rows_lost` is `null`, and the incident is not measured, when MI saw no healthy row count before the incident |
 
 ## Thresholds
 

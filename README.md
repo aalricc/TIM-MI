@@ -31,6 +31,7 @@ for example repaired by an operator, the incident closes without recording a lea
 ## Runtime guarantees
 
 - No hard cap on retries/no-viable loops.
+- Data counts too: if the service is back but under 90% of the rows seen at the last healthy check are, the incident stays open and MI tries again to recover the data (up to 3 more attempts), then closes as `data_recovered` or `data_loss_accepted`.
 - Dynamic recovery actions are session-first; built-ins are diagnostics-first.
 - Class-memory fast path does not bypass JEV, security gate, or verifier.
 - Class-memory fast path is mandatory at runtime (cannot be disabled).
