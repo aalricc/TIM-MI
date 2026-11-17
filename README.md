@@ -325,17 +325,22 @@ python scripts/record_demo.py --target-url http://127.0.0.1:8080 \
 
 ## CI/CD and branch protection
 
-Every PR and push to `main` runs `.github/workflows/ci.yml`:
+Agents (and people) ship through one gated pipeline; see
+`harness/governance/README.md` for the full rules.
 
-| Required check | What it proves |
-| --- | --- |
-| `lint-type-test` | ruff, `mypy --strict` (src + harness), full offline pytest |
-| `dependency-audit` | `pip-audit` over the runtime + dev dependency set |
-| `docker-build-smoke` | both images build; target healthy, a simulated fault leaves no trace in its logs, reset recovers |
+| Required check | Workflow | What it proves |
+| --- | --- | --- |
+| `lint-type-test` | `ci.yml` | ruff, `mypy --strict` (src + harness), full offline pytest |
+| `dependency-audit` | `ci.yml` | `pip-audit` over the runtime + dev dependency set |
+| `docker-build-smoke` | `ci.yml` | both images build; target healthy, a simulated fault leaves no trace in its logs, reset recovers |
+| `agent-review` | `pr-gates.yml` | an independent reviewer agent approves the diff against AGENTS.md and governance (fail-closed) |
+| `risk-gate` | `pr-gates.yml` | a change to a CODEOWNERS path (runtime, prompts, gate, JEV, contracts, pipeline) has owner sign-off |
 
-`main` is protected by the `main-protection` ruleset: changes land through a PR whose
-three checks pass on the latest commit and that a code owner approves (no force pushes,
-no deletions). Agent-authored PRs follow the same path (`harness/governance/README.md`). The live LLM + JEV + Pinecone
-campaign runs on demand on the self-hosted runner
-(`.github/workflows/live-e2e-fault-campaign.yml`). The landing page in `site/` is a static
-site deployed to Vercel (`npx vercel deploy site --prod`).
+All five green → GitHub auto-merges → `cd.yml` publishes images to GHCR and deploys `site/`
+to Vercel. The live LLM + JEV + Pinecone campaign runs on demand on the self-hosted runner
+(`.github/workflows/live-e2e-fault-campaign.yml`).
+
+Repository configuration the pipeline expects (owner-set): secret `REVIEW_LLM_API_KEY` and
+variables `REVIEW_LLM_ENDPOINT`, `REVIEW_LLM_MODEL`, `REVIEW_LLM_AUTH_MODE` (reviewer
+model); secret `VERCEL_TOKEN` and variables `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` (site
+deploy); auto-merge allowed; the ruleset in `harness/governance/README.md`.

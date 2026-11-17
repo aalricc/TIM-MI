@@ -76,7 +76,8 @@ active.
 | `harness/review/sample.py` | decision-log review packets for weekly human review |
 | `harness/review/judge.py` | LLM-as-judge scoring for diagnosis/action quality (`judge_verdict` + inferential `sensor_result`) |
 | `harness/review/calibrate.py` | human-vs-judge agreement and trust gate (`trusted: true|false`) |
-| `harness/review/pr_review.py` | selective PR advisory LLM review and failed-campaign log-quality reflection |
+| `harness/review/pr_review.py` | failed-campaign log-quality reflection (and the earlier advisory PR review) |
+| `harness/review/gate.py` | required PR gates `agent-review` and `risk-gate` (`.github/workflows/pr-gates.yml`) |
 | `.github/CODEOWNERS`, `.github/pull_request_template.md` | risky-path ownership routing and risky-change PR checklist |
 | `tests/harness_scenarios.py` | scripted runtime scenarios used by harness tests |
 | `docs/harness/skills/` | step-by-step procedures (below) |
@@ -231,6 +232,20 @@ tail -n 200 target/app/app.log
 Operational note: only the three fixture-backed faults are supported by the campaign
 (`drop_widgets_table`, `delete_db`, `corrupt_db`). Scenarios outside these fixtures must be
 reported as unsupported unless new approved fixtures are added.
+
+## Agent PR workflow (how an agent ships a change)
+
+1. Branch from `main`; one logical change per commit, conventional prefix; the pre-commit
+   hook (`make check`) must pass. Commit `.gitignore` edits first (the hook stashes
+   unstaged files).
+2. Push, open a PR with `.github/pull_request_template.md` filled in (name any risky
+   item), then `gh pr merge <n> --auto --rebase`.
+3. Required checks decide the merge: `lint-type-test`, `dependency-audit`,
+   `docker-build-smoke`, `agent-review`, `risk-gate` (`harness/governance/README.md`).
+   Fix what they report and push again; never weaken a test or a gate to get green.
+4. Never add the `owner-approved` label, approve a PR, merge with `--admin`, or edit
+   rulesets or branch protection (also denied in `.claude/settings.json`). Risky changes
+   wait for the owner.
 
 ## Procedures
 
