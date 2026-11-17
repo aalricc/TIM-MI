@@ -36,10 +36,15 @@ jobs:
           set -euo pipefail
           owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
-          for spec in "mi-agent:Dockerfile" "mi-target:target/app/Dockerfile"; do
-            name=${spec%%:*}; file=${spec#*:}
+          repo=$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')
+          source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          # Repo-prefixed names: GHCR denies GITHUB_TOKEN pushes to an existing package
+          # that is not linked to this repository. The source label links new packages.
+          for spec in "agent:Dockerfile" "target:target/app/Dockerfile"; do
+            name="$repo-${spec%%:*}"; file=${spec#*:}
             image="ghcr.io/$owner/$name"
-            docker build -t "$image:${GITHUB_SHA}" -t "$image:latest" -f "$file" .
+            docker build --label "org.opencontainers.image.source=$source" \
+              -t "$image:${GITHUB_SHA}" -t "$image:latest" -f "$file" .
             docker push "$image:${GITHUB_SHA}"
             docker push "$image:latest"
           done
