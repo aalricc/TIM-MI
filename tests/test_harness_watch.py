@@ -77,7 +77,8 @@ def test_kpi_thresholds_pass_when_every_kpi_is_within_bounds() -> None:
 def test_kpi_thresholds_fail_names_the_breached_kpi(
     events: list[dict[str, Any]], breached: str
 ) -> None:
-    result = kpi_thresholds(events, thresholds=THRESHOLDS, now=0.0)
+    # Checked long after the events, so an incident still open is stuck, not in flight.
+    result = kpi_thresholds(events, thresholds=THRESHOLDS, now=1000.0)
 
     assert result["status"] == "fail"
     assert result["severity"] == "error"
@@ -93,9 +94,34 @@ def test_kpi_thresholds_values_exactly_at_the_threshold_pass() -> None:
     events += [_jev(1.0, "usable") for _ in range(9)]
     events.append(_jev(2.0, "unusable", "jev_request_error:Timeout"))
 
-    result = kpi_thresholds(events, thresholds=THRESHOLDS, now=0.0)
+    result = kpi_thresholds(events, thresholds=THRESHOLDS, now=1000.0)
 
     assert (result["status"], result["checked"]) == ("pass", 3)
+
+
+def test_recovery_rate_ignores_an_incident_still_in_flight() -> None:
+    # The watcher runs while "b" is 20 s old and still being worked on: not a failure.
+    events = [*_incident("a", 0.0, 10.0), *_incident("b", 100.0, None)]
+
+    result = kpi_thresholds(events, thresholds=THRESHOLDS, now=120.0)
+
+    assert result["status"] == "pass"
+
+
+def test_recovery_rate_counts_an_incident_open_past_the_ttr_budget() -> None:
+    # "b" has been open for 61 s, beyond max_ttr_p90_seconds (60): stuck, so it counts.
+    events = [*_incident("a", 0.0, 10.0), *_incident("b", 100.0, None)]
+
+    result = kpi_thresholds(events, thresholds=THRESHOLDS, now=161.0)
+
+    assert result["status"] == "fail"
+    assert result["violations"][0]["detail"].startswith("recovery_rate=0.5")
+
+
+def test_only_in_flight_incidents_means_recovery_rate_is_not_judged() -> None:
+    result = kpi_thresholds([*_incident("b", 100.0, None)], thresholds=THRESHOLDS, now=110.0)
+
+    assert result["status"] == "skipped"
 
 
 def test_kpi_thresholds_skip_when_no_kpi_is_defined() -> None:

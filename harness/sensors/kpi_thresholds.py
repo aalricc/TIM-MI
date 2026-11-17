@@ -3,6 +3,11 @@
 Thresholds live in `harness/metrics/thresholds.json`. A KPI that is undefined for the
 window (no incidents, no recoveries, no JEV results) is not checked; with nothing to
 check the sensor reports `skipped`.
+
+Recovery rate leaves out incidents that are still in flight: open and younger than the
+TTR budget (`max_ttr_p90_seconds`) at check time. A watcher run that lands mid-incident
+would otherwise count a recovery in progress as a failure. An incident open for longer
+than the budget still counts as not recovered, so a stuck incident is still caught.
 """
 
 from __future__ import annotations
@@ -34,6 +39,32 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
+def _in_flight_incidents(
+    events: list[RuntimeEvent], *, now: float, grace_seconds: float
+) -> set[str]:
+    """Incidents started within `grace_seconds` of `now` that have not ended yet."""
+    started: dict[str, float] = {}
+    ended: set[str] = set()
+    for event in events:
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        incident_id = payload.get("incident_id")
+        if not isinstance(incident_id, str):
+            continue
+        kind = event.get("event_type")
+        ts = event.get("ts")
+        if kind == "incident.started" and isinstance(ts, int | float) and not isinstance(ts, bool):
+            started.setdefault(incident_id, float(ts))
+        elif kind in ("incident.recovered", "incident.closed"):
+            ended.add(incident_id)
+    return {
+        incident_id
+        for incident_id, ts in started.items()
+        if incident_id not in ended and now - ts < grace_seconds
+    }
+
+
 def kpi_thresholds(
     events: Iterable[RuntimeEvent],
     *,
@@ -41,8 +72,15 @@ def kpi_thresholds(
     stage: str = "continuous",
     now: float | None = None,
 ) -> dict[str, Any]:
-    kpis = compute_kpis(events)
-    recovery_rate = kpis["recovery_rate"]
+    rows = list(events)
+    checked_at = time.time() if now is None else now
+    kpis = compute_kpis(rows)
+    in_flight = _in_flight_incidents(
+        rows, now=checked_at, grace_seconds=thresholds.get("max_ttr_p90_seconds", 0.0)
+    )
+    started_n = kpis["incidents"]["started"]
+    judged = started_n - len(in_flight)
+    recovery_rate = (kpis["incidents"]["recovered"] / judged) if judged > 0 else None
     ttr_p90 = kpis["time_to_recover_seconds"]["p90"]
     request_error_rate = kpis["decision"]["jev_request_error_rate"]
 
@@ -55,7 +93,9 @@ def kpi_thresholds(
     violations: list[dict[str, Any]] = []
     checked = 0
     for name, value, threshold_key, is_minimum in checks:
-        if not _is_number(value) or threshold_key not in thresholds:
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            continue
+        if threshold_key not in thresholds:
             continue
         checked += 1
         threshold = thresholds[threshold_key]
@@ -89,5 +129,5 @@ def kpi_thresholds(
         "message": message,
         "violations": violations,
         "checked": checked,
-        "ts": time.time() if now is None else now,
+        "ts": checked_at,
     }
