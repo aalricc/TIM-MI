@@ -43,8 +43,9 @@ class EngineLLM:
         latest_tool_error: str | None,
         state_fingerprint: str | None,
         backup_catalog: list[Any],
+        current_state: Any = None,
     ) -> HowProposal:
-        del backup_catalog
+        del backup_catalog, current_state
         del diagnosis, rag_chunks, prior_attempts, latest_tool_error, state_fingerprint
         return HowProposal(
             primary=DynamicToolSpec(

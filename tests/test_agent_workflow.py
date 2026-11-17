@@ -17,6 +17,7 @@ from mi_agent.workflow.models import (
     HowProposal,
     IncidentContext,
     MonitorStatus,
+    RAGChunk,
     VerificationResult,
 )
 
@@ -38,8 +39,9 @@ class FakeLLM:
         latest_tool_error: str | None,
         state_fingerprint: str | None,
         backup_catalog: list[Any],
+        current_state: Any = None,
     ) -> HowProposal:
-        del backup_catalog
+        del backup_catalog, current_state
         del diagnosis, prior_attempts, latest_tool_error, state_fingerprint
         self.last_propose_rag_chunks = list(rag_chunks)
         return HowProposal(
@@ -172,6 +174,223 @@ def _primary_jev() -> FakeJev:
             risk_score=0.2,
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_diagnose_why_receives_symptom_rag_chunks_and_runtime_evidence(
+    tmp_path: Path,
+) -> None:
+    class RecordingLLM(FakeLLM):
+        def __init__(self) -> None:
+            super().__init__()
+            self.why_calls: list[dict[str, Any]] = []
+
+        async def diagnose_why(
+            self,
+            *,
+            evidence: dict[str, Any],
+            rag_chunks: list[Any],
+        ) -> Diagnosis:
+            self.why_calls.append(
+                {
+                    "evidence": evidence,
+                    "rag_chunks": rag_chunks,
+                }
+            )
+            return Diagnosis(
+                failure_type="schema_invalid",
+                hypotheses=["widgets table missing"],
+                evidence=["health endpoint reports schema_invalid"],
+            )
+
+    class RaggyTools(FakeTools):
+        async def retrieve_rag_chunks(self, query: str, *, k: int) -> list[Any]:
+            del query, k
+            return [
+                RAGChunk(
+                    source="runbook",
+                    text="Injected with POST /ops/fault/drop_widgets_table",
+                    score=0.8,
+                )
+            ]
+
+    llm = RecordingLLM()
+    tools = RaggyTools(unhealthy=True, execution_ok=False)
+    agent = RecoveryAgent(
+        llm=llm,
+        tools=tools,  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=EventLog(tmp_path / "events.jsonl"),
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    assert len(llm.why_calls) == 1
+    rag_chunks = llm.why_calls[0]["rag_chunks"]
+    assert len(rag_chunks) == 1
+    assert isinstance(rag_chunks[0], RAGChunk)
+    assert rag_chunks[0].source == "runbook"
+    evidence = llm.why_calls[0]["evidence"]
+    assert isinstance(evidence, dict)
+    assert "log_tail" in evidence
+
+
+@pytest.mark.asyncio
+async def test_unknown_failure_evidence_is_forwarded_to_why_without_taxonomy_mapping(
+    tmp_path: Path,
+) -> None:
+    class UnknownFailureTools(FakeTools):
+        async def collect_diagnostics(self) -> dict[str, Any]:
+            return {
+                "health_deep": {"ok": False, "error": "socket_timeout"},
+                "db_status": {"ok": True},
+                "log_tail": ["upstream timed out after 5s"],
+                "log_collection": {"source": "target_endpoint", "warnings": []},
+                "backups": [],
+            }
+
+    class MappingLLM(FakeLLM):
+        async def diagnose_why(
+            self,
+            *,
+            evidence: dict[str, Any],
+            rag_chunks: list[Any],
+        ) -> Diagnosis:
+            del rag_chunks
+            error = str(evidence.get("health_deep", {}).get("error") or "unknown_failure")
+            return Diagnosis(
+                failure_type=error,
+                hypotheses=["derived from runtime evidence"],
+                evidence=["health_deep.error"],
+            )
+
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=MappingLLM(),
+        tools=UnknownFailureTools(unhealthy=True, execution_ok=False),  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    why_events = [row for row in events.events if row.event_type == "diagnosis.why"]
+    assert len(why_events) == 1
+    assert why_events[0].payload["failure_type"] == "socket_timeout"
+
+
+@pytest.mark.asyncio
+async def test_insufficient_evidence_can_flow_to_unknown_failure_diagnosis(tmp_path: Path) -> None:
+    class SparseEvidenceTools(FakeTools):
+        async def collect_diagnostics(self) -> dict[str, Any]:
+            return {
+                "health_deep": {"ok": False, "error": "health_endpoint_unhealthy"},
+                "db_status": {"ok": False, "error": "db_status_unreachable"},
+                "log_tail": [],
+                "log_collection": {
+                    "source": "unavailable",
+                    "warnings": ["log_endpoint_unavailable:timeout"],
+                },
+                "backups": [],
+            }
+
+    class UncertaintyLLM(FakeLLM):
+        async def diagnose_why(
+            self,
+            *,
+            evidence: dict[str, Any],
+            rag_chunks: list[Any],
+        ) -> Diagnosis:
+            del rag_chunks
+            warnings = evidence.get("log_collection", {}).get("warnings", [])
+            if isinstance(warnings, list) and warnings:
+                return Diagnosis(
+                    failure_type="unknown_failure",
+                    hypotheses=["insufficient evidence; need runtime logs"],
+                    evidence=["log_collection warnings present"],
+                )
+            return Diagnosis(
+                failure_type="unexpected",
+                hypotheses=["unexpected"],
+                evidence=["unexpected"],
+            )
+
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=UncertaintyLLM(),
+        tools=SparseEvidenceTools(unhealthy=True, execution_ok=False),  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=False),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+
+    why_events = [row for row in events.events if row.event_type == "diagnosis.why"]
+    assert len(why_events) == 1
+    assert why_events[0].payload["failure_type"] == "unknown_failure"
+
+
+@pytest.mark.asyncio
+async def test_distinct_incidents_do_not_reuse_previous_diagnosis(tmp_path: Path) -> None:
+    class MultiIncidentTools(FakeTools):
+        def __init__(self) -> None:
+            super().__init__(
+                unhealthy=True,
+                execution_ok=True,
+                monitor_health_sequence=[False, True, False, True],
+            )
+            self._diagnostics = iter(
+                [
+                    {"health_deep": {"ok": False, "error": "schema_invalid"}, "log_tail": ["a"]},
+                    {"health_deep": {"ok": False, "error": "db_missing"}, "log_tail": ["b"]},
+                ]
+            )
+
+        async def collect_diagnostics(self) -> dict[str, Any]:
+            return next(self._diagnostics)
+
+    class EchoLLM(FakeLLM):
+        async def diagnose_why(
+            self,
+            *,
+            evidence: dict[str, Any],
+            rag_chunks: list[Any],
+        ) -> Diagnosis:
+            del rag_chunks
+            failure_type = str(evidence.get("health_deep", {}).get("error") or "unknown_failure")
+            return Diagnosis(
+                failure_type=failure_type,
+                hypotheses=[failure_type],
+                evidence=["health_deep.error"],
+            )
+
+    events = EventLog(tmp_path / "events.jsonl")
+    agent = RecoveryAgent(
+        llm=EchoLLM(),
+        tools=MultiIncidentTools(),  # type: ignore[arg-type]
+        verifier=FakeVerifier(healthy=True),  # type: ignore[arg-type]
+        events=events,
+        policy_store_path=(tmp_path / "policy.json").as_posix(),
+        monitor_interval_seconds=0.01,
+        jev=_primary_jev(),  # type: ignore[arg-type]
+    )
+
+    await agent.run_iteration()
+    await agent.run_iteration()
+
+    why_events = [row for row in events.events if row.event_type == "diagnosis.why"]
+    assert len(why_events) == 2
+    assert why_events[0].payload["failure_type"] == "schema_invalid"
+    assert why_events[1].payload["failure_type"] == "db_missing"
 
 
 @pytest.mark.asyncio
