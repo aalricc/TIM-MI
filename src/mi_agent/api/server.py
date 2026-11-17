@@ -5,6 +5,7 @@ import contextlib
 import importlib
 import json
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -369,12 +370,11 @@ def latest_harness_results(path: Path, *, tail_lines: int = 200) -> dict[str, An
 
 
 def create_api(context: MIContext, agent: RecoveryAgent) -> FastAPI:
-    app = FastAPI(title="MI Recovery Agent", version="2.0")
     loop_task: asyncio.Task[None] | None = None
     dashboard_file = Path.cwd() / "dashboard" / "index.html"
 
-    @app.on_event("startup")
-    async def _startup() -> None:
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> Any:
         nonlocal loop_task
         rag_summary: dict[str, Any] = {
             "enabled": context.settings.rag_enabled,
@@ -397,13 +397,15 @@ def create_api(context: MIContext, agent: RecoveryAgent) -> FastAPI:
         if loop_task is None or loop_task.done():
             loop_task = asyncio.create_task(agent.run_forever())
 
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        nonlocal loop_task
-        if loop_task is not None:
-            loop_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await loop_task
+        try:
+            yield
+        finally:
+            if loop_task is not None:
+                loop_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await loop_task
+
+    app = FastAPI(title="MI Recovery Agent", version="2.0", lifespan=_lifespan)
 
     @app.get("/health/live")
     async def health_live() -> dict[str, Any]:

@@ -8,7 +8,7 @@ import pytest
 
 from mi_agent.config import MISettings
 from mi_agent.errors import LLMError
-from mi_agent.llm.client import OpenAILLMClient
+from mi_agent.llm.client import HOW_INSTRUCTION, WHY_INSTRUCTION, OpenAILLMClient
 from mi_agent.workflow.models import AttemptFeedback, Diagnosis, RAGChunk
 
 
@@ -57,6 +57,31 @@ class _FallbackClient(OpenAILLMClient):
                     "params": {"service_name": "target-app"},
                 },
             ],
+        }
+
+
+class _CaptureDiagnoseClient(OpenAILLMClient):
+    def __init__(self, settings: MISettings) -> None:
+        super().__init__(settings)
+        self.last_instruction: str | None = None
+        self.last_payload: dict[str, object] | None = None
+
+    async def _call_json(
+        self,
+        *,
+        instruction: str,
+        user_payload: dict[str, object],
+        schema_name: str,
+        schema: dict[str, object],
+        strict: bool = True,
+    ) -> dict[str, object]:
+        del schema_name, schema, strict
+        self.last_instruction = instruction
+        self.last_payload = user_payload
+        return {
+            "failure_type": "unknown_failure",
+            "hypotheses": ["insufficient runtime evidence"],
+            "evidence": ["log retrieval unavailable"],
         }
 
 
@@ -241,3 +266,73 @@ def test_usage_without_counts_is_ignored(settings: MISettings) -> None:
     client._add_usage({"usage": {"input_tokens": True, "total_tokens": "9"}})
 
     assert client.consume_usage() is None
+
+
+@pytest.mark.asyncio
+async def test_diagnose_why_sends_role_prompt_and_unmodified_evidence(
+    settings: MISettings,
+) -> None:
+    client = _CaptureDiagnoseClient(settings)
+    evidence = {"health_deep": {"ok": False, "error": "schema_invalid"}, "log_tail": ["x"]}
+
+    await client.diagnose_why(evidence=evidence, rag_chunks=[])
+
+    assert client.last_instruction == WHY_INSTRUCTION
+    assert client.last_payload is not None
+    assert client.last_payload["evidence"] == evidence
+
+
+@pytest.mark.parametrize("prompt", [WHY_INSTRUCTION, HOW_INSTRUCTION])
+def test_prompts_name_no_fault_test_hook_or_preferred_fix(prompt: str) -> None:
+    """The prompts describe role, evidence and interface only; MI must not be told that
+    faults are simulated, which faults exist, or which repair to prefer."""
+    lowered = prompt.lower()
+    for word in (
+        "inject",
+        "scenario",
+        "simulat",
+        "drop_widgets_table",
+        "delete_db",
+        "corrupt_db",
+        "prefer",
+    ):
+        assert word not in lowered
+
+
+def test_how_prompt_documents_every_allowed_operation_and_its_params() -> None:
+    for operation, params in {
+        "request_backup_restore": ["backup_id"],
+        "run_sql": ["sql", "db_path"],
+        "replace_file": ["source_path", "destination_path"],
+        "restart_service": ["service_name"],
+    }.items():
+        assert operation in HOW_INSTRUCTION
+        for name in params:
+            assert f'"{name}"' in HOW_INSTRUCTION
+    # Path params resolve against different roots; the prompt must name both.
+    assert "runtime_paths.sandbox_root" in HOW_INSTRUCTION
+    assert "runtime_paths.app_root" in HOW_INSTRUCTION
+
+
+def test_how_payload_carries_incident_state_without_log_tail(settings: MISettings) -> None:
+    client = OpenAILLMClient(settings)
+
+    payload = client._how_user_payload(
+        diagnosis=Diagnosis(failure_type="missing_table"),
+        rag_chunks=[],
+        prior_attempts=[],
+        latest_tool_error=None,
+        state_fingerprint=None,
+        backup_catalog=[],
+        current_state={
+            "db_status": {"ok": False},
+            "app_schema": {"exists": True, "sql": "CREATE TABLE widgets (id INTEGER);"},
+            "log_tail": ["big"],
+        },
+        compact=False,
+    )
+
+    assert payload["incident_state"] == {
+        "db_status": {"ok": False},
+        "app_schema": {"exists": True, "sql": "CREATE TABLE widgets (id INTEGER);"},
+    }

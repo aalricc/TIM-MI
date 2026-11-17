@@ -26,7 +26,6 @@ from mi_agent.workflow.models import DynamicToolSpec, MonitorStatus, RAGChunk
 
 RestoreHook = Callable[[str], Awaitable[dict[str, Any]]]
 
-
 def base_tool_name(spec: DynamicToolSpec) -> str:
     """Session tool name for a spec before de-duplication suffixes; also the RL policy key."""
     return spec.name.strip().replace(" ", "_") or "dynamic_tool"
@@ -87,11 +86,41 @@ class ToolExecutor:
         log_payload = await self._read_logs_via_endpoint(lines=300)
         raw_lines = log_payload.get("lines")
         endpoint_log_tail = [str(line) for line in raw_lines] if isinstance(raw_lines, list) else []
+        endpoint_ok = bool(log_payload.get("ok", False)) and isinstance(raw_lines, list)
         file_log_tail = self.read_app_log(lines=200)
-        log_tail = endpoint_log_tail if endpoint_log_tail else file_log_tail
+
+        selected_log_source = "target_endpoint"
+        log_tail = endpoint_log_tail
+        warnings: list[str] = []
+
+        if not endpoint_ok:
+            endpoint_reason = str(log_payload.get("error") or "log_endpoint_unavailable")
+            warnings.append(f"log_endpoint_unavailable:{endpoint_reason}")
+            if file_log_tail:
+                selected_log_source = "app_log_file_fallback"
+                log_tail = file_log_tail
+            else:
+                selected_log_source = "unavailable"
+                log_tail = []
+
+        log_payload = {
+            **log_payload,
+            "lines": endpoint_log_tail,
+            "lines_count": len(endpoint_log_tail),
+            "ok": endpoint_ok,
+        }
+        log_collection: dict[str, Any] = {
+            "source": selected_log_source,
+            "endpoint_ok": endpoint_ok,
+            "endpoint_lines_count": len(endpoint_log_tail),
+            "file_lines_count": len(file_log_tail),
+            "warnings": warnings,
+        }
         backups = await self.list_backups()
         db_integrity = self.check_db_integrity(self._settings.db_file)
         runtime_paths = {
+            "app_root": self._settings.app_root.as_posix(),
+            "sandbox_root": self._settings.sandbox_root.as_posix(),
             "db_file": self._settings.db_file.as_posix(),
             "db_exists": self._settings.db_file.exists(),
             "schema_file": self._settings.schema_file.as_posix(),
@@ -104,10 +133,21 @@ class ToolExecutor:
             "db_status": db_status,
             "db_integrity": db_integrity,
             "runtime_paths": runtime_paths,
+            "app_schema": self.read_app_schema(),
             "log_tail": log_tail,
             "log_endpoint": log_payload,
+            "log_collection": log_collection,
             "backups": backups,
         }
+
+    def read_app_schema(self) -> dict[str, Any]:
+        """The application's own schema file (the DDL the app expects), as an operator would
+        read it while diagnosing; text is capped so it stays a small part of the prompt."""
+        path = self._settings.schema_file
+        if not path.is_file():
+            return {"path": path.as_posix(), "exists": False}
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return {"path": path.as_posix(), "exists": True, "sql": text[:4000]}
 
     async def list_backups(self) -> list[dict[str, Any]]:
         """The target's backup catalog (newest first); empty if the target has none."""
@@ -278,11 +318,12 @@ class ToolExecutor:
         if spec.operation not in allowed_operations:
             raise SecurityGateError(f"operation not allowed by security gate: {spec.operation}")
         if spec.operation == "run_sql":
-            RunSQLParams.model_validate(spec.params)
+            parsed_sql = RunSQLParams.model_validate(spec.params)
+            self._paths.resolve_in_app_root(parsed_sql.db_path)
         elif spec.operation == "replace_file":
-            parsed = ReplaceFileParams.model_validate(spec.params)
-            self._paths.resolve_in_sandbox(parsed.source_path)
-            self._paths.resolve_in_app_root(parsed.destination_path)
+            parsed_replace = ReplaceFileParams.model_validate(spec.params)
+            self._paths.resolve_in_sandbox(parsed_replace.source_path)
+            self._paths.resolve_in_app_root(parsed_replace.destination_path)
         elif spec.operation == "request_backup_restore":
             RequestBackupRestoreParams.model_validate(spec.params)
         elif spec.operation == "restart_service":

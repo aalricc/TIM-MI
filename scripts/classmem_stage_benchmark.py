@@ -80,8 +80,11 @@ class BenchLLM:
         prior_attempts: list[Any],
         latest_tool_error: str | None,
         state_fingerprint: str | None,
+        backup_catalog: list[Any] | None = None,
+        current_state: Any = None,
     ) -> HowProposal:
         del diagnosis, rag_chunks, prior_attempts, latest_tool_error, state_fingerprint
+        del backup_catalog, current_state
         prefix = f"{self._incident_index}"
         candidates = [
             DynamicToolSpec(

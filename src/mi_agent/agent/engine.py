@@ -469,6 +469,7 @@ class RecoveryAgent:
             latest_tool_error=incident.last_tool_error,
             state_fingerprint=incident.state_fingerprint,
             backup_catalog=self._backup_catalog(diagnostics),
+            current_state=diagnostics,
         )
         how = self._normalize_how_proposal(raw_how)
         await self._publish_workflow_step(

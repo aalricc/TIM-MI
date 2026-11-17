@@ -67,6 +67,20 @@ async def test_restore_goes_through_target_api(
 
 
 @pytest.mark.asyncio
+async def test_monitor_health_pings_live_target_health_endpoint(
+    settings: MISettings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tools, _backups, _db_file = _target_backed_tools(settings, monkeypatch, tmp_path)
+
+    status = await tools.monitor_health()
+
+    assert status.healthy is True
+    assert status.detail == "healthy"
+    assert status.payload["health"]["ok"] is True
+    assert status.payload["health"]["status_code"] == 200
+
+
+@pytest.mark.asyncio
 async def test_restore_unknown_backup_reports_available_ids(
     settings: MISettings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -106,6 +120,17 @@ def test_security_gate_rejects_restore_without_catalog_id(
         name="restore", rationale="r", operation="request_backup_restore", params=params
     )
     with pytest.raises(ValidationError):
+        ToolExecutor(settings).security_gate(spec)
+
+
+def test_security_gate_rejects_run_sql_path_escape(settings: MISettings) -> None:
+    spec = DynamicToolSpec(
+        name="run_bad",
+        rationale="r",
+        operation="run_sql",
+        params={"db_path": "../escape.db", "sql": "SELECT 1;"},
+    )
+    with pytest.raises(SecurityGateError, match="app root"):
         ToolExecutor(settings).security_gate(spec)
 
 
@@ -191,6 +216,90 @@ async def test_collect_diagnostics_prefers_log_endpoint(settings) -> None:  # ty
     diagnostics = await tools.collect_diagnostics()
     assert diagnostics["log_tail"] == ["line-a", "line-b"]
 
+
+@pytest.mark.asyncio
+async def test_collect_diagnostics_keeps_endpoint_as_source_when_endpoint_is_healthy_but_empty(
+    settings,
+) -> None:  # type: ignore[no-untyped-def]
+    tools = ToolExecutor(settings)
+    settings.app_log.write_text("old-line-that-should-not-be-used\n", encoding="utf-8")
+
+    async def fake_get_json(path: str) -> dict[str, object]:
+        if path == "/health/deep":
+            return {"ok": True, "status_code": 200}
+        if path == "/ops/db/status":
+            return {"ok": True, "status_code": 200, "exists": True}
+        if path == "/ops/logs?lines=300":
+            return {"ok": True, "status_code": 200, "lines": []}
+        return {"ok": True}
+
+    tools._get_json = fake_get_json  # type: ignore[method-assign]
+
+    diagnostics = await tools.collect_diagnostics()
+
+    assert diagnostics["log_tail"] == []
+    assert diagnostics["log_collection"]["source"] == "target_endpoint"
+    assert diagnostics["log_collection"]["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_collect_diagnostics_reports_log_source_unavailable_when_endpoint_and_file_fail(
+    settings,
+) -> None:  # type: ignore[no-untyped-def]
+    tools = ToolExecutor(settings)
+
+    async def fake_get_json(path: str) -> dict[str, object]:
+        if path == "/health/deep":
+            return {"ok": False, "status_code": 503, "error": "health_unreachable"}
+        if path == "/ops/db/status":
+            return {"ok": False, "status_code": 503, "error": "db_status_unreachable"}
+        if path == "/ops/logs?lines=300":
+            return {"ok": False, "status_code": 503, "error": "log_endpoint_timeout"}
+        return {"ok": True}
+
+    tools._get_json = fake_get_json  # type: ignore[method-assign]
+
+    diagnostics = await tools.collect_diagnostics()
+
+    assert diagnostics["log_tail"] == []
+    assert diagnostics["log_collection"]["source"] == "unavailable"
+    warnings = diagnostics["log_collection"]["warnings"]
+    assert isinstance(warnings, list)
+    assert warnings and warnings[0].startswith("log_endpoint_unavailable:")
+
+
+@pytest.mark.parametrize("fault", ["drop_widgets_table", "delete_db", "corrupt_db"])
+@pytest.mark.asyncio
+async def test_diagnostics_after_a_simulated_fault_carry_symptoms_but_no_trace_of_the_fault(
+    settings: MISettings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fault: str
+) -> None:
+    """A simulated fault must look like a real outage: MI sees the broken database through
+    the target's normal endpoints, and nothing it reads names the fault or the test hook."""
+    tools, _backups, _db_file = _target_backed_tools(settings, monkeypatch, tmp_path)
+
+    injected = await tools._post_json(f"/ops/fault/{fault}")
+    assert injected["ok"] is True
+
+    diagnostics = await tools.collect_diagnostics()
+
+    assert diagnostics["log_collection"]["source"] == "target_endpoint"
+    assert diagnostics["runtime_paths"]["app_root"] == settings.app_root.as_posix()
+    assert diagnostics["runtime_paths"]["sandbox_root"] == settings.sandbox_root.as_posix()
+    assert diagnostics["health_deep"]["ok"] is False
+    assert any("health deep failed" in line for line in diagnostics["log_tail"])
+    blob = json.dumps(diagnostics).lower()
+    for marker in (fault, "/ops/fault", "inject", "scenario"):
+        assert marker not in blob
+
+
+def test_collect_diagnostics_includes_the_app_schema(settings: MISettings) -> None:
+    settings.schema_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.schema_file.write_text("CREATE TABLE widgets (id INTEGER);\n", encoding="utf-8")
+
+    schema = ToolExecutor(settings).read_app_schema()
+
+    assert schema["exists"] is True
+    assert schema["sql"] == "CREATE TABLE widgets (id INTEGER);\n"
 
 @pytest.mark.asyncio
 async def test_retrieve_rag_chunks_catches_errors(settings, monkeypatch) -> None:  # type: ignore[no-untyped-def]

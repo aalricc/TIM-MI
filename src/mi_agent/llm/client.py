@@ -12,6 +12,67 @@ from mi_agent.errors import LLMError
 from mi_agent.llm.tracing import USAGE_FIELDS, llm_span_outputs, traced
 from mi_agent.workflow.models import AttemptFeedback, Diagnosis, HowProposal, RAGChunk
 
+# System prompts for the two reasoning stages. They describe the agent's role, the
+# evidence it receives and the action interface; they deliberately name no fault, no
+# expected fix and no preferred operation, so that which action works is learned from
+# verified outcomes (policy store, class memory) rather than prompted.
+WHY_INSTRUCTION = (
+    "You are the diagnosis (WHY) stage of an autonomous recovery agent that keeps a "
+    "SQLite-backed web service healthy. The service's deep health check just failed.\n"
+    "Input JSON fields: evidence.health_deep (the failing health response), "
+    "evidence.db_status (the service's own database report: existence, size, integrity, "
+    "tables, columns, row count), evidence.db_integrity (PRAGMA integrity_check run by the "
+    "agent), evidence.runtime_paths (which files exist), evidence.app_schema (the DDL the "
+    "application expects), evidence.log_tail (recent application log lines, oldest first), "
+    "evidence.backups (the backup catalog), and rag_chunks (SQLite documentation and "
+    "learned skills retrieved for these symptoms).\n"
+    "Task: identify the root cause of the outage from this evidence only.\n"
+    "- failure_type: one short lower_snake_case label for the underlying condition (what "
+    "is wrong with the system), not the symptom (not 'health_check_failed').\n"
+    "- hypotheses: 1-4 candidate root causes, most likely first.\n"
+    "- evidence: the specific fields and values from the input that support the first "
+    "hypothesis, quoted or paraphrased exactly; never invent values.\n"
+    "If the evidence cannot distinguish a cause, use failure_type 'unknown_failure' and "
+    "say in hypotheses what evidence is missing. Return JSON only."
+)
+
+HOW_INSTRUCTION = (
+    "You are the repair-planning (HOW) stage of an autonomous recovery agent that keeps a "
+    "SQLite-backed web service healthy. Propose concrete repair actions for the diagnosed "
+    "failure. A separate decision model (Jev) picks exactly one of your candidates; it is "
+    "executed once, then the service's deep health check verifies it. The goal is a "
+    "service whose health check passes and whose normal reads and writes succeed.\n"
+    "Input JSON fields: diagnosis (from the WHY stage), incident_state (health, database "
+    "report, integrity, file existence and the application's expected schema, collected "
+    "when the incident was detected), "
+    "backup_catalog (backups that exist now, newest first), prior_attempts (actions already "
+    "tried for this incident; verifier_details is the state after each one), "
+    "latest_tool_error, and "
+    "rag_chunks (SQLite documentation and skills learned from earlier verified "
+    "recoveries).\n"
+    "Operations and their params (use exactly these keys):\n"
+    "- request_backup_restore: {\"backup_id\": an id copied verbatim from "
+    "backup_catalog}. The service replaces its database file with that backup.\n"
+    "- run_sql: {\"sql\": SQLite script run with executescript, \"db_path\": path "
+    "relative to incident_state.runtime_paths.app_root}. Fails if the database file is "
+    "missing.\n"
+    "- replace_file: {\"source_path\": path relative to "
+    "incident_state.runtime_paths.sandbox_root, \"destination_path\": path relative to "
+    "incident_state.runtime_paths.app_root}. Copies an existing file over another; the "
+    "two roots differ, so derive each path from the absolute paths in runtime_paths.\n"
+    "- restart_service: {\"service_name\": \"target-app\"}. Only allowed after at "
+    "least one failed attempt (prior_attempts non-empty).\n"
+    "Rules: every candidate must be a complete, executable action with valid params. "
+    "Never repeat an action from prior_attempts with the same params; use its tool_error "
+    "and verifier_details to choose something that addresses why it failed. Any SQL must "
+    "leave the schema compatible with incident_state.app_schema. Give a primary and 2-4 "
+    "distinct alternatives, each with a one-sentence rationale grounded in the input. "
+    "Return JSON only."
+)
+
+# Diagnostics fields the HOW stage sees as incident_state (the log tail stays with WHY).
+_HOW_STATE_FIELDS = ("health_deep", "db_status", "db_integrity", "runtime_paths", "app_schema")
+
 
 class LLMClient(ABC):
     @abstractmethod
@@ -37,6 +98,7 @@ class LLMClient(ABC):
         latest_tool_error: str | None,
         state_fingerprint: str | None,
         backup_catalog: Sequence[Mapping[str, Any]],
+        current_state: Mapping[str, Any] | None = None,
     ) -> HowProposal:
         raise NotImplementedError
 
@@ -86,10 +148,7 @@ class OpenAILLMClient(LLMClient):
     ) -> Diagnosis:
         self._usage = None
         payload = await self._call_json(
-            instruction=(
-                "Diagnose the root cause from diagnostics and RAG symptom context. "
-                "Return JSON only. failure_type must be lower_snake_case."
-            ),
+            instruction=WHY_INSTRUCTION,
             user_payload={
                 "task": "diagnose_why",
                 "evidence": dict(evidence),
@@ -125,13 +184,9 @@ class OpenAILLMClient(LLMClient):
         latest_tool_error: str | None,
         state_fingerprint: str | None,
         backup_catalog: Sequence[Mapping[str, Any]],
+        current_state: Mapping[str, Any] | None = None,
     ) -> HowProposal:
-        instruction = (
-            "Propose one primary dynamic recovery action and 2-4 ranked alternatives. "
-            "Any candidate may be selected by Jev. "
-            "Use only allowed operations. "
-            "Do not output strategy text outside JSON."
-        )
+        instruction = HOW_INSTRUCTION
         schema = self._how_schema()
         self._usage = None
         try:
@@ -144,6 +199,7 @@ class OpenAILLMClient(LLMClient):
                     latest_tool_error=latest_tool_error,
                     state_fingerprint=state_fingerprint,
                     backup_catalog=backup_catalog,
+                    current_state=current_state,
                     compact=False,
                 ),
                 schema_name="how_proposal",
@@ -162,6 +218,7 @@ class OpenAILLMClient(LLMClient):
                     latest_tool_error=latest_tool_error,
                     state_fingerprint=state_fingerprint,
                     backup_catalog=backup_catalog,
+                    current_state=current_state,
                     compact=True,
                 ),
                 schema_name="how_proposal_compact",
@@ -235,12 +292,18 @@ class OpenAILLMClient(LLMClient):
         latest_tool_error: str | None,
         state_fingerprint: str | None,
         backup_catalog: Sequence[Mapping[str, Any]],
+        current_state: Mapping[str, Any] | None,
         compact: bool,
     ) -> dict[str, Any]:
         rag_rows = [chunk.model_dump() for chunk in rag_chunks]
         prior_rows = [attempt.model_dump() for attempt in prior_attempts]
         latest_error = latest_tool_error
         backup_rows = [dict(row) for row in backup_catalog]
+        state = {
+            name: current_state[name]
+            for name in _HOW_STATE_FIELDS
+            if current_state is not None and name in current_state
+        }
 
         if compact:
             rag_rows = [
@@ -264,6 +327,7 @@ class OpenAILLMClient(LLMClient):
         return {
             "task": "propose_how",
             "diagnosis": diagnosis.model_dump(),
+            "incident_state": state,
             "rag_chunks": rag_rows,
             "prior_attempts": prior_rows,
             "latest_tool_error": latest_error,
