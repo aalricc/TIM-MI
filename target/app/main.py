@@ -125,6 +125,7 @@ def db_status() -> dict[str, object]:
                 if table_rows
                 else None
             )
+            write_error = _write_probe(conn) if table_rows else None
     except sqlite3.Error as exc:
         status.update({"ok": False, "error": sqlite_failure(exc), "details": repr(exc)})
         return status
@@ -135,11 +136,12 @@ def db_status() -> dict[str, object]:
     missing_columns = sorted(REQUIRED_WIDGET_COLUMNS - {str(row[1]) for row in column_rows})
     status.update(
         {
-            "ok": integrity_ok and table_present and not missing_columns,
+            "ok": integrity_ok and table_present and not missing_columns and write_error is None,
             "integrity": integrity,
             "widgets_table_present": table_present,
             "widgets_columns_missing": missing_columns,
             "widget_rows": widget_rows,
+            "write_check": "ok" if write_error is None else write_error,
         }
     )
     if not bool(status["ok"]):
@@ -147,9 +149,27 @@ def db_status() -> dict[str, object]:
             status["error"] = "schema_invalid"
         elif not integrity_ok:
             status["error"] = "db_corrupt"
-        else:
+        elif missing_columns:
             status["error"] = "schema_invalid"
+        else:
+            status["error"] = "write_failed"
     return status
+
+
+def _write_probe(conn: sqlite3.Connection) -> str | None:
+    """Run the insert the widget endpoint runs, then roll it back. A table that exists
+    with the right columns but rejects writes (e.g. a NOT NULL column with no default) is
+    not healthy. Returns the SQLite error text, or None if the write would succeed."""
+    try:
+        conn.execute("SAVEPOINT health_write_probe")
+        try:
+            conn.execute("INSERT INTO widgets(name) VALUES (?)", ("health-probe",))
+        finally:
+            conn.execute("ROLLBACK TO SAVEPOINT health_write_probe")
+            conn.execute("RELEASE SAVEPOINT health_write_probe")
+    except sqlite3.Error as exc:
+        return str(exc)
+    return None
 
 
 async def heartbeat_loop() -> None:
@@ -285,20 +305,17 @@ def inject_fault(fault: str) -> dict[str, object]:
     if fault == "delete_db":
         if DB_PATH.exists():
             DB_PATH.unlink()
-        write_log("error", "fault injected", fault=fault)
         return {"ok": True, "fault": fault}
 
     if fault == "corrupt_db":
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         DB_PATH.write_bytes(b"not-a-valid-sqlite-db")
-        write_log("error", "fault injected", fault=fault)
         return {"ok": True, "fault": fault}
 
     if fault == "drop_widgets_table":
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("DROP TABLE IF EXISTS widgets")
             conn.commit()
-        write_log("error", "fault injected", fault=fault)
         return {"ok": True, "fault": fault}
 
     raise HTTPException(status_code=400, detail={"ok": False, "error": "unknown_fault"})

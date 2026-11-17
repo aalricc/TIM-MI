@@ -94,6 +94,44 @@ def test_deep_health_rejects_widgets_table_with_missing_columns(tmp_path: Path) 
         assert client.get("/widgets").status_code == 500  # what the health check now predicts
 
 
+def test_deep_health_rejects_a_widgets_table_that_refuses_writes(tmp_path: Path) -> None:
+    app_root = _app_root(tmp_path)
+    module = load_target_app_module(app_root)
+
+    with TestClient(module.app) as client:
+        before = client.get("/ops/db/status").json()
+        assert before["write_check"] == "ok"
+        rows_before = before["widget_rows"]
+
+        # A repair MI has learned in the past: every column present, but created_at is
+        # NOT NULL with no default, so the app's own insert fails.
+        with sqlite3.connect(app_root / "data" / "app.db") as conn:
+            conn.execute("DROP TABLE widgets")
+            conn.execute(
+                "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+                "created_at TEXT NOT NULL)"
+            )
+
+        deep = client.get("/health/deep")
+        assert deep.status_code == 500
+        detail = deep.json()["detail"]
+        assert detail["error"] == "write_failed"
+        assert "NOT NULL" in detail["status"]["write_check"]
+        assert client.post("/widgets", json={"value": "x"}).status_code == 500
+        assert rows_before == 0
+
+
+def test_write_probe_leaves_no_rows_behind(tmp_path: Path) -> None:
+    app_root = _app_root(tmp_path)
+    module = load_target_app_module(app_root)
+
+    with TestClient(module.app) as client:
+        for _ in range(3):
+            assert client.get("/health/deep").status_code == 200
+        assert client.get("/ops/db/status").json()["widget_rows"] == 0
+        assert client.get("/widgets").json()["items"] == []
+
+
 def test_required_columns_cover_every_widget_read(tmp_path: Path) -> None:
     module_source = Path("target/app/main.py").read_text(encoding="utf-8")
     selected = re.findall(r"SELECT (.+?) FROM widgets", module_source)
