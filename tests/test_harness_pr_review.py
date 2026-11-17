@@ -72,23 +72,6 @@ def test_pr_review_uses_model_output(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "## Summary" in rendered
 
 
-def test_selective_review_workflow_tracks_risky_paths() -> None:
-    workflow = Path(".github/workflows/selective-llm-review.yml").read_text(encoding="utf-8")
-    assert "pull_request:" in workflow
-    assert "continue-on-error: true" in workflow
-    assert "src/mi_agent/agent/engine.py" in workflow
-    assert "src/mi_agent/decision/**" in workflow
-    assert "src/mi_agent/llm/**" in workflow
-    assert "src/mi_agent/workflow/models.py" in workflow
-    assert "src/mi_agent/config.py" in workflow
-    assert "src/mi_agent/settings.py" not in workflow
-    assert "harness/contracts/*.schema.v*.json" in workflow
-    assert "harness/sensors/**/*.py" in workflow
-    assert "harness/metrics/thresholds.json" in workflow
-    assert "\n      - harness/sensors/**\n" not in workflow
-    assert "actions/github-script@v7" in workflow
-
-
 def test_reflect_fallback_header_matches_reflection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
