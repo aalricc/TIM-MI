@@ -124,6 +124,8 @@
         max-height: 320px;
         overflow: auto;
       }
+      #harness { max-height: 420px; overflow-y: auto; }
+      .sensor-name { overflow-wrap: anywhere; }
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
       .small { font-size: 12px; color: var(--muted); }
       details > summary { cursor: pointer; color: #d7def0; }
@@ -225,11 +227,6 @@
       </section>
 
       <section>
-        <h2>Surveillance</h2>
-        <div id="harness"></div>
-      </section>
-
-      <section>
         <h2>WHY Diagnosis</h2>
         <div id="why"></div>
       </section>
@@ -252,6 +249,11 @@
       <section>
         <h2>Dynamic Tool Catalog</h2>
         <div id="catalog"></div>
+      </section>
+
+      <section>
+        <h2>Surveillance</h2>
+        <div id="harness"></div>
       </section>
 
       <section class="live-full">
@@ -323,7 +325,7 @@
         const cls = data.status === 'fail' ? 'bad' : 'ok';
         const rows = (data.results || []).map((row) => {
           const rowCls = row.status === 'fail' ? 'bad' : (row.status === 'pass' ? 'ok' : 'warn');
-          return `<tr><td class="mono">${esc(row.sensor_name)}</td><td class="${rowCls}">${esc(row.status)}</td><td class="small">${esc(row.message)}</td></tr>`;
+          return `<tr><td><div class="mono sensor-name">${esc(row.sensor_name)}</div><div class="small">${esc(row.message)}</div></td><td class="${rowCls}">${esc(row.status)}</td></tr>`;
         }).join('');
         return `
           <div class="pill ${cls}">last 24 h: ${esc(data.status)}</div>
