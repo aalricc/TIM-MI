@@ -1,0 +1,22 @@
+# Keep secrets, local state and bulky dev files out of every image build context.
+.env
+.env.*
+!.env.example
+.git
+.venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+**/__pycache__
+artifacts
+results
+state
+knowledge_base
+site
+docs
+tests
+*.pptx
+*.pdf
+target/app/app.log
+target/app/data/*.db
+target/app/data/.*.restore

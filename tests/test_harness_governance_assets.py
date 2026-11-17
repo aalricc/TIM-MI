@@ -48,8 +48,15 @@ def test_governance_documents_d6_owners_and_branch_protection_policy() -> None:
     assert "Operator: `@aalricc`" in text
 
     assert "Temporary solo-owner exception (CP14/D6)" in text
-    assert "## Branch protection for `main` (manual GitHub setting)" in text
-    assert "status checks to pass with **`CI`** required" in text
+    assert "## Branch protection for `main`" in text
+    for check in ("lint-type-test", "dependency-audit", "docker-build-smoke"):
+        assert f"**`{check}`**" in text
     assert "`Selective LLM Review` advisory only" in text
     assert "Emergency bypass / rollback" in text
 
+
+
+def test_required_checks_named_in_governance_exist_as_ci_jobs() -> None:
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    for check in ("lint-type-test", "dependency-audit", "docker-build-smoke"):
+        assert f"name: {check}" in ci

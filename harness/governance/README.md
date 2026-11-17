@@ -49,23 +49,45 @@ Temporary solo-owner exception (CP14/D6): while all three role owners above are 
 person (`@aalricc`), self-approval is allowed for risky changes. Remove this exception once
 another maintainer role owner is assigned.
 
-## Branch protection for `main` (manual GitHub setting)
+## Branch protection for `main` (applied 2026-11-17)
 
-Apply these settings in GitHub UI:
+Applied with `gh api` (command below) and enforced for admins too:
 
 1. Require a pull request before merging.
-2. Require approvals (minimum 1).
-3. Require review from Code Owners.
-4. Dismiss stale approvals when new commits are pushed.
-5. Require conversation resolution before merging.
-6. Require status checks to pass with **`CI`** required.
-7. Keep **`Selective LLM Review` advisory only** (do not mark required).
-8. Keep force-push and branch deletion disabled.
+2. Approvals: **0 while the repo has a single maintainer** (GitHub does not let an author
+   approve their own PR, so 1 would block every change). Raise to 1 and turn on
+   "Require review from Code Owners" when a second maintainer joins.
+3. Dismiss stale approvals when new commits are pushed.
+4. Require conversation resolution before merging.
+5. Require status checks to pass, branch up to date, from the `CI` workflow:
+   **`lint-type-test`**, **`dependency-audit`**, **`docker-build-smoke`**.
+6. Keep **`Selective LLM Review` advisory only** (do not mark required).
+7. Linear history; force-push and branch deletion disabled.
 
-Verification checklist:
+An agent-authored commit is therefore trusted the same way as a human one: it lands only
+through a PR whose three checks passed on the exact head commit, and a risky-path change
+also gets the advisory LLM review and the PR template's risky-change checklist.
 
-- UI: repository Settings → Branches → `main` protection reflects items 1–8.
-- CLI (replace owner/repo):
+Apply / re-apply (replace owner/repo):
+
+```bash
+gh api -X PUT repos/<owner>/<repo>/branches/main/protection --input - <<'JSON'
+{
+  "required_status_checks": {"strict": true,
+    "contexts": ["lint-type-test", "dependency-audit", "docker-build-smoke"]},
+  "enforce_admins": true,
+  "required_pull_request_reviews": {"required_approving_review_count": 0,
+    "dismiss_stale_reviews": true, "require_code_owner_reviews": false},
+  "restrictions": null,
+  "required_linear_history": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": true
+}
+JSON
+```
+
+Verify:
 
 ```bash
 gh api repos/<owner>/<repo>/branches/main/protection --jq '{
@@ -77,7 +99,7 @@ gh api repos/<owner>/<repo>/branches/main/protection --jq '{
 }'
 ```
 
-Confirm `required_status_checks.contexts` includes `CI` and does not include
+Confirm `required_status_checks.contexts` lists the three CI jobs and does not include
 `Selective LLM Review`.
 
 Emergency bypass / rollback (production-impacting hotfix only):
