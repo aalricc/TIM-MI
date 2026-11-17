@@ -1042,3 +1042,112 @@ async def test_jev_rejected_candidate_is_not_banned_and_not_learned_as_failure(
     await agent.run_iteration()  # attempt 2: same candidates offered again, approved, runs
     assert jev.calls[1] == jev.calls[0]
     assert [spec.name for spec in tools.executed_specs] == [jev.calls[0][0]]
+
+
+class DataRecoveryTools(EngineTools):
+    """Unhealthy until the first repair runs, healthy afterwards."""
+
+    async def monitor_health(self) -> MonitorStatus:
+        if not self.executed_specs:
+            return MonitorStatus(healthy=False, status_code=500, detail="down")
+        return MonitorStatus(healthy=True, status_code=200, detail="healthy")
+
+
+class RowsVerifier:
+    """Healthy every time; reports the given widget row counts in order."""
+
+    def __init__(self, rows: list[int]) -> None:
+        self._rows = list(rows)
+
+    async def verify(self) -> VerificationResult:
+        rows = self._rows.pop(0) if len(self._rows) > 1 else self._rows[0]
+        return VerificationResult(
+            healthy=True,
+            details={"status_code": 200, "payload": {"ok": True, "status": {"widget_rows": rows}}},
+        )
+
+
+def _run_sensors(events_path: Path) -> list[str]:
+    from harness.sensors.runtime_invariants import SENSORS
+
+    rows = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+    return [r["sensor_name"] for r in (s(rows) for s in SENSORS) if r["status"] == "fail"]
+
+
+async def _drive(agent: RecoveryAgent, *, limit: int = 8) -> None:
+    for _ in range(limit):
+        await agent.run_iteration()
+        if agent.snapshot.incident is None:
+            return
+
+
+@pytest.mark.asyncio
+async def test_healthy_but_data_missing_keeps_going_until_rows_are_back(tmp_path: Path) -> None:
+    """Service back with 0 of 100 rows: the incident stays open, MI retries from step 5
+    with the data gap as feedback, a different repair brings 95 rows back, then it
+    closes as data_recovered (user decision 2026-11-18)."""
+    tools = DataRecoveryTools(execute_ok_sequence=[True, True])
+    agent, events = _agent(
+        tmp_path,
+        llm=EngineLLM(),
+        tools=tools,
+        verifier=RowsVerifier([0, 95]),  # type: ignore[arg-type]
+        memory=_empty_class_memory(tmp_path),
+    )
+    agent._last_healthy_widget_rows = 100
+
+    await agent.run_iteration()
+    incident = agent.snapshot.incident
+    assert incident is not None and incident.data_recovery and incident.service_recovered
+    assert incident.last_tool_error is not None
+    assert incident.last_tool_error.startswith("data_incomplete")
+
+    await _drive(agent)
+    assert agent.snapshot.incident is None
+    first, second = tools.executed_specs
+    assert first.name != second.name
+    kinds = [e.event_type for e in events.events]
+    assert kinds.count("incident.recovered") == 1
+    assert kinds.count("incident.data_recovered") == 1
+    closed = [e.payload for e in events.events if e.event_type == "incident.closed"]
+    assert closed[-1]["resolution"] == "data_recovered"
+    assert _run_sensors(tmp_path / "events.jsonl") == []
+
+
+@pytest.mark.asyncio
+async def test_data_recovery_gives_up_after_its_attempt_budget(tmp_path: Path) -> None:
+    tools = DataRecoveryTools(execute_ok_sequence=[True] * 6)
+    agent, events = _agent(
+        tmp_path,
+        llm=EngineLLM(),
+        tools=tools,
+        verifier=RowsVerifier([0]),  # type: ignore[arg-type]
+        memory=_empty_class_memory(tmp_path),
+    )
+    agent._last_healthy_widget_rows = 100
+
+    await _drive(agent, limit=10)
+
+    assert agent.snapshot.incident is None
+    closed = [e.payload for e in events.events if e.event_type == "incident.closed"]
+    assert closed[-1]["resolution"] == "data_loss_accepted"
+    assert [e.event_type for e in events.events].count("incident.recovered") == 1
+    assert _run_sensors(tmp_path / "events.jsonl") == []
+
+
+@pytest.mark.asyncio
+async def test_no_data_recovery_without_a_healthy_baseline(tmp_path: Path) -> None:
+    tools = DataRecoveryTools(execute_ok_sequence=[True])
+    agent, events = _agent(
+        tmp_path,
+        llm=EngineLLM(),
+        tools=tools,
+        verifier=RowsVerifier([0]),  # type: ignore[arg-type]
+        memory=_empty_class_memory(tmp_path),
+    )
+
+    await agent.run_iteration()
+
+    assert agent.snapshot.incident is None
+    closed = [e.payload for e in events.events if e.event_type == "incident.closed"]
+    assert "resolution" not in closed[-1]

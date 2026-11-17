@@ -69,3 +69,9 @@ class IncidentContext:
     prior_attempts: list[AttemptFeedback] = field(default_factory=list)
     latest_diagnostics: dict[str, Any] = field(default_factory=dict)
     failed_action_keys: set[str] = field(default_factory=set)
+    # Data recovery (user decision 2026-11-18): the service is healthy again but fewer
+    # than DATA_RECOVERY_TARGET of the rows seen at the last healthy check are back, so
+    # the incident stays open and MI keeps trying to recover the data.
+    service_recovered: bool = False
+    data_recovery: bool = False
+    data_recovery_attempts: int = 0

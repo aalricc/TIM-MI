@@ -193,3 +193,20 @@ async def test_cli_prints_kpis(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert main(["prog", str(run.state_dir / "events.jsonl")]) == 0
     assert json.loads(capsys.readouterr().out)["recovery_rate"] == 1.0
     assert main(["prog"]) == 2
+
+
+def test_rows_lost_uses_the_final_count_after_data_recovery() -> None:
+    from harness.metrics.kpis import compute_kpis
+
+    events = [
+        {"ts": 0.0, "event_type": "incident.started", "payload": {"incident_id": "d"}},
+        {"ts": 10.0, "event_type": "incident.recovered",
+         "payload": {"incident_id": "d", "attempts": 1, "rows_lost": 100}},
+        {"ts": 20.0, "event_type": "incident.data_recovered",
+         "payload": {"incident_id": "d", "attempts": 2, "rows_lost": 4}},
+        {"ts": 20.1, "event_type": "incident.closed",
+         "payload": {"incident_id": "d", "resolution": "data_recovered"}},
+    ]
+    kpis = compute_kpis(events)
+    assert kpis["data_loss"]["rows_lost_total"] == 4
+    assert kpis["time_to_recover_seconds"]["max"] == 10.0

@@ -71,6 +71,11 @@ def compute_kpis(events: Iterable[RuntimeEvent]) -> dict[str, Any]:
             action_key = payload.get("action_key")
             if isinstance(class_id, str) and isinstance(action_key, str):
                 winners_by_class.setdefault(class_id, set()).add(action_key)
+        elif event_type == "incident.data_recovered" and incident_id in recovered:
+            # Data recovery after the service came back: TTR stays at the first recovery,
+            # rows lost is the final count.
+            if _is_number(payload.get("rows_lost")):
+                recovered[incident_id]["rows_lost"] = payload["rows_lost"]
         elif event_type == "incident.closed":
             closed.add(incident_id)
         elif event_type == "decision.selected":

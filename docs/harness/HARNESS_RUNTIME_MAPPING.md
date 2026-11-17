@@ -166,7 +166,20 @@ the data.
     `widget_rows_before`, `widget_rows_after`, `rows_lost` and `reward`. The compose
     `traffic` service writes a widget every `TRAFFIC_INTERVAL_SECONDS` (default 2) so
     there are rows to lose.
-12. **LLM token usage.** `llm.why` and `llm.how` carry `llm_usage_input`,
+12. **Data recovery** (user decision 2026-11-18). When a verified recovery brings back
+    fewer than `DATA_RECOVERY_TARGET` (90 %) of `widget_rows_before`, the incident stays
+    open: success persistence for that attempt runs as usual, the first such attempt
+    still publishes `incident.recovered` (TTR = service back), then `attempt.result` =
+    `retry` with `reason` = `data_incomplete` and `widget_rows_before` /
+    `widget_rows_after`. The executed action joins `failed_action_keys`, and
+    `last_tool_error` (seen by HOW) starts with `data_incomplete:`. Retries skip the
+    pre-retry close (no `monitor.healthy_before_retry`) and resume at step 5. A later
+    verified attempt that gets enough rows back publishes `incident.data_recovered`
+    (same fields as `incident.recovered`) and `incident.closed` with `resolution` =
+    `data_recovered`. After `DATA_RECOVERY_MAX_ATTEMPTS` (3) data-recovery attempts the
+    incident closes with `resolution` = `data_loss_accepted`. KPIs keep TTR from
+    `incident.recovered` and take `rows_lost` from `incident.data_recovered` when present.
+13. **LLM token usage.** `llm.why` and `llm.how` carry `llm_usage_input`,
     `llm_usage_output` and `llm_usage_total` (tokens, summed over the call's requests,
     including the compact HOW retry) when the provider returns `usage`. A request that
     failed is not counted. The names avoid "token" because `EventLog` redacts keys that
