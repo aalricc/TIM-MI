@@ -377,21 +377,37 @@
         }
         const primary = how.primary || {};
         const alternatives = Array.isArray(how.alternatives) ? how.alternatives : [];
+        // executed_candidate is "primary" or "alternative:<candidate name>" (engine.py).
+        const executed = typeof how.executed_candidate === 'string' ? how.executed_candidate : '';
+        const executedAlt = executed.startsWith('alternative:') ? executed.slice('alternative:'.length) : null;
+        const primaryRan = executed === 'primary';
+        const jev = how.jev_decision && typeof how.jev_decision === 'object' ? how.jev_decision : null;
+        const jevProb = jev && typeof jev.usable_probability === 'number' ? jev.usable_probability.toFixed(2) : null;
+        const badge = (ran) => (ran ? '<span class="badge">EXECUTED · JEV pick</span>' : '');
+        // Fast path: the candidate is a learned fix replayed from class memory; its
+        // rationale was written when the fix was first learned, not for this incident.
+        const fastPath = how.source === 'class_memory';
         return `
-          <div>
-            <b>Primary</b>
-            <span class="badge">EXECUTED</span>
+          ${jev ? `<div class="small jev-line"><b>JEV decision:</b> ${esc(jev.selected_candidate_name || 'n/a')} • usable p=${esc(jevProb || 'n/a')}</div>` : ''}
+          ${fastPath ? '<div class="small"><b>Fast path:</b> learned fix replayed from class memory (no new HOW plan)</div>' : ''}
+          <div class="how-candidate${primaryRan ? ' executed' : ''}">
+            <b>${fastPath ? 'Learned fix' : 'Primary'}</b>
+            ${badge(primaryRan)}
             <div class="small mono">${esc(primary.name || 'unnamed')} • ${esc(primary.operation || 'n/a')}</div>
+            ${fastPath ? '<div class="small"><i>Rationale recorded when this fix was first learned:</i></div>' : ''}
             <div>${esc(primary.rationale || '')}</div>
           </div>
-          <div class="small" style="margin-top:8px;"><b>Alternatives (observability only)</b></div>
+          ${alternatives.length ? '<div class="small" style="margin-top:8px;"><b>Alternatives</b></div>' : ''}
           <ol>
-            ${alternatives.map((item) => `
-              <li>
-                <div class="mono">${esc(item.name || 'unnamed')} • ${esc(item.operation || 'n/a')}</div>
+            ${alternatives.map((item) => {
+              const ran = executedAlt !== null && item.name === executedAlt;
+              return `
+              <li class="how-candidate${ran ? ' executed' : ''}">
+                <div class="mono">${esc(item.name || 'unnamed')} • ${esc(item.operation || 'n/a')} ${badge(ran)}</div>
                 <div>${esc(item.rationale || '')}</div>
               </li>
-            `).join('')}
+            `;
+            }).join('')}
           </ol>
         `;
       }
