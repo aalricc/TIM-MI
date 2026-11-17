@@ -16,6 +16,11 @@ and JEV call budgets; CP11 (decision-log review packets), CP12 (LLM judge + cali
 CP13 (selective risky-path PR LLM review + failed-campaign reflection), and CP14
 (governance enforcement: CODEOWNERS + PR template + branch-protection runbook) are done.
 D2 is manual `workflow_dispatch` on a self-hosted runner.
+2026-11-17 deploy-readiness pass: WHY/HOW prompts rewritten (role + evidence guide + exact
+operation params, no hints), simulated faults leave no trace MI can read, deep health
+includes a rolled-back write check, `main` protected by the three CI checks
+(`harness/governance/README.md`), landing page in `site/`, demo recorder
+`scripts/record_demo.py`.
 
 ## What this repo is
 
@@ -38,6 +43,14 @@ make harness                     # harness tests + mypy harness only
 make audit                       # pip-audit dependency scan
 pytest -q -m live                # opt-in; needs real OpenAI credentials
 ```
+
+For real end-to-end execution (target + MI + live campaign), use the full extras:
+
+```bash
+pip install -e '.[dev,jev,rag,trace]'
+```
+
+Node.js is not required for this repo's runtime or tests (dashboard is static HTML).
 
 `pytest -q` excludes `live` tests. The pre-commit hook runs the same commands as `make check`
 and CI (`.pre-commit-config.yaml`, `.github/workflows/ci.yml`); commits need the virtualenv
@@ -67,6 +80,18 @@ active.
 | `.github/CODEOWNERS`, `.github/pull_request_template.md` | risky-path ownership routing and risky-change PR checklist |
 | `tests/harness_scenarios.py` | scripted runtime scenarios used by harness tests |
 | `docs/harness/skills/` | step-by-step procedures (below) |
+
+## E2E runtime map (what starts what)
+
+- Target application entrypoint: `target/app/main.py` (uvicorn app).
+- MI agent entrypoint: `src/mi_agent/main.py` (`python -m mi_agent.main`).
+- API/dashboard surface: `src/mi_agent/api/server.py` (`/health/live`, `/agent/status`,
+  `/agent/events`, `/agent/llm-trace`, `/agent/dashboard`).
+- Fault campaign orchestrator: `scripts/e2e_fault_campaign.py` (uses
+  `harness/scenarios/*.json` fixtures and writes campaign artifacts).
+- Approved scenario checker: `harness/scenarios/check.py`.
+- Event slicer + KPIs + invariant sensors: `harness/events/slice.py`,
+  `harness/metrics/kpis.py`, `harness/sensors/runtime_invariants.py`.
 
 ## Runtime invariants (never break)
 
@@ -116,6 +141,96 @@ dependency advisory. Say in the PR description which item applies.
   § Dependency vulnerabilities.
 - Commits: one logical change each, conventional prefix as in history
   (`fix(runtime): …`, `feat(harness): …`, `test(api): …`, `docs: …`, `ci(harness): …`).
+
+## Real E2E prerequisites and startup
+
+Real E2E is expected to run against the actual target app + MI process (not only unit tests).
+
+Required runtime conditions:
+
+- Docker path (recommended): `docker compose` daemon must be reachable.
+- Host path (fallback): local process must be allowed to bind localhost ports.
+- DNS/egress must reach the configured LLM endpoint and Pinecone host.
+- Local Jev server must be up for action selection (`README.md` Jev section).
+
+### Start target app (host mode)
+
+```bash
+cd target/app
+TARGET_TEST_HOOKS=1 python -m uvicorn main:app --host 127.0.0.1 --port 8080
+```
+
+Readiness checks:
+
+```bash
+curl -fsS http://127.0.0.1:8080/health/live
+curl -fsS http://127.0.0.1:8080/health/deep
+```
+
+### Start MI agent (host mode)
+
+The `.env` file is compose-oriented (`/target/...`, `/state/...`). For host mode, override
+state/file paths to writable local paths before running:
+
+```bash
+python -m mi_agent.main
+```
+
+Readiness checks:
+
+```bash
+curl -fsS http://127.0.0.1:8090/health/live
+curl -fsS http://127.0.0.1:8090/agent/status
+```
+
+Monitoring active means `monitor.health` events continue in `/agent/events` and
+`workflow_state` stays `healthy` when the target is healthy.
+
+## E2E execution workflow
+
+### Full fault campaign (supported faults only)
+
+`scripts/e2e_fault_campaign.py` is the canonical runner for live fault injections.
+
+```bash
+PYTHONPATH=. python scripts/e2e_fault_campaign.py \
+  --stage ci \
+  --fixtures-dir harness/scenarios \
+  --target-url http://127.0.0.1:8080 \
+  --agent-url http://127.0.0.1:8090 \
+  --events-log state/events.jsonl
+```
+
+Outputs:
+
+- Under `results/` (per run): campaign summary JSON, incident slice JSONL files,
+  approved-outcome check JSON files, and KPI JSON files.
+
+### Inspecting evidence
+
+```bash
+curl -s http://127.0.0.1:8090/agent/events?limit=2000
+curl -s http://127.0.0.1:8090/agent/llm-trace
+tail -n 200 target/app/app.log
+```
+
+### Safe cleanup
+
+- Host mode: stop target + MI processes explicitly.
+- Compose mode: `docker compose down --remove-orphans` (and `-v` only when intentionally
+  resetting backup history).
+
+## Test lanes and constraints
+
+- Unit/integration (offline): default `pytest -q` (`live` tests excluded by marker).
+- Harness architecture/contract/sensor lane: `make harness`.
+- Live LLM lane (external API required): `pytest -q -m live`.
+- Live fault campaign lane (actual target + MI + faults):
+  `scripts/e2e_fault_campaign.py` or `.github/workflows/live-e2e-fault-campaign.yml`.
+
+Operational note: only the three fixture-backed faults are supported by the campaign
+(`drop_widgets_table`, `delete_db`, `corrupt_db`). Scenarios outside these fixtures must be
+reported as unsupported unless new approved fixtures are added.
 
 ## Procedures
 
