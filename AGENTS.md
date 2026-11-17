@@ -203,7 +203,7 @@ PYTHONPATH=. python scripts/e2e_fault_campaign.py \
 
 Outputs:
 
-- Under `results/` (per run): campaign summary JSON, incident slice JSONL files,
+- Under the gitignored results directory (per run): campaign summary JSON, incident slice JSONL files,
   approved-outcome check JSON files, and KPI JSON files.
 
 ### Inspecting evidence
