@@ -4,297 +4,375 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MI Recovery Agent</title>
-<meta name="description" content="MI watches your service, works out why it broke, repairs it with one checked action at a time, verifies the fix, and learns which repairs work.">
+<meta name="description" content="MI runs next to your app, checks it every second, and fixes it by itself when it breaks, then makes sure your data came back too.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#f6f8f7;--surface:#ffffff;--ink:#0d1f1c;--muted:#4b5e5a;--line:#d7e1de;
-  --teal:#0f766e;--teal-soft:#e3f2ef;--violet:#6d4fc2;--violet-soft:#efeafb;
-  --blue:#1d5fbf;--blue-soft:#e6eefb;--amber:#b86e00;--amber-soft:#fdf1dc;
-  --red:#c2323b;--red-soft:#fbe9ea;--code:#0b1513;--code-ink:#cfe9e3;
-}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
-  --bg:#0a1211;--surface:#101b19;--ink:#e6f1ee;--muted:#9db3ae;--line:#20312e;
-  --teal:#3cc7b5;--teal-soft:#123230;--violet:#a891f0;--violet-soft:#221c38;
-  --blue:#7aa8f0;--blue-soft:#14233a;--amber:#f0b45a;--amber-soft:#2e2412;
-  --red:#f07a80;--red-soft:#341719;--code:#050a09;--code-ink:#cfe9e3;
-}}
-:root[data-theme="dark"]{
-  --bg:#0a1211;--surface:#101b19;--ink:#e6f1ee;--muted:#9db3ae;--line:#20312e;
-  --teal:#3cc7b5;--teal-soft:#123230;--violet:#a891f0;--violet-soft:#221c38;
-  --blue:#7aa8f0;--blue-soft:#14233a;--amber:#f0b45a;--amber-soft:#2e2412;
-  --red:#f07a80;--red-soft:#341719;--code:#050a09;--code-ink:#cfe9e3;
+  --bg:#EDF1F5; --panel:#FFFFFF; --ink:#0B2236; --soft:#4D6274; --line:#D3DCE5;
+  --ok:#137A73; --ok-soft:#DCEFEC; --alarm:#D2353B; --alarm-soft:#F8E1E2; --code:#0B2236;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 "Inter Tight",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-a{color:var(--teal)}
-.wrap{max-width:1120px;margin:0 auto;padding:0 16px}
-code,.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.92em}
-nav{display:flex;align-items:center;justify-content:space-between;padding:20px 0}
-.logo{font-weight:700;letter-spacing:-.02em;font-size:20px;display:flex;align-items:center;gap:10px;color:var(--ink);text-decoration:none}
-.logo i{width:12px;height:12px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 4px var(--teal-soft);display:inline-block}
-nav .links{display:flex;gap:20px;font-size:15px}
-nav .links a{color:var(--muted);text-decoration:none}
+body{margin:0;background:var(--bg);color:var(--ink);font:18px/1.6 "Atkinson Hyperlegible",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:"Familjen Grotesk",system-ui,sans-serif;font-weight:700;letter-spacing:-.02em;margin:0;text-wrap:balance}
+p{margin:0}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--ok);outline-offset:3px;border-radius:4px}
+.wrap{max-width:1140px;margin:0 auto;padding:0 20px}
+
+/* nav */
+nav{display:flex;justify-content:space-between;align-items:center;padding:22px 0}
+.brand{display:flex;gap:10px;align-items:center;font:700 22px "Familjen Grotesk",sans-serif;text-decoration:none}
+.brand svg{display:block}
+nav .links{display:flex;gap:26px;font-size:16px}
+nav .links a{text-decoration:none;color:var(--soft)}
 nav .links a:hover{color:var(--ink)}
-.hero{padding:56px 0 40px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
-.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--teal);letter-spacing:.04em;text-transform:uppercase}
-h1{font-size:clamp(36px,5.4vw,60px);line-height:1.04;letter-spacing:-.035em;margin:14px 0 18px;font-weight:700}
-h1 em{font-style:normal;color:var(--teal)}
-.lede{font-size:19px;color:var(--muted);max-width:34em;margin:0 0 28px}
-.ctas{display:flex;gap:12px;flex-wrap:wrap}
-.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:10px;font-weight:600;text-decoration:none;font-size:15px;border:1px solid var(--line)}
-.btn.primary{background:var(--teal);color:var(--bg);border-color:var(--teal)}
-.btn.ghost{background:var(--surface);color:var(--ink)}
-.terminal{background:var(--code);color:var(--code-ink);border-radius:14px;padding:18px 18px 20px;font:13px/1.7 "IBM Plex Mono",monospace;box-shadow:0 20px 50px -24px rgba(0,0,0,.45);overflow:hidden;min-height:330px}
-.terminal .bar{display:flex;gap:6px;margin-bottom:12px}
-.terminal .bar span{width:10px;height:10px;border-radius:50%;background:#2b3a37}
-.terminal .ln{white-space:pre-wrap;word-break:break-word;opacity:0;transform:translateY(4px);transition:all .35s}
-.terminal .ln.on{opacity:1;transform:none}
-.t-dim{color:#7f9c96}.t-red{color:#ff8f8f}.t-teal{color:#5ee0cc}.t-vio{color:#c3b0ff}.t-amb{color:#ffc874}.t-blu{color:#9cc2ff}
-section{padding:72px 0}
-h2{font-size:clamp(28px,3.6vw,40px);letter-spacing:-.03em;line-height:1.1;margin:0 0 14px}
-.sub{color:var(--muted);font-size:18px;max-width:40em;margin:0 0 36px}
-.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px}
-.card h3{margin:0 0 6px;font-size:18px;letter-spacing:-.01em}
-.card p{margin:0;color:var(--muted);font-size:15.5px}
-.pain .card{border-left:3px solid var(--red)}
-.pain .card .tag{color:var(--red)}
-.tag{font-family:"IBM Plex Mono",monospace;font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;display:block}
-.loop{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;counter-reset:s}
-.step{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;position:relative}
-.step b{display:block;font-size:15.5px;margin-bottom:4px}
-.step span{color:var(--muted);font-size:14px;display:block}
-.step .who{position:absolute;top:12px;right:12px;font:500 11px "IBM Plex Mono",monospace;padding:2px 7px;border-radius:99px}
-.mi{background:var(--teal-soft);color:var(--teal)}.llm{background:var(--violet-soft);color:var(--violet)}
-.rag{background:var(--blue-soft);color:var(--blue)}.jev{background:var(--amber-soft);color:var(--amber)}
-.retry{margin-top:14px;padding:12px 16px;border:1px dashed var(--red);border-radius:12px;color:var(--red);font-size:14.5px;background:var(--red-soft)}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
-.stat{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px}
-.stat .n{font-size:40px;font-weight:700;letter-spacing:-.03em;line-height:1}
-.stat .l{color:var(--muted);font-size:14px;margin-top:8px}
-.note{color:var(--muted);font-size:13.5px;margin-top:14px}
-.video{border-radius:14px;overflow:hidden;border:1px solid var(--line);background:var(--code)}
+
+/* hero */
+.hero{display:grid;grid-template-columns:1fr 1.05fr;gap:56px;align-items:center;padding:40px 0 30px}
+.hero h1{font-size:clamp(42px,6vw,74px);line-height:1.02}
+.hero .lede{font-size:21px;color:var(--soft);margin:22px 0 30px;max-width:30em}
+.btns{display:flex;gap:12px;flex-wrap:wrap}
+.btn{display:inline-block;padding:13px 22px;border-radius:999px;font-weight:700;text-decoration:none;font-size:17px;border:2px solid var(--ink)}
+.btn.solid{background:var(--ink);color:var(--bg)}
+.btn.solid:hover{background:#163a57;border-color:#163a57}
+.btn.ghost:hover{background:var(--panel)}
+
+/* the monitor: the one bold element */
+.monitor{background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:22px 22px 18px;box-shadow:0 30px 60px -40px rgba(11,34,54,.45)}
+.mon-top{display:flex;justify-content:space-between;align-items:baseline;font-size:15px;color:var(--soft)}
+.mon-top b{color:var(--ink);font:600 17px "Familjen Grotesk",sans-serif}
+.trace{display:block;width:100%;height:170px;margin:10px 0 6px}
+.status{display:flex;gap:12px;align-items:center;min-height:56px;padding:10px 14px;border-radius:14px;background:var(--ok-soft);transition:background .5s}
+.status.bad{background:var(--alarm-soft)}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--ok);flex:none;transition:background .4s}
+.status.bad .dot{background:var(--alarm)}
+.status p{font-size:17px;line-height:1.35}
+.status p small{display:block;color:var(--soft);font-size:15px}
+.mon-foot{margin-top:10px;font-size:14px;color:var(--soft)}
+
+/* how you use it */
+.use{margin:34px 0 0;background:var(--panel);border:1px solid var(--line);border-radius:22px;display:grid;grid-template-columns:1fr 1.15fr;overflow:hidden}
+.use-text{padding:30px 32px}
+.use-text h2{font-size:30px;margin-bottom:10px}
+.use-text > p{color:var(--soft);margin-bottom:20px}
+.use ol{list-style:none;margin:0;padding:0;counter-reset:s;display:flex;flex-direction:column;gap:16px}
+.use li{counter-increment:s;display:grid;grid-template-columns:34px 1fr;gap:12px;align-items:start}
+.use li::before{content:counter(s);width:30px;height:30px;border-radius:50%;border:2px solid var(--ink);display:grid;place-items:center;font:700 15px "Familjen Grotesk",sans-serif}
+.use li b{display:block}
+.use li span{color:var(--soft);font-size:16px}
+.use pre{margin:0;background:var(--code);color:#D7E6F2;padding:28px 30px;font:14.5px/1.7 "JetBrains Mono",monospace;overflow-x:auto}
+.use pre .c{color:#7F9AB0}
+.use pre .k{color:#7FD3C8}
+
+/* sections */
+section{padding:110px 0 0}
+.head{max-width:40em;margin-bottom:36px}
+.head h2{font-size:clamp(32px,4vw,46px);line-height:1.08}
+.head p{color:var(--soft);font-size:20px;margin-top:14px}
+
+/* what happens: a real sequence, drawn as a path */
+.path{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:28px}
+.path::before{content:"";position:absolute;left:14px;right:14px;top:14px;height:2px;background:var(--line)}
+.step{position:relative;padding-top:44px}
+.step::before{content:"";position:absolute;top:6px;left:0;width:18px;height:18px;border-radius:50%;background:var(--bg);border:3px solid var(--ok)}
+.step:first-child::before{border-color:var(--alarm)}
+.step h3{font-size:22px;margin-bottom:8px}
+.step p{color:var(--soft);font-size:17px}
+
+/* learns */
+.compare{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:22px;overflow:hidden;background:var(--panel)}
+.compare > div{padding:30px 32px}
+.compare > div + div{border-left:1px solid var(--line);background:#F6FAF9}
+.compare h3{font-size:20px;color:var(--soft);font-weight:600;margin-bottom:14px}
+.big{font:700 58px/1 "Familjen Grotesk",sans-serif;letter-spacing:-.03em}
+.compare p{margin-top:14px;color:var(--soft)}
+.compare b{color:var(--ink)}
+
+/* safety */
+.rules{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border-top:2px solid var(--ink)}
+.rules div{padding:24px 26px 0 0}
+.rules h3{font-size:21px;margin-bottom:8px}
+.rules p{color:var(--soft);font-size:17px}
+
+/* demo */
+.video{border-radius:20px;overflow:hidden;border:1px solid var(--line);background:#0B2236;box-shadow:0 30px 60px -40px rgba(11,34,54,.5)}
 .video video{display:block;width:100%;height:auto}
-.check li{margin:0 0 10px;padding-left:28px;position:relative;list-style:none}
-.check{padding:0;margin:0}
-.check li::before{content:"";position:absolute;left:0;top:7px;width:14px;height:14px;border-radius:4px;background:var(--teal-soft);border:2px solid var(--teal)}
-pre{background:var(--code);color:var(--code-ink);padding:18px;border-radius:12px;overflow-x:auto;font:13.5px/1.7 "IBM Plex Mono",monospace;margin:0}
-details{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-bottom:10px}
-summary{cursor:pointer;font-weight:600}
-details p{color:var(--muted);margin:10px 0 0}
-.final{text-align:center;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:56px 24px}
-.final .ctas{justify-content:center}
-footer{padding:36px 0 48px;color:var(--muted);font-size:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+
+/* proof + under the hood */
+.proof{display:flex;gap:44px;flex-wrap:wrap;align-items:baseline}
+.proof div{min-width:180px}
+.proof .big{font-size:52px}
+.proof p{color:var(--soft);font-size:16px;margin-top:6px}
+details{margin-top:46px;border-top:1px solid var(--line);padding-top:18px}
+summary{cursor:pointer;font:600 20px "Familjen Grotesk",sans-serif;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";margin-left:10px;color:var(--soft)}
+details[open] summary::after{content:"\2212"}
+details ul{color:var(--soft);font-size:17px;padding-left:20px;margin:16px 0 0;max-width:46em}
+details li{margin:8px 0}
+
+.cta{margin:110px 0 0;padding:56px 0 64px;border-top:2px solid var(--ink)}
+.cta h2{font-size:clamp(32px,4vw,48px);max-width:16em;margin-bottom:24px}
+footer{padding:26px 0 40px;color:var(--soft);font-size:15px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line)}
+
+/* scroll fade: in when a block enters, out when it leaves (both directions) */
+.reveal{opacity:0;transform:translateY(28px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.7,.2,1)}
+.reveal.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}html{scroll-behavior:auto}}
+
 @media (max-width:900px){
-  .hero{grid-template-columns:1fr;gap:32px;padding-top:24px}
-  .grid3,.loop,.stats{grid-template-columns:1fr 1fr}
-  .grid2{grid-template-columns:1fr}
+  .hero,.use,.compare{grid-template-columns:1fr}
+  .compare > div + div{border-left:0;border-top:1px solid var(--line)}
+  .path{grid-template-columns:1fr 1fr}
+  .path::before{display:none}
+  .rules{grid-template-columns:1fr}
   nav .links{display:none}
+  section{padding-top:80px}
 }
-@media (max-width:560px){
-  .grid3,.loop,.stats{grid-template-columns:1fr}
-  section{padding:52px 0}
+@media (max-width:520px){
+  .path{grid-template-columns:1fr}
+  .use pre{font-size:13px;padding:22px 18px}
+  .use-text{padding:24px 20px}
+  .hero{padding-top:16px}
 }
-@media (prefers-reduced-motion:reduce){.terminal .ln{transition:none}}
 </style>
 </head>
 <body>
 <div class="wrap">
 <nav>
-  <a class="logo" href="#"><i></i>MI</a>
+  <a class="brand" href="#" aria-label="MI home">
+    <svg width="30" height="22" viewBox="0 0 30 22" aria-hidden="true"><path d="M1 12h7l3-8 4 15 3-9 2 2h9" fill="none" stroke="#137A73" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    MI
+  </a>
   <div class="links">
-    <a href="#how">How it works</a>
-    <a href="#proof">Results</a>
+    <a href="#use">How to use it</a>
+    <a href="#how">What it does</a>
     <a href="#demo">Demo</a>
-    <a href="#safety">Safety</a>
     <a href="https://github.com/aalricc/TIM-MI">GitHub</a>
   </div>
 </nav>
 
 <header class="hero">
   <div>
-    <div class="eyebrow">Self-healing recovery agent</div>
-    <h1>Your service breaks at 3 a.m.<br><em>MI fixes it in seconds.</em></h1>
-    <p class="lede">MI watches your service's health. When it goes bad, MI works out why, picks one repair, checks it is safe, runs it and confirms the service is healthy. If the repair fails, it tries again with what it just learned. Every repair that works makes the next one faster.</p>
-    <div class="ctas">
-      <a class="btn primary" href="#demo">Watch it recover live</a>
-      <a class="btn ghost" href="https://github.com/aalricc/TIM-MI">Run it yourself →</a>
+    <h1>When your app breaks, MI fixes it.</h1>
+    <p class="lede">MI is a small service you run next to your app. It checks your app every second. If something breaks, it finds the cause, fixes it, and makes sure your data came back too. No one gets paged.</p>
+    <div class="btns">
+      <a class="btn solid" href="#use">See how to set it up</a>
+      <a class="btn ghost" href="#demo">Watch it work</a>
     </div>
   </div>
-  <div class="terminal" aria-label="Example recovery timeline" id="term">
-    <div class="bar"><span></span><span></span><span></span></div>
-    <div class="ln t-dim">10:12:59  monitor   GET /health/deep → 200 ok</div>
-    <div class="ln t-red">10:13:00  monitor   GET /health/deep → 500 schema_invalid</div>
-    <div class="ln t-teal">10:13:00  incident  opened · collecting evidence</div>
-    <div class="ln t-blu">10:13:02  rag       5 SQLite doc chunks for the symptoms</div>
-    <div class="ln t-vio">10:13:08  why       missing_widgets_table (integrity ok, table absent)</div>
-    <div class="ln t-vio">10:13:14  how       4 candidates: run_sql ×1, backup restore ×3</div>
-    <div class="ln t-amb">10:13:20  jev       picked "Recreate widgets table" p=0.90</div>
-    <div class="ln t-teal">10:13:20  gate      run_sql · path + schema checks passed</div>
-    <div class="ln t-teal">10:13:20  execute   1 action · ok</div>
-    <div class="ln t-teal">10:13:20  verify    GET /health/deep → 200 · reads + writes ok</div>
-    <div class="ln t-dim">10:13:20  learn     reward 0.0 (all rows lost) · class memory updated</div>
-    <div class="ln t-teal">10:13:20  incident  closed · recovered in 20 s</div>
+  <div class="monitor" role="img" aria-label="Animated example: the app is healthy, its database table disappears, MI finds the cause, restores a backup, and the app is healthy again with its data back.">
+    <div class="mon-top"><b>your-app</b><span>checked every second</span></div>
+    <svg class="trace" viewBox="0 0 600 170" preserveAspectRatio="none" aria-hidden="true">
+      <path id="tracePath" d="" fill="none" stroke="#137A73" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+    </svg>
+    <div class="status" id="status"><span class="dot"></span><p id="statusText">Healthy<small>MI is watching</small></p></div>
+    <p class="mon-foot">Replay of a real run from 17 Nov 2026, sped up.</p>
   </div>
 </header>
-</div>
 
-<section class="pain">
-<div class="wrap">
-  <h2>Runbooks don't run themselves.</h2>
-  <p class="sub">Most "auto-remediation" is a fixed script tied to a fixed alert. It fixes the outage you predicted and does nothing about the one you didn't.</p>
-  <div class="grid3">
-    <div class="card"><span class="tag">Paged again</span><h3>Someone wakes up for a fix everyone already knows</h3><p>Restore the backup, recreate the table, restart the service. Each step takes thirty seconds to do, and the incident still runs for an hour while someone gets online.</p></div>
-    <div class="card"><span class="tag">Scripts are brittle</span><h3>Static playbooks miss new failure shapes</h3><p>A playbook knows one symptom and one fix. When the symptom changes slightly, it either does nothing or does the wrong thing with full confidence.</p></div>
-    <div class="card"><span class="tag">"Fixed" isn't fixed</span><h3>Green health checks that still drop writes</h3><p>A repair that brings the endpoint back but loses data or rejects writes isn't a recovery. Your tools still count it as one.</p></div>
+<div class="use reveal" id="use">
+  <div class="use-text">
+    <h2>How you use it</h2>
+    <p>MI isn’t a plugin or a library. It’s one container that sits beside your app and talks to it over the network.</p>
+    <ol>
+      <li><div><b>Add MI next to your app</b><span>One extra service in your Docker Compose file.</span></div></li>
+      <li><div><b>Point it at your app</b><span>Give it the address of your app’s health check. Your app also shares its logs and backups.</span></div></li>
+      <li><div><b>Leave it running</b><span>Open the dashboard to see every check, every fix and why it was made.</span></div></li>
+    </ol>
   </div>
+<pre aria-label="Example Docker Compose configuration"><span class="c"># docker-compose.yml</span>
+services:
+  your-app:
+    image: your-app:latest
+
+  <span class="k">mi</span>:
+    image: ghcr.io/aalricc/tim-mi-agent
+    environment:
+      <span class="c"># where your app's health check lives</span>
+      MI_TARGET_SERVICE_URL: http://your-app:8080
+      MI_MONITOR_HEALTH_PATH: /health/deep
+    env_file: .env   <span class="c"># your AI keys</span>
+    ports:
+      - "8090:8090"  <span class="c"># MI's dashboard</span></pre>
 </div>
-</section>
+</div>
 
 <section id="how">
 <div class="wrap">
-  <h2>One loop: diagnose, decide, verify, learn.</h2>
-  <p class="sub">Every incident goes through the same audited loop. MI runs exactly one action per attempt, and an independent check confirms it worked before MI learns from it.</p>
-  <div class="loop">
-    <div class="step"><span class="who mi">MI</span><b>1 · Watch</b><span>Polls deep health and new error logs every second.</span></div>
-    <div class="step"><span class="who mi">MI</span><b>2 · Gather evidence</b><span>Health, DB status, integrity, the app's schema, recent logs, the backup catalog.</span></div>
-    <div class="step"><span class="who rag">RAG</span><b>3 · Look it up</b><span>Pulls the relevant SQLite docs and repair skills MI has learned.</span></div>
-    <div class="step"><span class="who llm">LLM</span><b>4 · WHY</b><span>Finds the root cause and cites the exact evidence behind it.</span></div>
-    <div class="step"><span class="who mi">MI</span><b>5 · Remember</b><span>Matches the incident to past ones. Repairs proven on similar incidents take the fast path.</span></div>
-    <div class="step"><span class="who llm">LLM</span><b>6 · HOW</b><span>Writes a primary repair and 2–4 alternatives as concrete, executable actions.</span></div>
-    <div class="step"><span class="who jev">JEV</span><b>7 · Decide</b><span>A separate decision model scores each candidate for usefulness and risk, then picks one.</span></div>
-    <div class="step"><span class="who mi">MI</span><b>8 · Gate · run · verify</b><span>Allowlist, schema and sandbox checks. One action. Independent health verification.</span></div>
+  <div class="head reveal">
+    <h2>What happens when something breaks</h2>
+    <p>The same four steps, every time. If a fix doesn’t work, MI tries a different one until it does.</p>
   </div>
-  <div class="retry">If verification fails: keep the context, feed back the tool error and the post-attempt state, and loop to step 5. MI never repeats a failed action, and an incident fixed by someone else is never credited to MI.</div>
+  <div class="path reveal">
+    <div class="step"><h3>It notices</h3><p>The health check fails. MI opens an incident within a second and collects what your app is reporting.</p></div>
+    <div class="step"><h3>It finds the cause</h3><p>MI’s AI reads the evidence and says what is wrong, in plain words, with the proof it used.</p></div>
+    <div class="step"><h3>It makes one fix</h3><p>Several fixes are proposed. A separate checker picks one, and safety rules make sure it’s allowed.</p></div>
+    <div class="step"><h3>It checks the result</h3><p>Your app has to pass its health check and have its data back. If not, MI keeps going.</p></div>
+  </div>
 </div>
 </section>
 
 <section>
-<div class="wrap grid2" style="align-items:start">
-  <div>
-    <h2>Gets measurably better with every incident.</h2>
-    <p class="sub" style="margin-bottom:20px">MI only learns from repairs that were independently verified.</p>
-    <ul class="check">
-      <li><b>Reward reflects data loss.</b> A repair scores <code>1 − rows lost / rows before</code>, so MI learns the least-lossy fix, not just the first one that turns the check green.</li>
-      <li><b>Class memory.</b> Similar incidents form a class. Once a repair has proven itself enough times in a class, MI replays it on the fast path, still through the decision model, the gate and the verifier.</li>
-      <li><b>Skills library.</b> Winning repairs are written up as skills and fed back into retrieval for the next diagnosis.</li>
-      <li><b>Healthy is not enough.</b> If the service is back but its data is not, MI keeps the incident open and tries another fix until the rows are back.</li>
-      <li><b>No hints, no cheat sheet.</b> The prompts describe the evidence and the tool interface, nothing else. Which fix works is learned from outcomes, not hard-coded.</li>
-    </ul>
+<div class="wrap">
+  <div class="head reveal">
+    <h2>It gets better every time</h2>
+    <p>Each fix is scored by how much of your data it kept. MI uses those scores to choose the right fix sooner next time.</p>
   </div>
-  <pre aria-label="Learned skill example"><span class="t-dim"># state/skills.md: written by MI, not by hand</span>
-<span class="t-teal"># Class e7d5619cae7b</span>
-champion:        Restore most recent valid backup
-operation:       request_backup_restore
-champion_lcb:    0.85
-attempts:        15
-mean_latency_ms: 26
-<span class="t-dim">learned from 15 verified outcomes on
-17 Nov 2026; replayed on the fast path
-with the newest backup taken before
-the incident was detected.</span></pre>
+  <div class="compare reveal">
+    <div>
+      <h3>First time it saw this problem</h3>
+      <div class="big">35.7 s</div>
+      <p>Its first fix brought the app back with <b>none of its 1,810 rows</b>. MI didn’t stop there: a second fix restored a backup and got the data back, with 4 rows lost.</p>
+    </div>
+    <div>
+      <h3>After it had learned</h3>
+      <div class="big">13.3 s</div>
+      <p>It went straight to the backup restore. <b>3 of 1,997 rows lost</b>, one try, no human involved.</p>
+    </div>
+  </div>
 </div>
 </section>
 
-<section id="proof">
+<section>
 <div class="wrap">
-  <h2>Proven on a live system, not a slide.</h2>
-  <p class="sub">The real stack (target service, MI, LLM, JEV, Pinecone) with simulated users writing data, hit with three classes of database outage in rotation. MI is never told a fault was simulated. It sees exactly what it would see in a real outage.</p>
-  <div class="stats">
-    <div class="stat"><div class="n" id="m-rate">12 / 12</div><div class="l">incidents recovered and verified</div></div>
-    <div class="stat"><div class="n" id="m-ttr">19 s</div><div class="l">median time to recover</div></div>
-    <div class="stat"><div class="n" id="m-first">11 / 12</div><div class="l">fixed on the first attempt</div></div>
-    <div class="stat"><div class="n" id="m-inv">0</div><div class="l">safety invariant violations</div></div>
+  <div class="head reveal">
+    <h2>Built to be trusted with your app</h2>
   </div>
-  <p class="note">Live fault campaign, 17 Nov 2026: 12 runs across a dropped table, a deleted database and a corrupted database file (3 rounds, then 1 confirmation round on the final build). One run needed a second attempt after its first repair failed verification; MI retried and recovered. Every run passed all 8 runtime invariant sensors. In the demo recording that followed, class memory took the fast path and recovered in about 12 s.</p>
+  <div class="rules reveal">
+    <div><h3>Only safe actions</h3><p>MI can do four things: restore a backup, run a database fix, replace a file inside your app’s folder, or restart. Anything else is refused.</p></div>
+    <div><h3>One step at a time</h3><p>Exactly one fix per try, and every fix is checked by a separate health test before MI moves on.</p></div>
+    <div><h3>Everything on record</h3><p>Every check, cause, choice and result is saved and shown on the dashboard, so you can see why MI did what it did.</p></div>
+  </div>
 </div>
 </section>
 
 <section id="demo">
 <div class="wrap">
-  <h2>Watch a recovery, end to end.</h2>
-  <p class="sub">The real dashboard, with a highlight and a short note on every step. Part 1: MI has no memory; its first fix brings the service back with 0 of 1,810 rows, so it keeps going and a backup restore has the data back at 35.7 s. Part 2: the same outage after learning: the restore comes first, 13.3 s, 3 rows lost.</p>
-  <div class="video"><video src="demo.mp4" controls playsinline preload="metadata" poster="demo-poster.png"></video></div>
-</div>
-</section>
-
-<section id="safety">
-<div class="wrap">
-  <h2>Autonomy with guard rails you can audit.</h2>
-  <p class="sub">MI acts on production, so every safety rule lives in code and is checked by tests, not left to the model.</p>
-  <div class="grid3">
-    <div class="card"><span class="tag" style="color:var(--teal)">Allowlist</span><h3>Four operations. Nothing else.</h3><p>Backup restore, SQL on the app database, file replace within the sandbox, and service restart (only after a failed attempt). Anything else is rejected before it runs.</p></div>
-    <div class="card"><span class="tag" style="color:var(--teal)">Sandbox</span><h3>Paths can't escape</h3><p>Every path is resolved and checked against the app root or sandbox at the gate, and again at execution time.</p></div>
-    <div class="card"><span class="tag" style="color:var(--teal)">One action</span><h3>No runaway changes</h3><p>Exactly one action per attempt, always followed by independent verification. Retries re-check health first.</p></div>
-    <div class="card"><span class="tag" style="color:var(--teal)">Honest health</span><h3>"Healthy" means writes work</h3><p>The deep check confirms integrity, the schema and a rolled-back test write, so a repair that silently breaks inserts can't pass.</p></div>
-    <div class="card"><span class="tag" style="color:var(--teal)">Harness</span><h3>Sensors around the agent</h3><p>Runtime invariant sensors, KPI thresholds, call budgets and an LLM judge watch every decision in production.</p></div>
-    <div class="card"><span class="tag" style="color:var(--teal)">Full trail</span><h3>Every step on the record</h3><p>Evidence, diagnosis, candidates, JEV scores and the verdict are kept in the event log and shown on the live dashboard.</p></div>
+  <div class="head reveal">
+    <h2>Watch it work</h2>
+    <p>A four-minute recording of the real dashboard, with notes on each step. First MI fixes an outage it has never seen; then it fixes the same outage after learning.</p>
   </div>
+  <div class="video reveal"><video src="demo.mp4" controls playsinline preload="metadata" poster="demo-poster.png"></video></div>
 </div>
 </section>
 
 <section>
-<div class="wrap grid2" style="align-items:start">
-  <div>
-    <h2>Running in five minutes.</h2>
-    <p class="sub">Docker Compose brings up the demo service, a backup job, simulated user traffic, MI and its surveillance sidecar.</p>
+<div class="wrap">
+  <div class="head reveal">
+    <h2>Tested on real outages</h2>
+    <p>We repeatedly broke a live app in three ways: deleted a table, deleted the database, and corrupted it. Users kept writing data the whole time.</p>
   </div>
-<pre><span class="t-dim"># 1 · credentials (LLM, JEV, Pinecone)</span>
-cp .env.example .env
-
-<span class="t-dim"># 2 · start the stack</span>
-TARGET_TEST_HOOKS=1 docker compose up --build
-
-<span class="t-dim"># 3 · open the dashboard</span>
-open http://127.0.0.1:8090/dashboard
-
-<span class="t-dim"># 4 · break something, watch MI fix it</span>
-curl -X POST localhost:8080/ops/fault/corrupt_db</pre>
+  <div class="proof reveal">
+    <div><div class="big">12 of 12</div><p>outages fixed and checked</p></div>
+    <div><div class="big">19 s</div><p>typical time to recover</p></div>
+    <div><div class="big">0</div><p>safety rules broken</p></div>
+  </div>
+  <details class="reveal">
+    <summary>Under the hood</summary>
+    <ul>
+      <li>Two AI calls per new problem: one finds the cause, one proposes fixes. The prompts describe the evidence and the allowed actions only, with no hints about which fix to use.</li>
+      <li>A separate decision model, JEV, scores the proposed fixes and must approve the one that runs.</li>
+      <li>Relevant database documentation is looked up for each problem and given to the AI.</li>
+      <li>Fixes that worked are remembered per type of problem and reused once they have proven themselves.</li>
+      <li>Today MI works with apps backed by SQLite that share a health check, logs, database status and backups over HTTP.</li>
+    </ul>
+  </details>
 </div>
 </section>
 
-<section>
 <div class="wrap">
-  <h2>Questions teams ask</h2>
-  <details><summary>Does the model just guess? What stops a bad repair?</summary><p>The model proposes. It doesn't execute. A separate decision model scores the candidates, a code-level security gate checks schema, allowlist and paths, one action runs, and an independent verifier decides whether it worked. Only verified repairs are learned.</p></details>
-  <details><summary>Will it learn the wrong lesson from a lucky fix?</summary><p>Rewards are graded by data loss, the fast path requires a confidence bound over several verified successes, and an incident that recovers on its own between attempts is closed without crediting MI.</p></details>
-  <details><summary>Is it tuned to the demo faults?</summary><p>No. The prompts describe the evidence and the action interface only. Tests enforce that they name no fault and no preferred fix, and that a simulated fault leaves no trace MI can read.</p></details>
-  <details><summary>What does it work with today?</summary><p>A SQLite-backed HTTP service with a deep health endpoint, a log endpoint and a backup catalog. The loop, the gate and the learning are service-agnostic. New operations are added through a documented, test-checked procedure.</p></details>
-</div>
-</section>
-
-<section>
-<div class="wrap">
-  <div class="final">
-    <h2>Stop paging people for fixes a machine can verify.</h2>
-    <p class="sub" style="margin:0 auto 28px">Run MI against the demo service today, then point it at yours.</p>
-    <div class="ctas">
-      <a class="btn primary" href="https://github.com/aalricc/TIM-MI">Get the code</a>
+  <div class="cta reveal">
+    <h2>Stop waking people up for problems a machine can fix.</h2>
+    <div class="btns">
+      <a class="btn solid" href="https://github.com/aalricc/TIM-MI">Get the code on GitHub</a>
       <a class="btn ghost" href="#demo">Watch the demo</a>
     </div>
   </div>
+  <footer><span>MI Recovery Agent</span><span>Open source on <a href="https://github.com/aalricc/TIM-MI">GitHub</a></span></footer>
 </div>
-</section>
 
-<div class="wrap">
-<footer><span>MI Recovery Agent</span><span>Open source · <a href="https://github.com/aalricc/TIM-MI">github.com/aalricc/TIM-MI</a></span></footer>
-</div>
 <script>
-(function(){
-  var lines=[].slice.call(document.querySelectorAll('#term .ln'));
-  var reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if(reduce){lines.forEach(function(l){l.classList.add('on')});return;}
-  function run(){
-    lines.forEach(function(l){l.classList.remove('on')});
-    lines.forEach(function(l,i){setTimeout(function(){l.classList.add('on')},300+i*450)});
-    setTimeout(run,300+lines.length*450+4000);
+// Scroll fade: blocks fade in as they enter and out as they leave, both directions.
+(function () {
+  var items = document.querySelectorAll('.reveal');
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce || !('IntersectionObserver' in window)) {
+    items.forEach(function (el) { el.classList.add('in'); });
+    return;
   }
-  run();
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) { e.target.classList.toggle('in', e.isIntersecting); });
+  }, { threshold: 0.12, rootMargin: '0px 0px -6% 0px' });
+  items.forEach(function (el) { io.observe(el); });
+})();
+
+// The hero monitor: replays the real 17 Nov run (inc-2555e0fccc), sped up.
+(function () {
+  var path = document.getElementById('tracePath');
+  var status = document.getElementById('status');
+  var text = document.getElementById('statusText');
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var W = 600, MID = 100, STEP = 6, N = W / STEP + 1;
+  var points = [];
+  for (var i = 0; i < N; i++) points.push(MID);
+  var phases = [
+    { t: 0,     ok: true,  beat: true,  main: 'Healthy', sub: 'MI is watching' },
+    { t: 3600,  ok: false, beat: false, main: 'Your app is down', sub: 'A database table disappeared. Users see errors.' },
+    { t: 5600,  ok: false, beat: false, main: 'Finding the cause', sub: 'The table is missing, but the file is fine.' },
+    { t: 7600,  ok: false, beat: false, main: 'Fixing it', sub: 'Rebuilding the missing table.' },
+    { t: 9200,  ok: false, beat: true,  main: 'App is back, data is not', sub: '0 of 1,810 rows came back. MI keeps going.' },
+    { t: 11600, ok: false, beat: true,  main: 'Restoring the backup', sub: 'A second fix to get the data back.' },
+    { t: 13400, ok: true,  beat: true,  main: 'Healthy, data back', sub: '4 of 1,810 rows lost. Fixed in 35.7 s, no one paged.' },
+    { t: 17800 }
+  ];
+  function phaseAt(ms) {
+    var p = phases[0];
+    for (var i = 0; i < phases.length - 1; i++) if (ms >= phases[i].t) p = phases[i];
+    return p;
+  }
+  function show(p) {
+    status.classList.toggle('bad', !p.ok);
+    path.setAttribute('stroke', p.ok ? '#137A73' : '#D2353B');
+    text.innerHTML = p.main + '<small>' + p.sub + '</small>';
+  }
+  function beat(k) {
+    var x = k % 18;
+    if (x === 9) return MID - 58;
+    if (x === 10) return MID + 34;
+    if (x === 8) return MID - 10;
+    if (x === 11) return MID - 6;
+    return MID + (Math.random() - 0.5) * 3;
+  }
+  function draw() {
+    var d = 'M0 ' + points[0];
+    for (var i = 1; i < points.length; i++) d += ' L' + (i * STEP) + ' ' + points[i].toFixed(1);
+    path.setAttribute('d', d);
+  }
+  if (reduce) {
+    for (var j = 0; j < N; j++) points[j] = beat(j);
+    draw();
+    show(phases[6]);
+    return;
+  }
+  var start = performance.now(), k = 0, last = '', lastTick = 0;
+  function frame(now) {
+    var ms = (now - start) % phases[phases.length - 1].t;
+    var p = phaseAt(ms);
+    if (p.main !== last) { show(p); last = p.main; }
+    if (now - lastTick > 45) {
+      lastTick = now;
+      points.shift();
+      points.push(p.beat ? beat(k) : MID + 34 + (Math.random() - 0.5) * 2);
+      k++;
+      draw();
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
 })();
 </script>
 </body>
