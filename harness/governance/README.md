@@ -18,7 +18,7 @@ runtime-written artifacts are governed. Governance never relaxes a runtime invar
 | **CI/CD after integration** | everything above again | `.github/workflows/ci.yml` (`ruff`, `mypy --strict src`, `mypy --strict harness`, `pytest -q`) | wired |
 | | dependency vulnerability scan | `.github/workflows/ci.yml` job `audit` (`pip-audit` over `.[dev,jev,rag,trace]`) | wired |
 | | full E2E fault-injection recovery regression | `README.md` quick live recovery test | manual |
-| | costlier inferential review (LLM code / architecture review) | `.github/workflows/selective-llm-review.yml` (advisory PR comment only; triggered only on risky paths) | wired |
+| | costlier inferential review (LLM code / architecture review) | `.github/workflows/pr-gates.yml` `agent-review`: independent reviewer agent, required, fail-closed, every PR (replaced the advisory selective review, 2026-11-17) | wired |
 | | required approval for risky changes | PR review (see below) | manual |
 | **Continuous (outside change lifecycle)** | dependency / security drift scans | `.github/workflows/drift.yml` (weekly + manual; fresh resolution, `pip-audit` + ruff `S`; opens/updates one tracking issue) | wired |
 | | runtime KPI surveillance (recovery rate, TTR, JEV request errors vs `harness/metrics/thresholds.json`) | compose `harness-watch` service: `python -m harness.watch` every 5 min over 24 h → `results/harness/sensor_results.jsonl`, dashboard Surveillance panel | wired |
@@ -49,36 +49,76 @@ Temporary solo-owner exception (CP14/D6): while all three role owners above are 
 person (`@aalricc`), self-approval is allowed for risky changes. Remove this exception once
 another maintainer role owner is assigned.
 
-## Branch protection for `main` (ruleset `main-protection`)
+## Agent PR pipeline and branch protection for `main` (ruleset `main-protection`)
 
-`main` is governed by the repository ruleset `main-protection` (Settings → Rules):
+Industry pattern: the agent never merges on its own judgement; branch rules merge a PR
+once every required check is green, and an independent reviewer agent is one of those
+checks. Risk tiering keeps a human on risky changes (SLSA treats a bot as not a trusted
+person, so a bot review alone never stands in for owner sign-off).
 
-1. Require a pull request before merging.
-2. Require 1 approval and review from Code Owners; dismiss stale approvals on push.
-3. Require conversation resolution before merging.
-4. Require status checks to pass, branch up to date, from the `CI` workflow:
-   **`lint-type-test`**, **`dependency-audit`**, **`docker-build-smoke`**.
-5. Keep **`Selective LLM Review` advisory only** (do not mark required).
-6. Block force pushes and branch deletion.
-7. Bypass: the repository owner only (emergency use, see below).
+```
+prompt → author agent: branch → commits (pre-commit = make check) → push
+       → PR (template, risky items named) → gh pr merge --auto --rebase
+PR checks, all required:
+  lint-type-test · dependency-audit · docker-build-smoke      (.github/workflows/ci.yml)
+  agent-review   independent reviewer agent, fail-closed       (.github/workflows/pr-gates.yml)
+  risk-gate      CODEOWNERS path touched → needs owner sign-off (.github/workflows/pr-gates.yml)
+all green → GitHub auto-merges → CD on main: images to GHCR, site to Vercel (cd.yml)
+```
 
-An agent-authored change is therefore trusted the same way as a human one, with a human
-in the loop: the agent pushes a branch and opens a PR, the three checks must pass on the
-exact head commit, and the code owner approves before it can merge. A risky-path change
-also gets the advisory LLM review and the PR template's risky-change checklist. The agent
-never edits these rules or uses the bypass.
+Gate rules (`harness/review/gate.py`, tested in `tests/test_harness_pr_gates.py`):
 
-Set the required checks (owner runs this; ruleset id from `gh api repos/<owner>/<repo>/rulesets`):
+- **`agent-review`**: a separate model (configured by `REVIEW_LLM_*`, default
+  `gpt-5.3-codex`; not the author's model) reviews the diff against AGENTS.md and this
+  file, and returns a strict JSON verdict. It passes only on an explicit `approve` with no
+  blocking finding. A missing key, model error after retries, unparseable verdict, empty
+  file list or a diff over 150k characters fails the check. PR text is passed as data;
+  the reviewer is told to ignore instructions inside it.
+- **`risk-gate`**: every path `.github/CODEOWNERS` assigns is risky, including the
+  pipeline itself (`.github/**`, `harness/review/gate.py`, `harness/governance/**`,
+  `.claude/settings.json`). A risky PR needs owner sign-off on the current head: an
+  APPROVED review on the head commit from a code owner who is not the author, or the
+  `owner-approved` label added by a code owner. The workflow deletes that label on every
+  push. Owner sign-off also overrides a wrong `agent-review` block.
+- **Trusted execution**: `pr-gates.yml` runs on `pull_request_target`, so it always runs
+  the base branch's copy of the workflow and gate code; PR content is fetched through the
+  API as data and never checked out or executed. Results are commit statuses on the head
+  commit; a run that dies leaves them `pending` (blocks). Every action is pinned to a
+  commit SHA.
+- **Agent limits** (`.claude/settings.json` deny rules, AGENTS.md): the agent never adds
+  `owner-approved`, approves PRs, merges with `--admin`, or edits rulesets/branch
+  protection.
+
+Ruleset `main-protection` (Settings → Rules), owner-applied:
+
+1. Require a pull request before merging; approvals **0** (owner sign-off is enforced by
+   **`risk-gate`**, because GitHub never lets an author approve their own PR and on this
+   solo repo the agent pushes with the owner's account).
+2. Require conversation resolution before merging.
+3. Require status checks, branch up to date: **`lint-type-test`**, **`dependency-audit`**,
+   **`docker-build-smoke`**, **`agent-review`**, **`risk-gate`**.
+4. Block force pushes and branch deletion. Repository setting: allow auto-merge.
+5. Bypass: the repository owner only (emergency use, see below).
+
+When a second maintainer joins: give the agent its own GitHub identity (machine user or
+GitHub App) so PR authorship and owner sign-off are different accounts, and raise
+approvals to 1 with Code Owners review.
+
+Apply (owner runs this; ruleset id from `gh api repos/<owner>/<repo>/rulesets`):
 
 ```bash
 gh api repos/<owner>/<repo>/rulesets/<id> > ruleset.json
 jq '{name,target,enforcement,bypass_actors,conditions,
-     rules: (.rules | map(if .type == "required_status_checks"
-       then .parameters.required_status_checks =
+     rules: (.rules | map(
+       if .type == "required_status_checks" then .parameters.required_status_checks =
          [{"context":"lint-type-test"},{"context":"dependency-audit"},
-          {"context":"docker-build-smoke"}]
+          {"context":"docker-build-smoke"},{"context":"agent-review"},
+          {"context":"risk-gate"}]
+       elif .type == "pull_request" then .parameters.required_approving_review_count = 0
+         | .parameters.require_code_owner_review = false
        else . end))}' ruleset.json > ruleset.new.json
 gh api -X PUT repos/<owner>/<repo>/rulesets/<id> --input ruleset.new.json
+gh api -X PATCH repos/<owner>/<repo> -F allow_auto_merge=true
 ```
 
 Verify:
@@ -87,8 +127,6 @@ Verify:
 gh api repos/<owner>/<repo>/rulesets/<id> --jq '.rules[] | select(.type ==
   "required_status_checks" or .type == "pull_request") | .parameters'
 ```
-
-Confirm the three CI jobs are listed and `Selective LLM Review` is not.
 
 Emergency bypass / rollback (production-impacting hotfix only):
 
