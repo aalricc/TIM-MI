@@ -333,8 +333,9 @@ Every PR and push to `main` runs `.github/workflows/ci.yml`:
 | `dependency-audit` | `pip-audit` over the runtime + dev dependency set |
 | `docker-build-smoke` | both images build; target healthy, a simulated fault leaves no trace in its logs, reset recovers |
 
-`main` is protected: changes land through a PR whose three checks pass on the latest
-commit (no force pushes, no deletions, linear history). The live LLM + JEV + Pinecone
+`main` is protected by the `main-protection` ruleset: changes land through a PR whose
+three checks pass on the latest commit and that a code owner approves (no force pushes,
+no deletions). Agent-authored PRs follow the same path (`harness/governance/README.md`). The live LLM + JEV + Pinecone
 campaign runs on demand on the self-hosted runner
 (`.github/workflows/live-e2e-fault-campaign.yml`). The landing page in `site/` is a static
 site deployed to Vercel (`npx vercel deploy site --prod`).

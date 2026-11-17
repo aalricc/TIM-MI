@@ -53,8 +53,9 @@ Next optional checkpoint in the plan is maintenance hardening, not a blocked bui
 
 ## 3. How this work has been done (keep doing it)
 
-- **Commits land through PRs gated by the required CI checks** (2026-11-17: the user
-  asked the agent to commit; `main` is protected, see `harness/governance/README.md`).
+- **Agent commits land through PRs gated by the three required CI checks and the code
+  owner's approval** (2026-11-17: the user asked the agent to commit; see
+  `harness/governance/README.md`). The agent never edits the rules or uses the bypass.
   Before that date: **the user commits and pushes; the agent never does.** At the end of each checkpoint,
   give exact `git add` / `git commit` commands, one logical change per commit, with file
   sets that do not overlap between commits.

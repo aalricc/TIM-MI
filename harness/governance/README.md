@@ -49,58 +49,46 @@ Temporary solo-owner exception (CP14/D6): while all three role owners above are 
 person (`@aalricc`), self-approval is allowed for risky changes. Remove this exception once
 another maintainer role owner is assigned.
 
-## Branch protection for `main` (applied 2026-11-17)
+## Branch protection for `main` (ruleset `main-protection`)
 
-Applied with `gh api` (command below) and enforced for admins too:
+`main` is governed by the repository ruleset `main-protection` (Settings → Rules):
 
 1. Require a pull request before merging.
-2. Approvals: **0 while the repo has a single maintainer** (GitHub does not let an author
-   approve their own PR, so 1 would block every change). Raise to 1 and turn on
-   "Require review from Code Owners" when a second maintainer joins.
-3. Dismiss stale approvals when new commits are pushed.
-4. Require conversation resolution before merging.
-5. Require status checks to pass, branch up to date, from the `CI` workflow:
+2. Require 1 approval and review from Code Owners; dismiss stale approvals on push.
+3. Require conversation resolution before merging.
+4. Require status checks to pass, branch up to date, from the `CI` workflow:
    **`lint-type-test`**, **`dependency-audit`**, **`docker-build-smoke`**.
-6. Keep **`Selective LLM Review` advisory only** (do not mark required).
-7. Linear history; force-push and branch deletion disabled.
+5. Keep **`Selective LLM Review` advisory only** (do not mark required).
+6. Block force pushes and branch deletion.
+7. Bypass: the repository owner only (emergency use, see below).
 
-An agent-authored commit is therefore trusted the same way as a human one: it lands only
-through a PR whose three checks passed on the exact head commit, and a risky-path change
-also gets the advisory LLM review and the PR template's risky-change checklist.
+An agent-authored change is therefore trusted the same way as a human one, with a human
+in the loop: the agent pushes a branch and opens a PR, the three checks must pass on the
+exact head commit, and the code owner approves before it can merge. A risky-path change
+also gets the advisory LLM review and the PR template's risky-change checklist. The agent
+never edits these rules or uses the bypass.
 
-Apply / re-apply (replace owner/repo):
+Set the required checks (owner runs this; ruleset id from `gh api repos/<owner>/<repo>/rulesets`):
 
 ```bash
-gh api -X PUT repos/<owner>/<repo>/branches/main/protection --input - <<'JSON'
-{
-  "required_status_checks": {"strict": true,
-    "contexts": ["lint-type-test", "dependency-audit", "docker-build-smoke"]},
-  "enforce_admins": true,
-  "required_pull_request_reviews": {"required_approving_review_count": 0,
-    "dismiss_stale_reviews": true, "require_code_owner_reviews": false},
-  "restrictions": null,
-  "required_linear_history": true,
-  "allow_force_pushes": false,
-  "allow_deletions": false,
-  "required_conversation_resolution": true
-}
-JSON
+gh api repos/<owner>/<repo>/rulesets/<id> > ruleset.json
+jq '{name,target,enforcement,bypass_actors,conditions,
+     rules: (.rules | map(if .type == "required_status_checks"
+       then .parameters.required_status_checks =
+         [{"context":"lint-type-test"},{"context":"dependency-audit"},
+          {"context":"docker-build-smoke"}]
+       else . end))}' ruleset.json > ruleset.new.json
+gh api -X PUT repos/<owner>/<repo>/rulesets/<id> --input ruleset.new.json
 ```
 
 Verify:
 
 ```bash
-gh api repos/<owner>/<repo>/branches/main/protection --jq '{
-  required_pull_request_reviews,
-  required_status_checks,
-  enforce_admins,
-  allow_force_pushes,
-  allow_deletions
-}'
+gh api repos/<owner>/<repo>/rulesets/<id> --jq '.rules[] | select(.type ==
+  "required_status_checks" or .type == "pull_request") | .parameters'
 ```
 
-Confirm `required_status_checks.contexts` lists the three CI jobs and does not include
-`Selective LLM Review`.
+Confirm the three CI jobs are listed and `Selective LLM Review` is not.
 
 Emergency bypass / rollback (production-impacting hotfix only):
 
