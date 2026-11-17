@@ -8,8 +8,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Job names are the required status checks on `main` (harness/governance/README.md).
 jobs:
   test:
+    name: lint-type-test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -42,6 +48,7 @@ jobs:
         run: pytest -q
 
   audit:
+    name: dependency-audit
     # Dependency vulnerability scan over everything the runtime image ships (jev, rag)
     # plus dev tooling. Fix by raising the affected pin in pyproject.toml.
     runs-on: ubuntu-latest
@@ -63,3 +70,52 @@ jobs:
 
       - name: pip-audit
         run: pip-audit --skip-editable --progress-spinner off
+
+  docker:
+    name: docker-build-smoke
+    # Builds both runtime images and smoke-tests the target the way MI sees it: healthy,
+    # then a simulated fault through the test hook, then the symptoms MI would read.
+    # MI itself needs live LLM / JEV / Pinecone credentials, so its image is only built
+    # and import-checked here; the live loop runs in live-e2e-fault-campaign.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate compose file
+        run: |
+          OPENAI_API_KEY=ci JEV_API_KEY=ci PINECONE_API_KEY=ci PINECONE_INDEX_HOST=ci \
+            docker compose config --quiet
+
+      - name: Build images
+        run: |
+          docker build -t mi-agent:ci -f Dockerfile .
+          docker build -t mi-target:ci -f target/app/Dockerfile .
+
+      - name: MI image imports
+        run: docker run --rm mi-agent:ci python -c "import mi_agent.main, mi_agent.api.server"
+
+      - name: Target smoke test
+        run: |
+          set -euo pipefail
+          docker run -d --name target -p 18080:8080 -e TARGET_TEST_HOOKS=1 mi-target:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18080/health/deep && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/health/deep | grep -q '"write_check":"ok"'
+          curl -fsS -X POST http://127.0.0.1:18080/ops/fault/drop_widgets_table
+          sleep 1
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/health/deep)" = 500
+          logs=$(curl -fsS 'http://127.0.0.1:18080/ops/logs?lines=500')
+          echo "$logs" | grep -q 'health deep failed'
+          if echo "$logs" | grep -Eqi 'inject|/ops/fault|drop_widgets_table'; then
+            echo "target logs reveal the simulated fault" >&2
+            exit 1
+          fi
+          curl -fsS -X POST http://127.0.0.1:18080/ops/reset
+          curl -fsS http://127.0.0.1:18080/health/deep
+
+      - name: Target logs on failure
+        if: failure()
+        run: docker logs target || true
