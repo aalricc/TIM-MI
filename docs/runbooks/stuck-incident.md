@@ -32,7 +32,8 @@ EOF
 | `agent.loop_error` events with `error_type` `LLMError` (`docker compose logs`, `/agent/events`) | LLM endpoint or credentials failing; iterations abort before an attempt | fix `OPENAI_API_KEY` / `MI_LLM_*`; MI resumes on its own |
 | `rag.error` steps | Pinecone failing | recovery continues without RAG context; fix `PINECONE_*` if quality suffers |
 | `verification.result` `failed` with the same `failure_type` every attempt | MI's actions do not fix this fault | manual takeover with the fault runbook (`docs/runbooks/drop_widgets_table.md`, `docs/runbooks/delete_db.md`, `docs/runbooks/corrupt_db.md`) |
-| `attempt.result` `failed`, reason `all_candidates_previously_failed` | every proposed action already failed in this incident | manual takeover |
+| `attempt.result` `failed`, reason `all_candidates_previously_failed` | every proposed action already ran and failed verification in this incident | manual takeover |
+| `jev.result` `unusable`, reason `usable_probability_below_threshold:…`, repeated | JEV does not approve any proposed repair; nothing runs, and MI asks again each attempt (rejected candidates are not banned) | check `MI_JEV_USABLE_THRESHOLD` against the approved value in `docs/harness/BASELINE.md`; if JEV keeps rejecting a repair you know is right, manual takeover |
 | `security.gate` `rejected` repeatedly | see `docs/runbooks/security-gate-rejection.md` | — |
 | `attempt.result` `recovered`, but `GET /widgets` fails | the repair satisfied `/health/deep` (integrity, table, columns) but the endpoint still fails for a reason it does not check | manual takeover with the fault runbook, then remove the learned action (risky change) and add the missing check to `target/app/main.py::db_status` |
 

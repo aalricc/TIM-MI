@@ -975,3 +975,70 @@ async def test_llm_steps_without_reported_usage_have_no_token_fields(tmp_path: P
     steps = _llm_steps(events)
     assert set(steps) == {"llm.why", "llm.how"}
     assert all("llm_usage_total" not in payload for payload in steps.values())
+
+
+class EngineJevRejectThenApprove:
+    """Rejects with a low usable probability on the first call, approves afterwards."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def choose_candidate(
+        self,
+        *,
+        state: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> JevDecision:
+        del state
+        self.calls.append([str(c.get("name")) for c in candidates])
+        selected = candidates[0] if candidates else {}
+        if len(self.calls) == 1:
+            return JevDecision(
+                usable=False,
+                reason="usable_probability_below_threshold:0.400<0.550",
+                selected_candidate_name=str(selected.get("name") or ""),
+                selected_candidate_operation=str(selected.get("operation") or ""),
+                usable_probability=0.4,
+            )
+        return JevDecision(
+            usable=True,
+            selected_candidate_name=str(selected.get("name") or ""),
+            selected_candidate_operation=str(selected.get("operation") or ""),
+            usable_probability=0.9,
+            risk_score=0.1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_jev_rejected_candidate_is_not_banned_and_not_learned_as_failure(
+    tmp_path: Path,
+) -> None:
+    """A repair JEV did not approve never ran: it stays eligible for the next attempt and
+    class memory records nothing for it (user decision 2026-11-18). Before, it was banned
+    for the incident and learned as a failure, which could leave MI stuck."""
+    llm = EngineLLM()
+    tools = EngineTools(execute_ok_sequence=[True])
+    memory = _empty_class_memory(tmp_path)
+    agent, events = _agent(
+        tmp_path,
+        llm=llm,
+        tools=tools,
+        verifier=EngineVerifier(healthy_sequence=[False, True]),
+        memory=memory,
+    )
+    jev = EngineJevRejectThenApprove()
+    agent._jev = jev  # type: ignore[assignment]
+
+    await agent.run_iteration()  # attempt 1: JEV rejects, nothing runs
+    assert tools.executed_specs == []
+    incident = agent.snapshot.incident
+    assert incident is not None and incident.failed_action_keys == set()
+    assert not any(
+        e.event_type == "workflow.step"
+        and e.payload.get("step") == "persist.class_memory"
+        for e in events.events
+    )
+
+    await agent.run_iteration()  # attempt 2: same candidates offered again, approved, runs
+    assert jev.calls[1] == jev.calls[0]
+    assert [spec.name for spec in tools.executed_specs] == [jev.calls[0][0]]

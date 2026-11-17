@@ -118,7 +118,10 @@ the data.
    writes learning state and emits `persist.policy_store` = `failure` (`reward` −1) and,
    when class memory recorded the failed action, `persist.class_memory` = `failure`, in
    that order and before `attempt.result` = `failed`. Security-gate rejections follow the
-   same pattern (item 1). `jev_request_error` (transport
+   same pattern (item 1). An unusable JEV decision (the candidate never ran) writes only
+   `persist.policy_store` for the `decision_unusable` pseudo-action: the candidate is not
+   added to `failed_action_keys` and class memory records nothing, so it can be approved
+   on a later attempt (user decision 2026-11-18). `jev_request_error` (transport
    failure) writes nothing and emits no persist step. A rejected fast path that falls
    back to the full loop writes nothing.
 3. **Skills on first success.** Step 15 renders the class section with the pending

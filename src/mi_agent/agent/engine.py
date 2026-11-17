@@ -1174,8 +1174,8 @@ class RecoveryAgent:
                 )
                 selected_action_key = None
                 if self._classmem_enabled and selected_spec is not None:
+                    # Not approved by JEV, so not failed: see _handle_unusable_decision.
                     selected_action_key = canonical_action_key(selected_spec)
-                    incident.failed_action_keys.add(self._attempt_key(selected_spec))
 
                 await self._publish_fast_path_skipped(
                     incident=incident,
@@ -1264,9 +1264,12 @@ class RecoveryAgent:
         )
         selected_action_key: str | None = None
         transport_error = reason.startswith("jev_request_error")
+        # A candidate JEV did not approve never ran, so it is "not chosen", not "failed":
+        # it stays eligible for later attempts (JEV is asked again with this rejection in
+        # prior_attempts) and class memory records nothing for it. Only executed,
+        # verified outcomes are learned (user decision, 2026-11-18).
         if selected_spec is not None and self._classmem_enabled:
             selected_action_key = canonical_action_key(selected_spec)
-            incident.failed_action_keys.add(self._attempt_key(selected_spec))
 
         incident.attempts += 1
         incident.state_fingerprint = self._tools.state_fingerprint()
@@ -1293,28 +1296,6 @@ class RecoveryAgent:
                 status="failure",
                 action_key="decision_unusable",
                 reward=-1.0,
-            )
-        if (
-            selected_spec is not None
-            and self._classmem_enabled
-            and self._class_memory is not None
-            and class_match is not None
-            and not transport_error
-        ):
-            self._class_memory.record_outcome(
-                match=class_match,
-                spec=selected_spec,
-                latency_ms=0.0,
-                success=False,
-                source=source,
-            )
-            await self._publish_workflow_step(
-                incident_id=incident.incident_id,
-                attempt=attempt,
-                path_mode=path_mode,
-                step="persist.class_memory",
-                status="failure",
-                class_id=class_match.class_id,
             )
         self._workflow_state = transition(self._workflow_state, WorkflowEvent.RECOVERY_FAILED)
         await self._events.publish(
