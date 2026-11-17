@@ -314,13 +314,21 @@ it is an operator-facing recovery system plus a demo target service.
 
 ## Recording the demo
 
-With the stack up (`TARGET_TEST_HOOKS=1`), record the dashboard through two live outages
-(captions are drawn for the viewer only):
+`scripts/record_demo.py` records the real dashboard and draws, for the viewer only, a
+spotlight box and an explanation card for each step. Every number on screen (diagnosis,
+JEV probability, rows lost, reward, time to recover) is read from MI's event log after it
+happens. With the stack up (`TARGET_TEST_HOOKS=1`) and Playwright installed:
 
 ```bash
-pip install playwright   # uses the local Chrome; or `playwright install chromium`
+# Part 1: MI with no memory (stop mi-agent, move state/ aside, start it again first)
 python scripts/record_demo.py --target-url http://127.0.0.1:8080 \
-  --out site/demo.mp4 --poster site/demo-poster.png
+  --mode full --fault drop_widgets_table --out part1.mp4 --facts part1.json
+# Part 2: the same outage with MI's learned memory restored
+python scripts/record_demo.py --target-url http://127.0.0.1:8080 \
+  --mode learned --fault drop_widgets_table --out part2.mp4 --facts part2.json \
+  --compare part1.json
+printf "file 'part1.mp4'\nfile 'part2.mp4'\n" > parts.txt
+ffmpeg -f concat -safe 0 -i parts.txt -c copy -movflags +faststart site/demo.mp4
 ```
 
 ## CI/CD and branch protection
