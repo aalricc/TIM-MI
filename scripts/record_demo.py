@@ -196,7 +196,22 @@ def _incident_facts(agent: str, incident_id: str) -> dict[str, Any]:
                 rows_lost=payload.get("rows_lost"),
                 reward=payload.get("reward"),
                 path=payload.get("source"),
+                first_tool=payload.get("tool_name"),
+                first_rows_after=payload.get("widget_rows_after"),
+                first_rows_lost=payload.get("rows_lost"),
+                first_reward=payload.get("reward"),
             )
+        elif kind == "incident.data_recovered":
+            # Data recovery after the service came back: the final numbers.
+            facts.update(
+                data_recovered_ts=row["ts"],
+                rows_after=payload.get("widget_rows_after"),
+                rows_lost=payload.get("rows_lost"),
+                reward=payload.get("reward"),
+                final_tool=payload.get("tool_name"),
+            )
+        elif kind == "incident.closed":
+            facts["resolution"] = payload.get("resolution")
         elif kind == "workflow.step" and payload.get("step") == "path.selected":
             facts.setdefault("paths", []).append(payload.get("path_mode"))
         elif kind == "workflow.step" and payload.get("step") == "llm.why":
@@ -206,7 +221,23 @@ def _incident_facts(agent: str, incident_id: str) -> dict[str, Any]:
         if "why_ts" in facts:
             facts["why_s"] = round(facts["why_ts"] - facts["started_ts"], 1)
             facts["after_why_s"] = round(facts["recovered_ts"] - facts["why_ts"], 1)
+    if "started_ts" in facts and "data_recovered_ts" in facts:
+        facts["data_ttr_s"] = round(facts["data_recovered_ts"] - facts["started_ts"], 1)
     return facts
+
+
+def _data_incomplete(agent: str, incident_id: str) -> dict[str, Any] | None:
+    """The attempt.result step that kept the incident open for data recovery, if any."""
+    for row in _get(f"{agent}/agent/events?limit=400").get("events", []):
+        payload = row.get("payload") if isinstance(row, dict) else None
+        if (
+            isinstance(payload, dict)
+            and payload.get("incident_id") == incident_id
+            and payload.get("step") == "attempt.result"
+            and payload.get("reason") == "data_incomplete"
+        ):
+            return payload
+    return None
 
 
 def _latest_incident(agent: str) -> str:
@@ -368,16 +399,39 @@ def _live_part(demo: Demo, page: Page, target: str, agent: str, fault: str,
                       "appears in History once the incident closes.", 5000)
     demo.clear()
     demo.bar("Waiting for the repair to run and for the independent health check&hellip;")
+    incident = _latest_incident(agent)
+    deadline = time.monotonic() + 240
+    gap: dict[str, Any] | None = None
+    while time.monotonic() < deadline and _state(agent) == "incident_active":
+        gap = gap or _data_incomplete(agent, incident)
+        if gap is not None:
+            break
+        time.sleep(0.5)
+    if gap is not None:
+        demo.bar("")
+        demo.spot({"panel": "Agent State"}, "#", "Service back, but the data is not",
+                  f"The repair brought the service back, but only <b>"
+                  f"{gap.get('widget_rows_after')} of {gap.get('widget_rows_before')}</b> rows "
+                  "users had written are there. MI keeps the incident open and asks for a "
+                  "fix that recovers the data; the first fix is not tried again.", 8000)
+        demo.clear()
+        demo.bar("Recovering the missing data&hellip;")
     _wait_state(agent, active=False, timeout=240)
     demo.bar("")
-    incident = _latest_incident(agent)
     page.wait_for_timeout(1500)
     live = _incident_facts(agent, incident)
-    demo.spot({"panel": "Agent State"}, "#", f"Recovered in {live.get('ttr_s')} s",
-              f"From detection to verified recovery, measured by MI (the LLM diagnosis "
-              f"took {live.get('why_s')} s of it). The repair ran once and the service "
-              "passed its deep health check again, including a test write. MI closed the "
-              "incident by itself.", 6500)
+    if live.get("data_ttr_s") is not None:
+        demo.spot({"panel": "Agent State"}, "#", f"Data back in {live.get('data_ttr_s')} s",
+                  f"Service back after {live.get('ttr_s')} s; the second repair brought the "
+                  f"data back ({live.get('rows_lost')} of {live.get('rows_before')} rows "
+                  "lost). Each repair ran once and passed the deep health check, including a "
+                  "test write. MI closed the incident by itself.", 7500)
+    else:
+        demo.spot({"panel": "Agent State"}, "#", f"Recovered in {live.get('ttr_s')} s",
+                  f"From detection to verified recovery, measured by MI (the diagnosis step, "
+                  f"evidence, docs and the LLM call, took {live.get('why_s')} s of it). The "
+                  "repair ran once and the service passed its deep health check again, "
+                  "including a test write. MI closed the incident by itself.", 6500)
     demo.clear()
     page.wait_for_timeout(1200)
     return incident, evidence
@@ -412,6 +466,11 @@ def _history_part(demo: Demo, page: Page, facts: dict[str, Any], mode: str) -> N
             f"{which}: <b>{last.get('jev_selected')}</b> ({last.get('jev_operation')}), "
             f"usable probability {p_text}. The badge marks the one that ran."
         )
+        if facts.get("final_tool"):
+            how_body += (
+                f" This was the second repair: the first (<b>{facts.get('first_tool')}</b>) "
+                "had brought the service back without the data."
+            )
     demo.spot({"panel": "HOW Proposals", "scope": HIST}, "#", "How it was fixed", how_body,
               9000)
     executed_box = {"selector": f"{HIST} .how-candidate.executed"}
@@ -419,7 +478,16 @@ def _history_part(demo: Demo, page: Page, facts: dict[str, Any], mode: str) -> N
               "Exactly one action per attempt. It passed the security gate (allowed "
               "operation, safe paths) before it executed.", 5000)
     lost, before, reward = facts.get("rows_lost"), facts.get("rows_before"), facts.get("reward")
-    if isinstance(reward, (int, float)) and isinstance(before, int) and isinstance(lost, int):
+    rl_target = {"panel": "RL Live", "scope": HIST, "inner": ".info-card"}
+    if facts.get("final_tool") and isinstance(reward, (int, float)):
+        rl_target = {"panel": "RL Live", "scope": HIST, "inner": ".card-list"}
+        reward_body = (
+            f"Two scores. First fix: the service came back with <b>{facts.get('first_rows_after')}"
+            f" of {before}</b> rows, reward <b>{_fmt_reward(facts.get('first_reward'))}</b>. "
+            f"Second fix: <b>{lost}</b> rows lost, reward <b>{_fmt_reward(reward)}</b>. Next "
+            "time MI is more likely to start with the fix that kept the data."
+        )
+    elif isinstance(reward, (int, float)) and isinstance(before, int) and isinstance(lost, int):
         verdict = (
             "This fix brought the service back but lost the data, so it scores low and"
             " MI will not adopt it as its usual fix."
@@ -434,8 +502,7 @@ def _history_part(demo: Demo, page: Page, facts: dict[str, Any], mode: str) -> N
         )
     else:
         reward_body = "The verified outcome is scored and stored so MI can prefer better fixes."
-    demo.spot({"panel": "RL Live", "scope": HIST, "inner": ".info-card"}, "#",
-              "What MI learned", reward_body, 9000)
+    demo.spot(rl_target, "#", "What MI learned", reward_body, 10000)
     demo.spot({"panel": "Recovery Timeline", "scope": HIST, "inner": "ul"}, "#", "Audit trail",
               "Every step in order: diagnosis, path chosen, JEV decision, security gate, "
               "execution, verification, then learning.", 6000)
@@ -448,11 +515,17 @@ def _outro(demo: Demo, facts: dict[str, Any], mode: str,
     if mode == "full":
         demo.full(
             "<div class='k'>PART 1 · SUMMARY</div><h1>Recovered with no human involved</h1>"
-            f"<ul><li>Time to recover: <b>{ttr} s</b>.</li>"
-            f"<li>Diagnosis: <b>{facts.get('failure_type')}</b>.</li>"
-            f"<li>Rows lost: <b>{facts.get('rows_lost')}</b> of {facts.get('rows_before')};"
-            f" reward <b>{_fmt_reward(facts.get('reward'))}</b>. MI learns from this score"
-            " which fixes keep users&rsquo; data.</li>"
+            + (
+                f"<ul><li>Service back in <b>{ttr} s</b>, but with {facts.get('first_rows_after')}"
+                f" of {facts.get('rows_before')} rows; MI kept going and had the data back in"
+                f" <b>{facts.get('data_ttr_s')} s</b>.</li>"
+                if facts.get("data_ttr_s") is not None
+                else f"<ul><li>Time to recover: <b>{ttr} s</b>.</li>"
+            )
+            + f"<li>Diagnosis: <b>{facts.get('failure_type')}</b>.</li>"
+            f"<li>Rows lost in the end: <b>{facts.get('rows_lost')}</b> of"
+            f" {facts.get('rows_before')}. MI learns from these scores which fixes keep"
+            " users&rsquo; data.</li>"
             "<li>If a repair fails verification, MI records the failure, keeps everything"
             " it learned, and tries a different repair, with no retry limit.</li></ul>",
             9000,
@@ -460,20 +533,32 @@ def _outro(demo: Demo, facts: dict[str, Any], mode: str,
     else:
         before = ""
         if compare:
-            before = (
-                "<li>Part 1, no memory: the fix JEV picked"
-                f" ({compare['attempts'][-1].get('jev_operation')}) lost"
-                f" <b>{compare.get('rows_lost')} of {compare.get('rows_before')}</b> rows"
-                f" (reward {_fmt_reward(compare.get('reward'))}), in {compare.get('ttr_s')} s.</li>"
-            )
+            if compare.get("data_ttr_s") is not None:
+                before = (
+                    "<li>Part 1, no memory: the first fix"
+                    f" ({compare['attempts'][0].get('jev_operation')}) brought the service back"
+                    f" with {compare.get('first_rows_after')} of {compare.get('rows_before')}"
+                    " rows; a second fix"
+                    f" ({compare['attempts'][-1].get('jev_operation')}) recovered the data,"
+                    f" <b>{compare.get('data_ttr_s')} s</b> in total.</li>"
+                )
+            else:
+                before = (
+                    "<li>Part 1, no memory: the fix JEV picked"
+                    f" ({compare['attempts'][-1].get('jev_operation')}) lost"
+                    f" <b>{compare.get('rows_lost')} of {compare.get('rows_before')}</b> rows"
+                    f" (reward {_fmt_reward(compare.get('reward'))}), in"
+                    f" {compare.get('ttr_s')} s.</li>"
+                )
         demo.full(
-            "<div class='k'>SUMMARY</div><h1>Learning kept the users&rsquo; data</h1><ul>"
+            "<div class='k'>SUMMARY</div><h1>What learning changed</h1><ul>"
             + before
-            + "<li>Part 2, same outage, learned memory: the fix"
-            f" ({facts['attempts'][-1].get('jev_operation')}) lost <b>"
+            + "<li>Part 2, same outage, learned memory: the right fix came first"
+            f" ({facts['attempts'][-1].get('jev_operation')}) and lost <b>"
             f"{facts.get('rows_lost')} of {facts.get('rows_before')}</b> rows (reward"
             f" {_fmt_reward(facts.get('reward'))}).</li>"
-            f"<li>Time to recover: <b>{facts.get('ttr_s')} s</b>. The LLM diagnosis took"
+            f"<li>Time to recover: <b>{facts.get('ttr_s')} s</b>. Diagnosis (evidence, docs and"
+            f" the LLM call) took"
             f" {facts.get('why_s')} s; after it, the fast path needed only"
             f" <b>{facts.get('after_why_s')} s</b> to approve, run and verify the fix.</li>"
             "<li>Live campaign, 17 Nov 2026: 12 of 12 outages recovered and verified,"

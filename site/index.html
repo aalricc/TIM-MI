@@ -183,6 +183,7 @@ footer{padding:36px 0 48px;color:var(--muted);font-size:14px;display:flex;justif
       <li><b>Reward reflects data loss.</b> A repair scores <code>1 − rows lost / rows before</code>, so MI learns the least-lossy fix, not just the first one that turns the check green.</li>
       <li><b>Class memory.</b> Similar incidents form a class. Once a repair has proven itself enough times in a class, MI replays it on the fast path, still through the decision model, the gate and the verifier.</li>
       <li><b>Skills library.</b> Winning repairs are written up as skills and fed back into retrieval for the next diagnosis.</li>
+      <li><b>Healthy is not enough.</b> If the service is back but its data is not, MI keeps the incident open and tries another fix until the rows are back.</li>
       <li><b>No hints, no cheat sheet.</b> The prompts describe the evidence and the tool interface, nothing else. Which fix works is learned from outcomes, not hard-coded.</li>
     </ul>
   </div>
@@ -217,7 +218,7 @@ the incident was detected.</span></pre>
 <section id="demo">
 <div class="wrap">
   <h2>Watch a recovery, end to end.</h2>
-  <p class="sub">The real dashboard, with a highlight and a short note on every step. Part 1: MI with no memory fixes a dropped table in 19.8 s but loses all 124 rows. Part 2: the same outage after learning: a backup restore in 10.7 s, no rows lost.</p>
+  <p class="sub">The real dashboard, with a highlight and a short note on every step. Part 1: MI has no memory; its first fix brings the service back with 0 of 1,810 rows, so it keeps going and a backup restore has the data back at 35.7 s. Part 2: the same outage after learning: the restore comes first, 13.3 s, 3 rows lost.</p>
   <div class="video"><video src="demo.mp4" controls playsinline preload="metadata" poster="demo-poster.png"></video></div>
 </div>
 </section>
